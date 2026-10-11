@@ -20,7 +20,13 @@ enum Kind {
 bool usableQuery(const QString& low);
 
 // 名字以哪种方式命中这条查询。多音字每个读音都算（"重庆" chongqing / zhongqing 都在）。
+// 全拼允许中段：搜"任务管理器"打 guanli 也要能出（应用那一档靠它）。
 Kind match(const QString& name, const QString& low);
+
+// 同上，但全拼也必须**从开头**命中。工具直达用这个：直达是"整条查询就要这个"的意思，
+// 中段命中会把不相干的东西顶上来 —— 实测踩过：搜 renwu 想要任务管理器，结果被
+// 「开机启动分析」的关键词"计划任务"（jihua**renwu**）中段命中独占掉，应用那一节整个没了。
+Kind matchStart(const QString& name, const QString& low);
 
 // 下面两个只给 --pinyin 自测用：把名字展开成"全拼串"和"首字母串"的所有可能读法
 // （多音字取笛卡尔积，上限 64 条，防止五字 × 四读音 = 1024 条那种组合爆炸）。

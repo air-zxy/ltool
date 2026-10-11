@@ -938,12 +938,15 @@ void SearchWindow::runSearch()
             }
             // 拼音直达：cipanqingli / cpql 也算"就要这个工具"。工具就卡片墙那六件事，
             // 命中面比应用列表窄得多，所以首字母也当直达（应用那边首字母只排第三档）。
+            // 但**必须从开头命中**（matchStart）：中段命中是"名字里正好含这几个字母"，
+            // 拿它独占整页结果会把用户要的那个顶掉 —— 搜 renwu 想要任务管理器，
+            // 却因为「开机启动分析」的关键词"计划任务"（jihua+renwu）被当成直达。
             if (!hitExact && Pinyin::usableQuery(low)) {
-                if (Pinyin::match(td.name, low) != Pinyin::None)
+                if (Pinyin::matchStart(td.name, low) != Pinyin::None)
                     hitExact = true;
                 else
                     for (const QString& kw : td.keywords)
-                        if (Pinyin::match(kw, low) != Pinyin::None) {
+                        if (Pinyin::matchStart(kw, low) != Pinyin::None) {
                             hitExact = true;
                             break;
                         }

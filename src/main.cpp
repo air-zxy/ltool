@@ -871,6 +871,8 @@ int main(int argc, char* argv[])
         check("表：任 → ren", Pinyin::fullReadings(QStringLiteral("任")).contains("ren") ? "yes" : "no", "yes");
         check("表没错位：垃圾 → laji", Pinyin::fullReadings(QStringLiteral("垃圾")).contains("laji") ? "yes" : "no", "yes");
         check("renwu 命中 任务", kind(Pinyin::match(QStringLiteral("任务"), "renwu")), "full");
+        check("renwu 命中 任务管理器（整名）",
+              kind(Pinyin::match(QStringLiteral("任务管理器"), "renwu")), "full");
         check("rw 命中 任务（首字母）", kind(Pinyin::match(QStringLiteral("任务"), "rw")), "initial");
         check("chongqing 命中 重庆", kind(Pinyin::match(QStringLiteral("重庆"), "chongqing")), "full");
         check("zhongqing 也命中 重庆（多音字全留）", kind(Pinyin::match(QStringLiteral("重庆"), "zhongqing")), "full");
@@ -881,6 +883,16 @@ int main(int argc, char* argv[])
         check("首字母只认开头：gl 不算 任务管理器",
               kind(Pinyin::match(QStringLiteral("任务管理器"), "gl")), "none");
         check("不误伤：wx 不命中 任务", kind(Pinyin::match(QStringLiteral("任务"), "wx")), "none");
+        // 直达那一档必须从开头命中：中段命中只是"名字里正好含这几个字母"，
+        // 拿它独占整页会把用户要的东西顶掉（renwu 被"计划任务"抢走那次就是这么来的）。
+        check("中段命中：renwu 算 计划任务（match 允许中段，应用那一档靠它）",
+              kind(Pinyin::match(QStringLiteral("计划任务"), "renwu")), "full");
+        check("直达不认中段：renwu 不算 计划任务（matchStart）",
+              kind(Pinyin::matchStart(QStringLiteral("计划任务"), "renwu")), "none");
+        check("直达认开头：cipanqingli 算 磁盘清理（matchStart）",
+              kind(Pinyin::matchStart(QStringLiteral("磁盘清理"), "cipanqingli")), "full");
+        check("直达认开头：cpql 也算 磁盘清理（matchStart）",
+              kind(Pinyin::matchStart(QStringLiteral("磁盘清理"), "cpql")), "initial");
         check("纯英文名不走拼音这一档", kind(Pinyin::match(QStringLiteral("Qoder"), "oder")), "none");
         check("单字母不启用", Pinyin::usableQuery(QStringLiteral("r")) ? "yes" : "no", "no");
         check("带数字的名字：腾讯会议3",
@@ -959,6 +971,25 @@ int main(int argc, char* argv[])
             check("乱码查询不出工具", t0.first ? "yes" : "no", "no");
             check("全拼 cipanqingli 直达工具", t1.first ? "yes" : "no", "yes");
             check("首字母 cpql 也直达工具", t2.first ? "yes" : "no", "yes");
+            // 他实际报的那一个：任务管理器不在卡片墙那六件事里，走的是「应用」那一节
+            // （SysTools::systemTools() 并进应用索引），所以这条要断言的是应用节。
+            input->setText(QStringLiteral("renwu"));
+            settle();
+            const bool appSect = hasSection(QStringLiteral("── 应用 ──"));
+            const bool toolSect = hasSection(QStringLiteral("工具"));
+            std::printf("INFO 端到端 renwu：应用节=%d 工具节=%d 可执行行=%d\n",
+                        appSect ? 1 : 0, toolSect ? 1 : 0, int(rows()));
+            check("renwu 在搜索框里能搜到应用（任务管理器）", appSect ? "yes" : "no", "yes");
+            check("renwu 不再被「计划任务」那条关键词当成工具直达（它会把应用整个顶掉）",
+                  toolSect ? "yes" : "no", "no");
+            // 取整之后直达不能变哑：qingli 不是「磁盘清理」这个名字的开头，
+            // 但它是关键词「清理」的开头 —— 这条守的是"别把直达搞成搜不到"。
+            const auto t4 = query(QStringLiteral("qingli"));
+            check("取整不伤直达：qingli 还是直达磁盘清理", t4.first ? "yes" : "no", "yes");
+            input->setText(QStringLiteral("rw"));
+            settle();
+            const bool appSect2 = hasSection(QStringLiteral("── 应用 ──"));
+            check("rw（首字母）也能搜到应用", appSect2 ? "yes" : "no", "yes");
             // 应用那一侧：拿真实索引里第一个中文名当靶子，用它的拼音去搜必须回到它
             QString cjkName;
             for (const AppEntry& a : apps)

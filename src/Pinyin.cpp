@@ -155,20 +155,30 @@ QStringList initialReadings(const QString& name)
     return readings(name).initials;
 }
 
-Kind match(const QString& name, const QString& low)
+// anchored=false：全拼允许出现在串的任何位置（"guanli" 要能在 "renwuguanliqi" 里命中）；
+// anchored=true：全拼也必须从开头命中。首字母两档都只认开头，否则两个字母就能把整个列表捞一遍。
+static Kind matchImpl(const QString& name, const QString& low, bool anchored)
 {
     if (!usableQuery(low))
         return None;
     const Reading& r = readings(name);
-    // 全拼允许出现在串的任何位置（"guanli" 要能在 "renwuguanliqi" 里命中）；
-    // 首字母只认开头，否则两个字母就能把整个列表捞一遍。
     for (const QString& f : r.full)
-        if (f.contains(low))
+        if (anchored ? f.startsWith(low) : f.contains(low))
             return Full;
     for (const QString& i : r.initials)
         if (i.startsWith(low))
             return Initial;
     return None;
+}
+
+Kind match(const QString& name, const QString& low)
+{
+    return matchImpl(name, low, false);
+}
+
+Kind matchStart(const QString& name, const QString& low)
+{
+    return matchImpl(name, low, true);
 }
 
 } // namespace Pinyin
