@@ -2010,6 +2010,35 @@ int main(int argc, char* argv[])
 
         WindowPicker picker;
         auto* plist = picker.findChild<QListWidget*>(QStringLiteral("list"));
+        // 右上角那颗「✕」：这窗没标题栏，Esc / 失焦 / 再按 F2 都是"看不见的退路"，
+        // 界面上得有一个落点。判据走布局可达性而不是 findChild —— 后者只能证明
+        // 控件被构造过，证明不了它摆在了页面上（配置页那一栏刚在这上面栽过）。
+        const auto inLayoutOf = [](QWidget* root, QWidget* w) {
+            bool found = false;
+            std::function<void(QLayout*)> walk = [&](QLayout* l) {
+                if (!l || found)
+                    return;
+                for (int i = 0; i < l->count(); ++i) {
+                    QLayoutItem* it = l->itemAt(i);
+                    if (!it)
+                        continue;
+                    if (QWidget* cw = it->widget()) {
+                        if (cw == w) {
+                            found = true;
+                            return;
+                        }
+                        walk(cw->layout());
+                    } else if (QLayout* sub = it->layout())
+                        walk(sub);
+                }
+            };
+            walk(root->layout());
+            return found;
+        };
+        auto* pclose = picker.findChild<QPushButton*>(QStringLiteral("close"));
+        check("选择窗右上角有关闭按钮", pclose && pclose->text() == QStringLiteral("\u2715")
+                  && pclose->isVisibleTo(&picker) ? "yes" : "no", "yes");
+        check("关闭按钮真的摆在布局里", pclose && inLayoutOf(&picker, pclose) ? "yes" : "no", "yes");
         std::printf("INFO 选择器列了 %d 个窗口\n", plist ? plist->count() : -1);
         check("选择器列出了窗口", plist && plist->count() > 2 ? "yes" : "no", "yes");
         // 整块屏幕那条必须排在最上面，并且带着"这条是屏幕不是窗口"的标志位
@@ -2118,6 +2147,14 @@ int main(int argc, char* argv[])
             QApplication::sendEvent(&picker, &de);
             QCoreApplication::processEvents();
             check("点到别处（失焦）会自动收起", picker.isVisible() ? "还开着" : "已收起", "已收起");
+            // 那颗「✕」按下去要真的收得起（click() 是程序化的按，不合成鼠标、不抢焦点）
+            picker.show();
+            QCoreApplication::processEvents();
+            if (pclose) {
+                pclose->click();
+                QCoreApplication::processEvents();
+                check("点「✕」收得起选择窗", picker.isVisible() ? "还开着" : "已收起", "已收起");
+            }
             picker.hide();
             // F2 那一档走的是全局那个 picker，不是上面这个局部对象，所以按顶层窗口找它
             const auto openPicker = [] {

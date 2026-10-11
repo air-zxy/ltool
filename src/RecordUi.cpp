@@ -158,13 +158,24 @@ WindowPicker::WindowPicker(QWidget* parent)
     auto* lay = new QVBoxLayout(this);
     lay->setContentsMargins(10, 8, 10, 8);
     lay->setSpacing(6);
+    auto* head = new QHBoxLayout;
+    head->setSpacing(6);
     auto* title = new QLabel(QStringLiteral("录什么？（整块屏幕 / 某一个窗口）"), this);
     title->setStyleSheet("color:#e8ebf2;font-size:13px;font-weight:600;");
+    // 这窗没标题栏，光靠 Esc / 点到别处 / 再按一次 F2 还是得有个人眼的落点
+    m_close = new QPushButton(QStringLiteral("✕"), this);
+    m_close->setObjectName(QStringLiteral("close"));
+    m_close->setFixedSize(24, 22);
+    m_close->setCursor(Qt::PointingHandCursor);
+    m_close->setToolTip(QStringLiteral("不录了（同 Esc）"));
+    head->addWidget(title);
+    head->addStretch(1);
+    head->addWidget(m_close);
     auto* filter = new QLineEdit(this);
     filter->setPlaceholderText(QStringLiteral("输入关键字过滤（输「屏」就剩整块屏幕），回车开始录，Esc 取消"));
     auto* list = new QListWidget(this);
     list->setSelectionMode(QAbstractItemView::SingleSelection);
-    lay->addWidget(title);
+    lay->addLayout(head);
     lay->addWidget(filter);
     lay->addWidget(list, 1);
     list->setObjectName(QStringLiteral("list"));
@@ -174,7 +185,10 @@ WindowPicker::WindowPicker(QWidget* parent)
                   "border-radius:5px;padding:4px 6px;}"
                   "QListWidget::item{padding:5px 6px;border-radius:4px;}"
                   "QListWidget::item:selected{background:#3f6ae0;}"
+                  "QPushButton{background:#3a3d46;color:#e8ebf2;border:none;border-radius:4px;}"
+                  "QPushButton:hover{background:#e04a4a;}"
                   "QLabel{border:none;}");
+    connect(m_close, &QPushButton::clicked, this, &QWidget::hide);
     resize(460, 360);
 
     const auto rebuild = [this, list, filter] {

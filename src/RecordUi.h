@@ -28,13 +28,15 @@ signals:
     void picked(WId target, const QString& title, bool monitor);
 
 protected:
-    // 这个窗没有标题栏也没有取消按钮：Esc、点到别处、再按一次 F2 都得能收掉它，
-    // 否则按了 F2 就只能硬着头皮选一个开始录（提示语一直写着"Esc 取消"，以前没实现）。
+    // 这个窗没有标题栏：Esc、点到别处、再按一次 F2 都得能收掉它，否则按了 F2
+    // 就只能硬着头皮选一个开始录（提示语一直写着"Esc 取消"，以前没实现）。
+    // 右上角另外有个「✕」，那是给人眼看的落点。
     void keyPressEvent(QKeyEvent* e) override;
     bool eventFilter(QObject* watched, QEvent* e) override;
 
 private:
     QWidget* m_list = nullptr;
+    QPushButton* m_close = nullptr;
 };
 
 class RecordBar : public QWidget {
