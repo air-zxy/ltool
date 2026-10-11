@@ -383,6 +383,33 @@ int runSearchTiming(const QStringList& queries)
     return QApplication::exec();
 }
 
+// --searchdump a b c：把每个词的完整结果列表按顺序打出来。
+// 改搜索实现（分桶/并行/跳字节）最怕的是"快了但结果顺序变了"，所以这条就是
+// 改前改后各跑一遍、拿 diff 当判据的入口 —— diff 空才算过。
+int runSearchDump(const QStringList& queries)
+{
+    FileIndexer::instance().reindexAsync(false);
+    QObject::connect(&FileIndexer::instance(), &FileIndexer::indexingFinished,
+                     [queries](int total) {
+                         std::fprintf(stdout, "index=%d entries\n", total);
+                         for (const QString& q : queries) {
+                             const auto hits = FileIndexer::instance().search(q, 20);
+                             std::fprintf(stdout, "=== %s hits=%d\n", q.toUtf8().constData(),
+                                          int(hits.size()));
+                             for (int i = 0; i < hits.size(); ++i)
+                                 std::fprintf(stdout, "%2d %s%s | %s\n", i,
+                                              hits[i].isDir ? "d" : "f",
+                                              hits[i].name.toUtf8().constData(),
+                                              hits[i].path.toUtf8().constData());
+                         }
+                         std::fflush(stdout);
+                         QApplication::quit();
+                     });
+    QTimer::singleShot(180000, [] { std::fprintf(stdout, "searchdump=TIMEOUT\n");
+                                    QApplication::quit(); });
+    return QApplication::exec();
+}
+
 // --disktime：A/B 两种磁盘遍历在 C: 上的耗时（旧 QDirIterator vs 新 DiskScan），
 // 用来回答"占用分析为什么卡、改完快了多少"
 int runDiskTiming()
@@ -534,6 +561,16 @@ int main(int argc, char* argv[])
         if (qs.isEmpty())
             qs << "no" << "notepad" << "chrome" << "de" << "use";
         return runSearchTiming(qs);
+    }
+
+    if (args.contains("--searchdump")) {
+        QStringList qs = args.mid(args.indexOf("--searchdump") + 1);
+        qs.removeAll("--searchdump");
+        if (qs.isEmpty())
+            qs << "no" << "notepad" << "chrome" << "de" << "use"
+               << QString::fromUtf8("软件") << QString::fromUtf8("回收")
+               << QString::fromUtf8("截图");
+        return runSearchDump(qs);
     }
 
     if (args.contains("--disktime"))

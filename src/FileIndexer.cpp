@@ -16,8 +16,10 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <thread>
+#include <vector>
 
 #include <windows.h>
 #include <winioctl.h>
@@ -771,84 +773,283 @@ void FileIndexer::applyUsnDelete(quint64 frn)
     removeDeltaByFrn(frn);
 }
 
-// ---------- 深索引搜索 ----------
+// ---------- 搜索 ----------
+//
+// 老写法是"整表扫 + 每个命中都 fromUtf8 造一条整路径 QString + 收完再排序去重"：
+// 272 万条下一次查询 540~680ms，而绝大多数命中根本活不到前 20 名（输 "no" 时几百万
+// 个命中，每个都白造一个 QString）。这里改四件事，**输出顺序和老写法逐条一致**
+// —— 判据是 main.cpp 的 --searchdump：改前改后各跑一遍，diff 必须为空。
+//   ① 有界分桶：排序键是 (来源, 分数, 名字长度, 路径)，来源×分数一共 8 个桶，每桶只留
+//      最好的 2×limit 条。为什么 2×limit 够：去重最多再吃掉 limit 条（同一个路径会同时
+//      出现在快索引和深索引里，快索引排前面，深索引那份被丢），所以真正要发出去的
+//      深索引条目一定在深索引前 2×limit 名里；而"全局某桶前 K 名"必然落在"各段同桶
+//      前 K 名"的并集里，所以并行分段各自截断再并起来也等价。
+//   ② 桶内比大小不造 QString：名字长度 = 路径的 UTF-16 单元数 - nameStart（老写法就是
+//      path.mid(nameStart)，nameStart 是**字节**偏移却被当字符下标用，中文路径下名字
+//      会偏长 —— 那是老行为，这里照抄，不许顺手修），路径按 UTF-8 字节序比：UTF-8 的
+//      字节序就是码点序，码点序就是 BMP 字符的 UTF-16 序。只有两边名字长度相同且任一
+//      条含 4 字节序列（emoji 那类，UTF-16 里是代理对，会和码点序错开）才退回 QString 比。
+//   ③ 首字节 memchr 跳：老写法在每个位置都把整串 needle 比一遍。
+//   ④ 分段并行：读锁是共享的，主线程持一次，工作线程只碰只读数据。
+namespace {
+
+struct DeepCand {
+    const char* path = nullptr;   // 指向映射视图里的路径 UTF-8 本体（不拷贝）
+    int len = 0;                  // 路径字节数
+    int nameStart = 0;            // 老写法那个"字节偏移当字符下标"的值
+    int nameSize = 0;             // 老写法算出来的名字 QString 长度
+    bool isDir = false;
+    bool astral = false;          // 路径里有 4 字节 UTF-8 序列
+};
+
+// UTF-8 字节数 → UTF-16 单元数（码点数 + 每个星平面字符再多算一个）
+int utf16LenOf(const char* p, int n, bool* astral)
+{
+    int units = 0;
+    bool has4 = false;
+    for (int i = 0; i < n; ++i) {
+        const unsigned char c = static_cast<unsigned char>(p[i]);
+        if ((c & 0xC0) == 0x80)
+            continue;                       // 续字节不另算
+        ++units;
+        if (c >= 0xF0) { has4 = true; i += 3; }
+        else if (c >= 0xE0) i += 2;
+        else if (c >= 0xC0) i += 1;
+    }
+    if (astral)
+        *astral = has4;
+    return units;
+}
+
+bool deepLess(const DeepCand& a, const DeepCand& b)
+{
+    if (a.nameSize != b.nameSize)
+        return a.nameSize < b.nameSize;
+    if (a.astral || b.astral)
+        return QString::fromUtf8(a.path, a.len) < QString::fromUtf8(b.path, b.len);
+    const int n = qMin(a.len, b.len);
+    const int c = n ? memcmp(a.path, b.path, size_t(n)) : 0;
+    if (c != 0)
+        return c < 0;
+    return a.len < b.len;
+}
+
+// 桶按"好的在前"排着，满了就跟最差那条比，比它好才挤进去
+void pushBounded(QVector<DeepCand>& v, const DeepCand& c, int cap)
+{
+    if (v.size() >= cap) {
+        if (!deepLess(c, v.last()))
+            return;
+        v.removeLast();
+    }
+    int i = 0;
+    while (i < v.size() && deepLess(v[i], c))
+        ++i;
+    v.insert(i, c);
+}
+
+bool quickLess(const FileEntry& a, const FileEntry& b)
+{
+    if (a.name.size() != b.name.size())
+        return a.name.size() < b.name.size();
+    return a.path < b.path;
+}
+
+void pushQuick(QVector<const FileEntry*>& v, const FileEntry& e, int cap)
+{
+    if (v.size() >= cap) {
+        if (!quickLess(e, *v.last()))
+            return;
+        v.removeLast();
+    }
+    int i = 0;
+    while (i < v.size() && quickLess(*v[i], e))
+        ++i;
+    v.insert(i, &e);
+}
+
+// 在 [hay,hayLen) 里找 ne（ASCII 大小写无关、其余字节按原样比），返回首次下标。
+// 和老写法那个逐位置比整串的 indexOfCI 判定完全一样，只是首字节改用 memchr 跳。
+int findCi(const char* hay, int hayLen, const char* ne, int neLen)
+{
+    if (neLen == 0)
+        return 0;
+    if (neLen > hayLen)
+        return -1;
+    const int last = hayLen - neLen;
+    const char c0 = ne[0];
+    const bool alpha = (c0 >= 'A' && c0 <= 'Z') || (c0 >= 'a' && c0 <= 'z');
+    int i = 0;
+    while (i <= last) {
+        const size_t span = size_t(last - i + 1);
+        const char* hit = nullptr;
+        if (alpha) {
+            const char* p1 = static_cast<const char*>(memchr(hay + i, c0 | 0x20, span));
+            const char* p2 = static_cast<const char*>(memchr(hay + i, c0 & ~0x20, span));
+            if (!p1 && !p2)
+                return -1;
+            hit = (!p2 || (p1 && p1 < p2)) ? p1 : p2;
+        } else {
+            hit = static_cast<const char*>(memchr(hay + i, c0, span));
+            if (!hit)
+                return -1;
+        }
+        i = int(hit - hay);
+        int j = 1;
+        for (; j < neLen; ++j)
+            if (tolower(static_cast<unsigned char>(hit[j]))
+                != tolower(static_cast<unsigned char>(ne[j])))
+                break;
+        if (j == neLen)
+            return i;
+        ++i;
+    }
+    return -1;
+}
+
+// 一段深索引条目（某个卷的 [from,to)），工作线程按段领活
+struct Seg {
+    quint32 vol;
+    quint32 from;
+    quint32 to;
+};
+
+} // namespace
 
 QVector<FileEntry> FileIndexer::search(const QString& query, int limit) const
 {
     QVector<FileEntry> res;
     const QString q = query.trimmed();
-    if (q.isEmpty())
+    if (q.isEmpty() || limit <= 0)
         return res;
+    const int cap = 2 * limit;
 
-    struct Hit { FileEntry e; int score; int source; }; // source 0=快 1=深
-    QVector<Hit> hits;
+    QReadLocker lock(&m_lock);
 
-    {
-        QReadLocker lock(&m_lock);
-
-        for (const FileEntry& e : m_entries) {
-            const int idx = e.name.indexOf(q, 0, Qt::CaseInsensitive);
-            if (idx < 0)
-                continue;
-            const int score = (idx == 0 ? 0 : 2) + (e.isDir ? 0 : 1);
-            hits.append({e, score, 0});
-        }
-
-        const QByteArray q8 = q.toLower().toUtf8();
-        const bool hasTomb = !m_removed.isEmpty();
-        // 映射快照
-        for (const MappedVol& v : m_base) {
-            const char* entries = (const char*)m_mapView + v.entryOff;
-            const char* arena = (const char*)m_mapView + v.arenaOff;
-            for (quint32 i = 0; i < v.count; ++i) {
-                PackedDeepEntry de;
-                memcpy(&de, entries + qint64(i) * kPackedEntrySize, kPackedEntrySize);
-                if (hasTomb && m_removed.contains(de.frn))
-                    continue;
-                const char* nameStart = arena + de.offset + de.nameStart;
-                const int nameLen = int(de.len) - int(de.nameStart);
-                const int idx = indexOfCI(nameStart, nameLen, q8.constData(), int(q8.size()));
-                if (idx < 0)
-                    continue;
-                const int score = (idx == 0 ? 0 : 2) + (de.isDir ? 0 : 1);
-                const QString path = QString::fromUtf8(arena + de.offset, int(de.len));
-                hits.append({{path.mid(int(de.nameStart)), path, de.isDir != 0}, score, 1});
-            }
-        }
-        // 增量新增
-        const char* addArena = m_addArena.constData();
-        for (const FileDeepEntry& de : m_add) {
-            const char* nameStart = addArena + de.offset + de.nameStart;
-            const int nameLen = int(de.len) - int(de.nameStart);
-            const int idx = indexOfCI(nameStart, nameLen, q8.constData(), int(q8.size()));
-            if (idx < 0)
-                continue;
-            const int score = (idx == 0 ? 0 : 2) + (de.isDir ? 0 : 1);
-            const QString path = QString::fromUtf8(addArena + de.offset, int(de.len));
-            hits.append({{path.mid(int(de.nameStart)), path, de.isDir != 0}, score, 1});
-        }
+    // ---- 快索引（source 0）：本来就是 QString，不物化新东西 ----
+    QVector<const FileEntry*> qb[4];
+    for (const FileEntry& e : m_entries) {
+        const int idx = e.name.indexOf(q, 0, Qt::CaseInsensitive);
+        if (idx < 0)
+            continue;
+        pushQuick(qb[(idx == 0 ? 0 : 2) + (e.isDir ? 0 : 1)], e, cap);
     }
 
-    std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) {
-        if (a.source != b.source)
-            return a.source < b.source; // 快索引（更新鲜）优先
-        if (a.score != b.score)
-            return a.score < b.score;
-        if (a.e.name.size() != b.e.name.size())
-            return a.e.name.size() < b.e.name.size();
-        return a.e.path < b.e.path;
-    });
+    // ---- 深索引（source 1）：映射快照分段并行 + 增量新增 ----
+    QVector<DeepCand> db[4];
+    const QByteArray q8 = q.toLower().toUtf8();
+    const char* ne = q8.constData();
+    const int neLen = int(q8.size());
 
-    // 按路径去重（快索引目录包含于全盘扫描范围）
-    QSet<QString> seen;
-    for (const Hit& h : hits) {
-        const QString key = h.e.path.toLower();
-        if (seen.contains(key))
+    quint64 total = 0;
+    for (const MappedVol& v : m_base)
+        total += v.count;
+    if (total > 0) {
+        unsigned hw = std::thread::hardware_concurrency();
+        int threads = int(hw > 0 ? hw : 4);
+        if (threads > 8)
+            threads = 8;                       // 再多就是抢内存带宽，不涨
+
+        QVector<Seg> segs;
+        const quint32 chunk = quint32(qMax<qint64>(8192, qint64(total / (threads * 8)) + 1));
+        for (quint32 vi = 0; vi < quint32(m_base.size()); ++vi) {
+            const quint32 cnt = m_base[vi].count;
+            for (quint32 from = 0; from < cnt; from += chunk)
+                segs.append({vi, from, qMin(cnt, from + chunk)});
+        }
+        // 每个工作线程自己的 4 个分数桶（slot[线程*4+分数]），最后再并起来
+        // （并起来仍等价，见上面①）。用扁平 vector 而不是本地结构体数组：MSVC
+        // 对"本地类型 + lambda 捕获 + 范围 for"这套组合会报看不懂的错。
+        std::vector<QVector<DeepCand>> slot(size_t(threads) * 4);
+        std::atomic<quint32> next {0};
+        const auto work = [&](int t) {
+            QVector<DeepCand>* me = &slot[size_t(t) * 4];
+            for (;;) {
+                const quint32 k = next.fetch_add(1);
+                if (k >= quint32(segs.size()))
+                    return;
+                const Seg& sg = segs[int(k)];
+                const MappedVol& v = m_base[int(sg.vol)];
+                const char* entries = static_cast<const char*>(m_mapView) + v.entryOff;
+                const char* arena = static_cast<const char*>(m_mapView) + v.arenaOff;
+                for (quint32 i = sg.from; i < sg.to; ++i) {
+                    PackedDeepEntry de;
+                    memcpy(&de, entries + qint64(i) * kPackedEntrySize, kPackedEntrySize);
+                    if (m_removed.contains(de.frn))
+                        continue;
+                    const int nameLen = int(de.len) - int(de.nameStart);
+                    const int idx = findCi(arena + de.offset + de.nameStart, nameLen, ne, neLen);
+                    if (idx < 0)
+                        continue;
+                    DeepCand c;
+                    c.path = arena + de.offset;
+                    c.len = int(de.len);
+                    c.nameStart = int(de.nameStart);
+                    c.isDir = de.isDir != 0;
+                    bool astral = false;
+                    c.nameSize = qMax(0, utf16LenOf(c.path, c.len, &astral) - c.nameStart);
+                    c.astral = astral;
+                    pushBounded(me[(idx == 0 ? 0 : 2) + (c.isDir ? 0 : 1)], c, cap);
+                }
+            }
+        };
+        std::vector<std::thread> pool;
+        pool.reserve(size_t(threads));
+        for (int t = 0; t < threads; ++t)
+            pool.emplace_back([&, t] { work(t); });
+        for (std::thread& th : pool)
+            th.join();
+        for (size_t i = 0; i < slot.size(); ++i)
+            for (const DeepCand& c : slot[i])
+                pushBounded(db[int(i % 4)], c, cap);
+    }
+
+    // 增量新增那批（几千条量级，留在本线程扫）
+    const char* addArena = m_addArena.constData();
+    for (const FileDeepEntry& de : m_add) {
+        const char* nameStart = addArena + de.offset + de.nameStart;
+        const int nameLen = int(de.len) - int(de.nameStart);
+        const int idx = findCi(nameStart, nameLen, ne, neLen);
+        if (idx < 0)
             continue;
-        seen.insert(key);
-        res.append(h.e);
-        if (res.size() >= limit)
-            break;
+        DeepCand c;
+        c.path = addArena + de.offset;
+        c.len = int(de.len);
+        c.nameStart = int(de.nameStart);
+        c.isDir = de.isDir != 0;
+        bool astral = false;
+        c.nameSize = qMax(0, utf16LenOf(c.path, c.len, &astral) - c.nameStart);
+        c.astral = astral;
+        pushBounded(db[(idx == 0 ? 0 : 2) + (c.isDir ? 0 : 1)], c, cap);
+    }
+
+    // ---- 按 (来源, 分数, 名字长度, 路径) 发出去，边发边按路径去重 ----
+    QSet<QString> seen;
+    for (int source = 0; source < 2; ++source) {
+        for (int score = 0; score < 4; ++score) {
+            if (source == 0) {
+                for (const FileEntry* e : qb[score]) {
+                    const QString key = e->path.toLower();
+                    if (seen.contains(key))
+                        continue;
+                    seen.insert(key);
+                    res.append(*e);
+                    if (res.size() >= limit)
+                        return res;
+                }
+            } else {
+                for (const DeepCand& c : db[score]) {
+                    const QString path = QString::fromUtf8(c.path, c.len);
+                    const QString key = path.toLower();
+                    if (seen.contains(key))
+                        continue;
+                    seen.insert(key);
+                    res.append({path.mid(c.nameStart), path, c.isDir});
+                    if (res.size() >= limit)
+                        return res;
+                }
+            }
+        }
     }
     return res;
 }
