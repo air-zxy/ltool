@@ -50,6 +50,10 @@
 #include <QLineEdit>
 #include <QThread>
 #include <QPushButton>
+#include <QGroupBox>
+#include <QLayout>
+#include <QScrollArea>
+#include <QSet>
 #include <QFile>
 #include <QFileInfo>
 #include <QElapsedTimer>
@@ -848,6 +852,38 @@ int main(int argc, char* argv[])
         const auto lists = page.findChildren<QListWidget*>();
         say("列表控件真的建出来了", !lists.isEmpty(),
             QStringLiteral("%1 个 QListWidget").arg(lists.size()));
+        // 上面那两条只数得到"控件建没建"，数不出"摆没摆进布局"。应用目录那一栏就是这么
+        // 在页面上隐身的：分组框 new 出来时认了 this 当父件，却从没 addWidget 到那一列，
+        // 于是标签 findChild 找得到、--cfgcheck 一片绿，界面上却一行都没有（2026-10-12 他报的）。
+        // 所以这条把"布局里能走到"当成结构不变量，逐个分组框验一遍，谁没挂上就点谁的名。
+        QSet<const QWidget*> laidOut;
+        std::function<void(QLayout*)> walk = [&](QLayout* l) {
+            if (!l)
+                return;
+            for (int i = 0; i < l->count(); ++i) {
+                QLayoutItem* it = l->itemAt(i);
+                if (!it)
+                    continue;
+                if (QWidget* w = it->widget()) {
+                    laidOut.insert(w);
+                    walk(w->layout());
+                    if (auto* sc = qobject_cast<QScrollArea*>(w))   // 滚动区里那层不是布局项
+                        if (sc->widget())
+                            walk(sc->widget()->layout());
+                } else if (QLayout* sub = it->layout())
+                    walk(sub);
+            }
+        };
+        walk(page.layout());
+        QString orphans;
+        int groups = 0;
+        for (const QGroupBox* g : page.findChildren<QGroupBox*>()) {
+            ++groups;
+            if (!laidOut.contains(g))
+                orphans += QStringLiteral("「%1」").arg(g->title());
+        }
+        say("每个分组框都真的摆在布局里（没摆=界面上看不见）", orphans.isEmpty(),
+            orphans.isEmpty() ? QStringLiteral("%1 个分组框全在布局里").arg(groups) : orphans);
         std::printf("cfgcheck: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad;

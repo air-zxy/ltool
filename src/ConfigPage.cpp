@@ -311,6 +311,7 @@ ConfigPage::ConfigPage(QWidget* parent)
     lay->addWidget(shell);
     lay->addWidget(ime);
     lay->addWidget(index);
+    lay->addWidget(appDirs);
     lay->addWidget(clip);
     lay->addWidget(data);
     outer->addLayout(btnLay);
