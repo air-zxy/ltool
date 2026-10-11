@@ -34,48 +34,6 @@ namespace {
 // 微软拼音"中文输入时使用英文标点"不是 ltool 自己的设置，它是系统的一个 DWORD：
 // HKCU\Software\Microsoft\InputMethod\Settings\CHS。写它 = 去
 // 设置 → 时间和语言 → 中文(中国) → 微软拼音 → 常规 里点那一下，值名是本机实测出来的。
-// 返回 -1 表示这台机器上没有这个值（不是微软拼音，或系统版本不一样）。
-constexpr wchar_t kImeChsKey[] = L"HKEY_CURRENT_USER\\Software\\Microsoft\\InputMethod\\Settings\\CHS";
-constexpr char kImePunctValue[] = "UseEnglishPunctuationsInChineseInputMode";
-
-QSettings imeSettings() = delete;   // QSettings 不可拷贝，调用点各自构造
-
-int imePunctState()
-{
-    QSettings s(QString::fromWCharArray(kImeChsKey), QSettings::NativeFormat);
-    if (!s.contains(QLatin1String(kImePunctValue)))
-        return -1;
-    return s.value(QLatin1String(kImePunctValue), 0).toInt() != 0 ? 1 : 0;
-}
-
-void setImePunct(bool on)
-{
-    QSettings s(QString::fromWCharArray(kImeChsKey), QSettings::NativeFormat);
-    s.setValue(QLatin1String(kImePunctValue), on ? 1 : 0);
-    s.sync();
-}
-
-void showImeState(QCheckBox* box, QLabel* info)
-{
-    const int st = imePunctState();
-    box->setEnabled(st >= 0);
-    box->setChecked(st > 0);
-    info->setText(st < 0
-        ? QStringLiteral("没在系统里找到这个开关（可能用的不是微软拼音）")
-        : QStringLiteral("注册表 UseEnglishPunctuationsInChineseInputMode = %1（%2）")
-              .arg(st)
-              .arg(st ? QStringLiteral("开") : QStringLiteral("关")));
-}
-
-} // namespace
-
-#include <windows.h>
-
-namespace {
-
-// 微软拼音"中文输入时使用英文标点"不是 ltool 自己的设置，它是系统的一个 DWORD：
-// HKCU\Software\Microsoft\InputMethod\Settings\CHS。写它 = 去
-// 设置 → 时间和语言 → 中文(中国) → 微软拼音 → 常规 里点那一下，值名是本机实测出来的。
 // 用 Win32 注册表 API 而不是 QSettings：后者在 Windows 上可能按自己的规则改值名大小写。
 // 返回 -1 表示这台机器上没有这个值（不是微软拼音，或系统版本不一样）。
 constexpr wchar_t kImeChsKey[] = L"Software\\Microsoft\\InputMethod\\Settings\\CHS";
@@ -534,21 +492,6 @@ void ConfigPage::refreshPathInfo()
                                        "改目录只影响以后存的文件，已有的文件不会搬走。")
                            .arg(dirSummary(cap, { QStringLiteral("cap-*.png"),
                                                   QStringLiteral("capture-*.png") }),
-                                dirSummary(rec, { QStringLiteral("rec-*.mp4") }),
-                                QString::number(CaptureHistory::count())));
-}
-
-void ConfigPage::refreshPathInfo()
-{
-    const QString cap = Utils::capturesDir();
-    const QString rec = Utils::recordingsDir();
-    m_capDir->setText(QDir::toNativeSeparators(cap));
-    m_recDir->setText(QDir::toNativeSeparators(rec));
-    m_dirInfo->setText(QStringLiteral("截图 %1（%2）· 录像 %3（%4）· 置顶窗往期 %5 张\n"
-                                       "改目录只影响以后存的文件，已有的文件不会搬走。")
-                           .arg(QDir::toNativeSeparators(cap),
-                                dirSummary(cap, { QStringLiteral("capture-*.png") }),
-                                QDir::toNativeSeparators(rec),
                                 dirSummary(rec, { QStringLiteral("rec-*.mp4") }),
                                 QString::number(CaptureHistory::count())));
 }

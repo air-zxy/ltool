@@ -43,6 +43,7 @@ private:
     void download(const QString& name, const QString& wingetId, const QString& url);
     void installVersion(const QString& name, const QString& wingetId, const QString& version);
     void requestWebIcon(QLabel* iconLabel, const QString& url); // 未安装时抓取站点图标
+    void launchOrOpen(const QString& keywords, const QString& url); // 装了就直接起，没装就去官网
 
     QVBoxLayout* m_rowsLay = nullptr;
     QPushButton* m_refreshBtn = nullptr;

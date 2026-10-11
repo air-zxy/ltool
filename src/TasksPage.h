@@ -4,7 +4,7 @@
 
 class QListWidget;
 class QPushButton;
-class ScheduledTask;
+struct ScheduledTask;
 
 // 配置 - 定时任务页：定时运行 c++/java/python/js/rust 脚本
 class TasksPage : public QWidget {

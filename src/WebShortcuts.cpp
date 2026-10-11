@@ -13,15 +13,15 @@ namespace {
 
 QString websFile() { return Utils::dataDir() + "/webs.json"; }
 
-QVector<WebShortcuts::WebEntry> defaults()
+QVector<WebEntry> defaults()
 {
-    QVector<WebShortcuts::WebEntry> v;
-    WebShortcuts::WebEntry ld;
+    QVector<WebEntry> v;
+    WebEntry ld;
     ld.keys = { "ld", "linuxdo" };
     ld.name = "LINUX DO";
     ld.url = "https://linux.do";
     v.append(ld);
-    WebShortcuts::WebEntry gh;
+    WebEntry gh;
     gh.keys = { "gh", "github" };
     gh.name = "GitHub";
     gh.url = "https://github.com";

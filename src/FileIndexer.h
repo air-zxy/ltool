@@ -85,7 +85,7 @@ private:
     void applyUsnDelete(quint64 frn);
 
     void startWatchers();
-    static void watcherLoop(void* ctx);
+    void watcherLoop(void* ctx);   // 跑在 detach 出来的监听线程上（单例活到进程结束）
     void rebuildQuickSync();
     void watcherApplyAdd(const QString& path);
     void watcherApplyRemove(const QString& path);

@@ -29,7 +29,7 @@ QStringList splitKeys(const QString& text)
 }
 
 // 新增和编辑共用同一个表单；进来时 *e 是旧值，出去时是新值
-bool entryDialog(QWidget* parent, WebShortcuts::WebEntry* e)
+bool entryDialog(QWidget* parent, WebEntry* e)
 {
     QDialog dlg(parent);
     dlg.setWindowTitle(e->name.isEmpty() ? QStringLiteral("新增网站")
@@ -109,7 +109,7 @@ void WebsitesPage::rebuild()
     m_list->clear();
     const auto webs = WebShortcuts::loadWebs();
     for (int i = 0; i < webs.size(); ++i) {
-        const WebShortcuts::WebEntry& e = webs[i];
+        const WebEntry& e = webs[i];
         QString line = QStringLiteral("%1  [%2]  %3").arg(e.name, e.keys.join(QStringLiteral(" / ")),
                                                           e.url);
         if (!e.searchUrl.isEmpty())
@@ -122,7 +122,7 @@ void WebsitesPage::rebuild()
 
 void WebsitesPage::addEntry()
 {
-    WebShortcuts::WebEntry e;
+    WebEntry e;
     if (!entryDialog(this, &e))
         return;
     auto webs = WebShortcuts::loadWebs();
@@ -141,7 +141,7 @@ void WebsitesPage::editEntry()
     const int i = it->data(Qt::UserRole).toInt();
     if (i < 0 || i >= webs.size())
         return;
-    WebShortcuts::WebEntry e = webs[i];
+    WebEntry e = webs[i];
     if (!entryDialog(this, &e))
         return;
     webs[i] = e;

@@ -731,15 +731,15 @@ int main(int argc, char* argv[])
             for (const AppEntry& e : AppScanner::scan())
                 if (e.category == QLatin1String("folder"))
                     out << e.name;
-            out.sort();
+            out.sort();   // 按码元排：ASCII 名字在中文前面，期望值也照这个写
             return out;
         };
         const QString nat = QDir::toNativeSeparators(root);
         const QString cn = QString::fromUtf8("中文two");
         check("层数 0 只看这个目录本身", namesWith({nat}, 0), {"one"});
         check("层数 1 进一层（中文目录要能进去）", namesWith({nat}, 1), {"one", cn});
-        check("层数 2 进两层", namesWith({nat}, 2), {"one", cn, "three"});
-        check("层数 3 进三层", namesWith({nat}, 3), {"one", cn, "four", "three"});
+        check("层数 2 进两层", namesWith({nat}, 2), {"one", "three", cn});
+        check("层数 3 进三层", namesWith({nat}, 3), {"four", "one", "three", cn});
         check("卸载器不算应用", namesWith({nat}, 3).contains("Uninstall Bar") ? QStringList{"混进来了"}
                                                                              : QStringList{},
               QStringList{});

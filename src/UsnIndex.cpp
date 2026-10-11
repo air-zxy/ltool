@@ -1,5 +1,10 @@
 #include "UsnIndex.h"
 
+#include <QDir>
+
+#include <windows.h>
+#include <winioctl.h>
+
 #include <cstdio>
 
 namespace {
@@ -68,11 +73,11 @@ JournalInfo queryJournal(HANDLE vol)
     return info;
 }
 
-// 一条 USN_RECORD 里的名字（UTF-16，长度按字节给）
-static QString recordName(const BYTE* rec, const USN_FILE_REFERENCE_DATA_V0& h)
+// 一条 USN_RECORD_V2 里的名字（UTF-16，FileNameLength 按字节算，所以一定是 2 的倍数）
+QString recordName(const BYTE* rec, const USN_RECORD_V2& r)
 {
-    return QString::fromUtf16(reinterpret_cast<const char16_t*>(rec + h.FileNameOffset),
-                             int(h.FileNameLength / 2));
+    return QString::fromUtf16(reinterpret_cast<const char16_t*>(rec + r.FileNameOffset),
+                              int(r.FileNameLength / 2));
 }
 
 bool enumVolumeMft(HANDLE vol, EnumResult& out)
@@ -86,7 +91,8 @@ bool enumVolumeMft(HANDLE vol, EnumResult& out)
     // Windows 26200 上必须把 HighUsn 设成日志的 NextUsn：留 0 的话枚举直接返回空
     mft.HighUsn = ji.nextUsn;
 
-    QByteArray buf(int(kBufBytes));
+    QByteArray buf;
+    buf.resize(kBufBytes);   // 先声明再 resize：`QByteArray buf(int(n))` 会被读成函数声明
     for (;;) {
         DWORD ret = 0;
         if (!DeviceIoControl(vol, FSCTL_ENUM_USN_DATA, &mft, sizeof(mft),
@@ -100,8 +106,9 @@ bool enumVolumeMft(HANDLE vol, EnumResult& out)
         const BYTE* p = reinterpret_cast<const BYTE*>(buf.constData()) + sizeof(quint64);
         const BYTE* end = reinterpret_cast<const BYTE*>(buf.constData()) + ret;
         while (p + sizeof(USN_RECORD_V2) <= end) {
+            // SDK 的 USN_RECORD_V2 里"版本"就是 MajorVersion，长度字段叫 RecordLength
             const USN_RECORD_V2& r = *reinterpret_cast<const USN_RECORD_V2*>(p);
-            if (r.RecordVersion != 2 || r.MajorVersion != 0 || r.Length < sizeof(USN_RECORD_V2))
+            if (r.MajorVersion != 2 || r.RecordLength < sizeof(USN_RECORD_V2))
                 break;
             out.frn.append(r.FileReferenceNumber & 0x0000FFFFFFFFFFFFull);
             out.parent.append(r.ParentFileReferenceNumber & 0x0000FFFFFFFFFFFFull);
@@ -109,7 +116,7 @@ bool enumVolumeMft(HANDLE vol, EnumResult& out)
             out.nameOff.append(qint32(out.names.size()));
             out.nameLen.append(qint32(r.FileNameLength));
             out.names.append(reinterpret_cast<const char*>(p + r.FileNameOffset), int(r.FileNameLength));
-            p += r.Length;
+            p += r.RecordLength;
         }
     }
     return !out.frn.isEmpty();
@@ -123,10 +130,12 @@ bool readChanges(HANDLE vol, quint64 journalId, quint64 startUsn, quint64 endUsn
     rd.ReasonMask = 0xFFFFFFFF;
     rd.ReturnOnlyOnClose = 0;
     rd.Timeout = 0;
-    rd.UsnToIgnoreUntil = 0;
+    rd.BytesToWaitFor = 0;          // 0 = 读到这里已有的，不等新记录
+    rd.UsnJournalID = journalId;    // 对不上（日志被重建过）ioctl 直接失败
 
-    QByteArray buf(int(kBufBytes));
-    for (;rd.StartUsn < endUsn;) {
+    QByteArray buf;
+    buf.resize(kBufBytes);   // 先声明再 resize：`QByteArray buf(int(n))` 会被读成函数声明
+    while (rd.StartUsn < endUsn) {
         DWORD ret = 0;
         if (!DeviceIoControl(vol, FSCTL_READ_USN_JOURNAL, &rd, sizeof(rd),
                              buf.data(), DWORD(buf.size()), &ret, nullptr))
@@ -140,7 +149,7 @@ bool readChanges(HANDLE vol, quint64 journalId, quint64 startUsn, quint64 endUsn
         int records = 0;
         while (p + sizeof(USN_RECORD_V2) <= end) {
             const USN_RECORD_V2& r = *reinterpret_cast<const USN_RECORD_V2*>(p);
-            if (r.RecordVersion != 2 || r.Length < sizeof(USN_RECORD_V2))
+            if (r.MajorVersion != 2 || r.RecordLength < sizeof(USN_RECORD_V2))
                 break;
             ++records;
             if (r.Usn >= endUsn)
@@ -154,7 +163,7 @@ bool readChanges(HANDLE vol, quint64 journalId, quint64 startUsn, quint64 endUsn
             // $ 开头的流名/根目录自己不进变更表
             if (!c.name.startsWith(QLatin1Char('$')))
                 out.append(c);
-            p += r.Length;
+            p += r.RecordLength;
         }
         if (records == 0 || next <= rd.StartUsn)
             break;                            // 没前进就收工，别在这打转
@@ -186,7 +195,8 @@ void mftEnumMatrix(HANDLE vol)
         mft.StartFileReferenceNumber = 0;
         mft.LowUsn = c.low;
         mft.HighUsn = c.high;
-        QByteArray buf(int(kBufBytes));
+        QByteArray buf;
+    buf.resize(kBufBytes);   // 先声明再 resize：`QByteArray buf(int(n))` 会被读成函数声明
         quint64 count = 0, frn = 0;
         for (int loop = 0; loop < 20000; ++loop) {
             DWORD ret = 0;
@@ -201,10 +211,10 @@ void mftEnumMatrix(HANDLE vol)
             const BYTE* end = reinterpret_cast<const BYTE*>(buf.constData()) + ret;
             while (p + sizeof(USN_RECORD_V2) <= end) {
                 const USN_RECORD_V2& r = *reinterpret_cast<const USN_RECORD_V2*>(p);
-                if (r.Length < sizeof(USN_RECORD_V2))
+                if (r.RecordLength < sizeof(USN_RECORD_V2))
                     break;
                 ++count;
-                p += r.Length;
+                p += r.RecordLength;
             }
         }
         std::printf("  %-18s → %llu 条记录 (err=%lu)\n", c.what,

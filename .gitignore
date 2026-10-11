@@ -11,3 +11,13 @@ out/
 
 # 恢复工程时留下的重复副本（和 README.md 同一份内容），不入库
 README (1).md
+
+# 回归脚本自己产的东西（夹具、报告、stdout），每次跑都会重写，不入库
+build/verify/artest/
+build/verify/picktest/
+build/verify/*.out
+build/verify/*_report.txt
+build/verify/ocr*.png
+
+# 安装包产物（21MB，每次交付都重打），只留源码
+installer/

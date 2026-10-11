@@ -40,7 +40,7 @@ signals:
     void tasksChanged();
 
 private:
-    explicit TaskScheduler(QObject* parent = nullptr);
+    TaskScheduler() = default;
     TaskScheduler(const TaskScheduler&) = delete;
     TaskScheduler& operator=(const TaskScheduler&) = delete;
 
