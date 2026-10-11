@@ -3,6 +3,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDesktopServices>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -11,6 +12,7 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -18,6 +20,7 @@
 #include <QScrollArea>
 #include <QStackedWidget>
 #include <QTabBar>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
@@ -25,6 +28,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <thread>
@@ -126,6 +130,22 @@ private:
     bool m_hottest = false;
 };
 
+// 右键某一行时该弹什么：只有「打开文件夹」这一项，要开的那个目录挂在这项的 data 上，
+// 由行卡片那边点完再开；目录已经不在了就摆一条灰掉的说明，免得点了没反应还以为是界面坏了。
+// 拆成独立函数是为了能在离屏自测里检查它（--rowmenu）——真按一下就会拉起资源管理器，
+// 那个不能放进自测。
+QMenu* makePathMenu(const QString& path, QWidget* parent)
+{
+    auto* menu = new QMenu(parent);
+    QAction* open = menu->addAction(QStringLiteral("打开文件夹"));
+    open->setData(path);
+    if (!QFileInfo::exists(path)) {
+        open->setEnabled(false);
+        open->setText(QStringLiteral("这个目录已经不在了"));
+    }
+    return menu;
+}
+
 // 一行卡片：[勾选?] 名称 ——占比条—— 大小，第二行完整路径；给了 onClick 即可点击下钻
 class RowCard : public QWidget {
 public:
@@ -169,6 +189,18 @@ public:
             path->setFont(pf);
             col->addSpacing(2);
             col->addWidget(path);
+
+            // 右键这一行（名字、下面那行路径、进度条都算）= 打开这个文件夹。
+            // 左键在「占用分析」里是下钻，不能拿来开资源管理器，所以走右键。
+            setContextMenuPolicy(Qt::CustomContextMenu);
+            const QString target = subPath;
+            connect(this, &QWidget::customContextMenuRequested, this, [this, target](const QPoint& pos) {
+                QMenu* menu = makePathMenu(target, this);
+                QAction* chosen = menu->exec(mapToGlobal(pos));
+                delete menu;
+                if (chosen && chosen->isEnabled())
+                    QDesktopServices::openUrl(QUrl::fromLocalFile(chosen->data().toString()));
+            });
         }
     }
 
@@ -908,4 +940,47 @@ void DiskPage::cleanSelected()
               skipped.isEmpty() ? QString() : "\n部分文件被跳过：\n" + skipped));
     updateSummary();
     startAll();   // 容量变了，重扫一次目录树，两个 tab 一起刷新
+}
+
+// 磁盘页那两栏列表的右键（「可清理位置」和「占用分析 · 本层目录」共用同一行卡片）。
+// 这条链只有界面在用，而且真按一下就会拉起资源管理器——所以自测里不真按、也不真开，
+// 验的是菜单里摆了哪些项、那一项灰没灰、以及"能点的项"后面到底接没接线。
+int diskRowMenuSelftest()
+{
+    int bad = 0;
+    const auto check = [&bad](const char* name, const QString& got, const QString& want) {
+        const bool ok = got == want;
+        if (!ok)
+            ++bad;
+        std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
+                    got.toUtf8().constData(), want.toUtf8().constData());
+    };
+    QTemporaryDir tmp;
+    check("自测有自己的临时目录", tmp.isValid() ? "yes" : "no", "yes");
+    const QString dir = tmp.path();
+
+    auto* live = makePathMenu(dir, nullptr);
+    check("存在的目录：就一项", QString::number(live->actions().size()), QStringLiteral("1"));
+    QAction* a0 = live->actions().first();
+    check("存在的目录：文案", a0->text(), QStringLiteral("打开文件夹"));
+    check("存在的目录：点得动", a0->isEnabled() ? "yes" : "no", "yes");
+    // 行卡片点开之后拿这项的 data 去开资源管理器，所以 data 必须是这一行自己的目录
+    check("存在的目录：点开就是要开这个目录", a0->data().toString(), dir);
+    delete live;
+
+    auto* gone = makePathMenu(dir + "/根本没这个目录", nullptr);
+    QAction* g0 = gone->actions().first();
+    check("目录已经不在了：文案说实话", g0->text(), QStringLiteral("这个目录已经不在了"));
+    check("目录已经不在了：点不动", g0->isEnabled() ? "yes" : "no", "no");
+    delete gone;
+
+    // 右键要落在整行上（名字、下面那行路径、占比条都算），不能只有路径那一条字能点
+    RowCard row(QStringLiteral("临时目录"), dir, false, nullptr, nullptr);
+    check("整行都收得到右键", row.contextMenuPolicy() == Qt::CustomContextMenu ? "yes" : "no", "yes");
+    int labels = 0;
+    for (QLabel* l : row.findChildren<QLabel*>())
+        if (l->text() == dir)
+            ++labels;
+    check("下面那行路径就是这一行自己的子控件（右键会冒上来）", labels == 1 ? "yes" : "no", "yes");
+    return bad;
 }

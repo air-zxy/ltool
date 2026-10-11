@@ -96,3 +96,7 @@ private:
     int m_node = -1;
     QTimer* m_timer = nullptr;
 };
+
+// 磁盘页两栏列表的右键自测（--rowmenu）：验菜单里那一项的文案、灰没灰、点开要开的是哪个目录。
+// 放在 DiskPage.cpp 里是因为行卡片（RowCard）就藏在那个文件的匿名 namespace 里。
+int diskRowMenuSelftest();

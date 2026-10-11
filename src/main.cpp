@@ -14,6 +14,7 @@
 #include "QMouseEvent"
 #include "ClipboardStore.h"
 #include "DevEnv.h"
+#include "DiskPage.h"
 #include "DiskScan.h"
 #include "FileIndexer.h"
 #include "FileOps.h"
@@ -576,6 +577,14 @@ int main(int argc, char* argv[])
 
     if (args.contains("--disktime"))
         return runDiskTiming();
+
+    // --rowmenu：磁盘页两栏列表的右键（只有界面在用，且真按一下就会拉起资源管理器，
+    // 所以判据放在 DiskPage.cpp 里、这里只负责跑）。
+    if (args.contains("--rowmenu")) {
+        const int bad = diskRowMenuSelftest();
+        std::printf("rowmenu: 失败 %d 项\n", bad);
+        return bad == 0 ? 0 : 1;
+    }
 
     if (args.contains("--regscan"))
         return runRegScan();
