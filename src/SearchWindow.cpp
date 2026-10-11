@@ -188,6 +188,14 @@ QString halfWidth(const QString& s)
     return out;
 }
 
+// 一条应用的"使用次数"记在哪个键上。以前直接用 lnkPath，而**目录扫出来的那些没有 lnk**，
+// 于是它们全共用同一个空键：这台机器实测那个键涨到 43，QQEX（没有快捷方式）就靠这 43 次
+// "别人家的记录"排到了 QQ 前面。没有 lnk 就用 target 当键，各记各的。
+QString usageKey(const QString& lnkPath, const QString& target)
+{
+    return lnkPath.isEmpty() ? target : lnkPath;
+}
+
 int scoreApp(const AppEntry& a, const QString& low)
 {
     const QString n = a.name.toLower();
@@ -1039,8 +1047,8 @@ void SearchWindow::runSearch()
     std::sort(ms.begin(), ms.end(), [this](const Match& a, const Match& b) {
         if (a.score != b.score)
             return a.score < b.score;
-        const int ua = m_usage.value(m_apps[a.idx].lnkPath, 0);
-        const int ub = m_usage.value(m_apps[b.idx].lnkPath, 0);
+        const int ua = m_usage.value(usageKey(m_apps[a.idx].lnkPath, m_apps[a.idx].target), 0);
+        const int ub = m_usage.value(usageKey(m_apps[b.idx].lnkPath, m_apps[b.idx].target), 0);
         if (ua != ub)
             return ua > ub;
         return m_apps[a.idx].name.size() < m_apps[b.idx].name.size();
@@ -1251,7 +1259,8 @@ void SearchWindow::activateRow(int row)
 
     switch (r.kind) {
     case SearchResult::App: {
-        bumpUsage(r.extra);
+        // 键和排序那边同一口径：没有 .lnk 的应用用 target 记，别挤到同一个空键上
+        bumpUsage(r.extra.isEmpty() ? r.target : r.extra);
         saveUsage();
         hide();   // 先收窗再启动：带 DDE 段的 .lnk 同步执行要等握手回调（实测 729ms）
         // 优先通过 lnk 启动（保留参数/工作目录）；异步拿不到失败回执，所以只在没有 lnk 时退到目标
@@ -1668,8 +1677,13 @@ void SearchWindow::loadUsage()
     if (!f.open(QIODevice::ReadOnly))
         return;
     const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
-    for (auto it = o.begin(); it != o.end(); ++it)
+    for (auto it = o.begin(); it != o.end(); ++it) {
+        // 那个空键是旧版本的记账口径留下的（所有没有 .lnk 的应用共用 ""，这台机器涨到 43 次），
+        // 已经没法归属到具体哪个应用，读的时候丢掉 —— 留着它，QQEX 这种就会一直压在 QQ 前面。
+        if (it.key().isEmpty())
+            continue;
         m_usage.insert(it.key(), it.value().toInt());
+    }
 }
 
 void SearchWindow::saveUsage()

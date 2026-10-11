@@ -795,7 +795,7 @@ int main(int argc, char* argv[])
                            && mk("中文目录/三层/四层/four.exe")
                            && mk("Uninstall Bar.exe")
                            && mkPe("gui.exe", 2) && mkPe("tool.exe", 3)
-                           && mkPe("FooUpdater.exe", 2)
+                           && mkPe("FooUpdater.exe", 2) && mkPe("gui2.exe", 2)
                            && mkPe("7.4.1/Inside.exe", 2) && mkPe("locales/X.exe", 2)
                            && copiedReal;
         if (!built)
@@ -829,10 +829,15 @@ int main(int argc, char* argv[])
         // ---- "像不像主程序"那两道：控制台子系统、名字/路径像助手，都不该进应用列表 ----
         const QString fltNat = QDir::toNativeSeparators(flt);
         check("目录里只留看起来是主程序的（命令行工具/助手名/版本目录/运行时目录都跳过）",
-              namesWith({fltNat}, 1), QStringList{ "gui", "notepad" });
+              namesWith({fltNat}, 1), QStringList{ "gui", "gui2", "notepad" });
         check("真实系统 exe 也算得对：ping（控制台）被跳、notepad（GUI）留下",
               namesWith({fltNat}, 1).contains("ping") ? QStringList{ "ping 混进来了" } : QStringList{},
               QStringList{});
+        // 同目录已有主程序就不再多收一个：点名 gui.exe 之后，整个 flt 目录只留它
+        // （notepad.exe 也在这棵树里，所以它一起被"同目录已有主程序"这条挡掉 —— 要它就再点名一次）
+        check("点名了同目录的主程序，同目录其余 exe 不再自动塞进来",
+              namesWith({fltNat, QDir::toNativeSeparators(flt + "/gui.exe")}, 1),
+              QStringList{ "gui" });
         check("点名指到那个命令行 exe：一定要它，不过滤",
               namesWith({QDir::toNativeSeparators(flt + "/tool.exe")}, 3), QStringList{ "tool" });
         // 搜索框读的是 apps.json（loadIndex），不是 scan() 现扫的那份 ——
@@ -1091,6 +1096,15 @@ int main(int argc, char* argv[])
                         sections().toUtf8().constData(), int(rows()));
             check("qq 能搜到应用（这台机器上 QQ 就在应用索引里）",
                   hasSection(QStringLiteral("── 应用 ──")) ? "yes" : "no", "yes");
+            // 第一行必须是 QQ 本人。以前不是：使用次数记在 lnkPath 上，而目录扫来的那些没有 lnk，
+            // 全共用同一个空键（这台机器那个键涨到 43），QQEX 就靠"别人家的 43 次"压在 QQ 前面。
+            QString firstApp;
+            for (int i = 0; i < w.resultCount(); ++i)
+                if (w.resultAt(i).kind == SearchResult::App) {
+                    firstApp = w.resultAt(i).title;
+                    break;
+                }
+            check("搜 qq 的第一行就是 QQ（使用次数不再共用那个空键）", firstApp, QStringLiteral("QQ"));
             // 中文输入法在"全角"下打出来的 ＱＱ 不是 ASCII 的 qq —— 这条就是他报的那个形状，
             // 现在归一到半角，两种打法都必须出同一个应用节
             input->setText(QString::fromUtf8("\xef\xbc\xb1\xef\xbc\xb1"));

@@ -12,6 +12,7 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QSettings>
 
 #include <windows.h>
@@ -279,6 +280,22 @@ QVector<AppEntry> scan()
     int appFiltered = 0;
     QElapsedTimer appClock;
     appClock.start();
+    // "这个目录里已经有主程序了"的清单：桌面/开始菜单的快捷方式指向哪个 exe，那个目录就算被占；
+    // 用户点名加进来的 exe 同理。目录扫出来的别的 exe 就不再自动收 ——
+    // 实测这条杀的是 QQEX.exe（QQ 的协议启动器，双击没反应），而 QQ.exe 有桌面快捷方式、留着。
+    auto dirKey = [](const QString& exePath) {
+        return QDir::fromNativeSeparators(QFileInfo(exePath).absolutePath()).toLower();
+    };
+    QSet<QString> claimedDirs;
+    for (const AppEntry& e : all)
+        if (!e.target.isEmpty() && e.target.endsWith(".exe", Qt::CaseInsensitive))
+            claimedDirs.insert(dirKey(e.target));
+    for (const QString& raw : appDirs) {
+        const QFileInfo fi(QDir::cleanPath(raw.trimmed()));
+        if (fi.isFile() && QString::compare(fi.suffix(), "exe", Qt::CaseInsensitive) == 0)
+            claimedDirs.insert(dirKey(fi.absoluteFilePath()));
+    }
+    int appShadowed = 0;
     for (const QString& raw : appDirs) {
         const QString p = QDir::cleanPath(raw.trimmed());
         if (p.isEmpty())
@@ -311,6 +328,12 @@ QVector<AppEntry> scan()
                 ++appFiltered;              // 子进程和命令行工具：搜索框里没用，还占着前排
                 continue;
             }
+            // 同目录已经有"人点的那个"了（快捷方式指向它，或你点名加过它）→ 这个不再自动收。
+            // 那个主程序本身也不在这儿收：它已经以快捷方式的名字在列表里了（下面还会去重一次）
+            if (autoScan && claimedDirs.contains(dirKey(x))) {
+                ++appShadowed;
+                continue;
+            }
             AppEntry e;
             e.name = base;
             e.target = x;
@@ -321,9 +344,10 @@ QVector<AppEntry> scan()
         }
     }
     if (!appDirs.isEmpty())
-        Utils::log(QString("appscan: 应用目录 %1 个（往里 %2 层）收了 %3 个应用，跳过 %4 个不像主程序的，用了 %5ms")
+        Utils::log(QString("appscan: 应用目录 %1 个（往里 %2 层）收了 %3 个应用，"
+                           "跳过 %4 个不像主程序的、%5 个同目录已有主程序的，用了 %6ms")
                        .arg(appDirs.size()).arg(appDepth).arg(appCollected).arg(appFiltered)
-                       .arg(appClock.elapsed()));
+                       .arg(appShadowed).arg(appClock.elapsed()));
 
     // 去重：
     //   目标为空（如 UWP）→ 按名称去重

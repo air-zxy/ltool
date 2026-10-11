@@ -58,6 +58,7 @@ public:
     void openSettings();
 
     const SearchResult& resultAt(int i) const { return m_results[i]; }
+    int resultCount() const { return m_results.size(); }   // 给离屏自测用（--pinyin 数第一行是谁）
 
 signals:
     void hotkeyChanged(const QString& sequence);
