@@ -1,22 +1,86 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Linker files
+*.ilk
+
+# Debugger Files
+*.pdb
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+*.so.*
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Build directories
+# 注意：这里原来是 `build/`，改成 `build/*` 是为了把 build/verify 那批交付脚本放进来
+# —— git 不允许"父目录被排除后再重新包含里面的文件"，写 `!build/verify/` 也没用。
 build/*
-# build/verify 是这一轮交付闭环的脚本（deliver.ps1 / archtest.ps1 / 各探针），
-# 必须入库；build 底下别的一概不收（Release 的 dll、CMake 缓存、vcpkg 灌出来的 2.2GB）
-!build/verify/
+Build/
 build-*/
 
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+install_manifest.txt
+compile_commands.json
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+*.swp
+
+# vcpkg
 vcpkg_installed/
-out/
-*.user
-.vs/
 
-# 恢复工程时留下的重复副本（和 README.md 同一份内容），不入库
-README (1).md
+# debug information files
+*.dwo
 
-# 交付闭环的脚本要入库，build 底下别的一概不收
+# test output & cache
+Testing/
+.cache/
+
+# ---- 本项目（ltool：MSVC + vcpkg 清单 + Inno）----
+# build/verify 是交付闭环的脚本（deliver.ps1 / archtest.ps1 / 各探针），必须入库；
+# build 底下别的一概不收（Release 的 dll、CMake 缓存、vcpkg 灌出来的 2.2GB）。
+!build/verify/
 build/verify/artest/
 build/verify/picktest/
 build/verify/*.out
 build/verify/*_report.txt
 # 安装包产物（21MB，每次交付都重打），只留源码
 installer/
-# 恢复期留下的重复副本
+out/
+*.user
+.vs/
+# 恢复工程时留下的重复副本（和 README.md 同一份内容）
+README (1).md
