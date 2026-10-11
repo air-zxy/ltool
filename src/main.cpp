@@ -1998,6 +1998,69 @@ int main(int argc, char* argv[])
             check("文件能解出帧", mp4.frames > 0 ? "yes" : "no", "yes");
             bar.close();
 
+            // ---- 「不要了」那一局：停下并且把文件删掉，别在录像目录里留废 MP4 ----
+            const QString pathX = QDir::tempPath() + "/ltool-recordui-x.mp4";
+            QFile::remove(pathX);
+            QString errX;
+            if (rec.start(card->winId(), o, pathX, &errX)) {
+                RecordBar barX(&rec, pathX);
+                barX.show();
+                auto* textX = barX.findChild<QLabel*>(QStringLiteral("text"));
+                auto* cancel = barX.findChild<QPushButton*>(QStringLiteral("cancel"));
+                check("悬浮条上有「不要了」", cancel ? "yes" : "no", "yes");
+                for (int i = 0; i < 30 && cancel; ++i) {
+                    QCoreApplication::processEvents();
+                    QThread::msleep(20);
+                }
+                cancel->click();
+                QCoreApplication::processEvents();
+                std::printf("INFO 取消后写的：%s\n", textX ? textX->text().toUtf8().constData() : "");
+                check("取消之后条上说实话（已取消，没保存）",
+                      textX && textX->text().contains(QStringLiteral("已取消")) ? "yes" : "no", "yes");
+                check("取消之后文件真的不在了", QFile::exists(pathX) ? "还在" : "已删", "已删");
+                barX.close();
+            } else {
+                std::printf("FAIL 取消那一局起不来：%s\n", errX.toUtf8().constData());
+                ++bad;
+            }
+
+            // ---- 选择窗的退路：Esc、点到别处（失焦）、再按一次 F2 ----
+            picker.show();
+            QCoreApplication::processEvents();
+            const bool stayed = picker.isVisible();
+            std::printf("INFO 选择窗 show 之后还在=%d（不在=失焦自动收起也生效）\n", stayed ? 1 : 0);
+            if (stayed) {
+                QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+                QApplication::sendEvent(plist, &esc);     // 从列表里按 Esc（焦点在子控件上）
+                QCoreApplication::processEvents();
+                check("Esc 收得起选择窗", picker.isVisible() ? "还开着" : "已收起", "已收起");
+            }
+            // 失焦收起：直接给它派一个 WindowDeactivate（不合成鼠标，不动他的桌面）
+            picker.show();
+            QCoreApplication::processEvents();
+            QEvent de(QEvent::WindowDeactivate);
+            QApplication::sendEvent(&picker, &de);
+            QCoreApplication::processEvents();
+            check("点到别处（失焦）会自动收起", picker.isVisible() ? "还开着" : "已收起", "已收起");
+            picker.hide();
+            // F2 那一档走的是全局那个 picker，不是上面这个局部对象，所以按顶层窗口找它
+            const auto openPicker = [] {
+                for (QWidget* w : QApplication::topLevelWidgets())
+                    if (auto* p = qobject_cast<WindowPicker*>(w))
+                        if (p->isVisible())
+                            return p;
+                return static_cast<WindowPicker*>(nullptr);
+            };
+            RecordUi::startViaPicker();
+            QCoreApplication::processEvents();
+            const bool opened = openPicker() != nullptr;
+            check("F2 能把选择窗开起来", opened ? "yes" : "no", "yes");
+            if (opened) {
+                RecordUi::startViaPicker();               // 开着的时候再按一次 F2 = 取消
+                QCoreApplication::processEvents();
+                check("再按一次 F2 收得起选择窗", openPicker() ? "还开着" : "已收起", "已收起");
+            }
+
             // ---- 第二局：中途改大小；第三局：紧接着再开一次 ----
             // 已实测：MP4 的画幅改不了（1280x801 这类奇数尺寸会被 H.264 拒：0xc00d36b4），
             //   所以目标窗口改了大小这一局必须收尾；"改大小之后 WGC 到底还在不在出帧"没定论，

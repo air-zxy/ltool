@@ -27,6 +27,12 @@ signals:
     // monitor=true 时 target 是 HMONITOR（录整块屏幕），否则是 HWND（录那一个窗口）
     void picked(WId target, const QString& title, bool monitor);
 
+protected:
+    // 这个窗没有标题栏也没有取消按钮：Esc、点到别处、再按一次 F2 都得能收掉它，
+    // 否则按了 F2 就只能硬着头皮选一个开始录（提示语一直写着"Esc 取消"，以前没实现）。
+    void keyPressEvent(QKeyEvent* e) override;
+    bool eventFilter(QObject* watched, QEvent* e) override;
+
 private:
     QWidget* m_list = nullptr;
 };
@@ -49,7 +55,9 @@ private:
     QString m_path;
     QLabel* m_text = nullptr;
     QPushButton* m_stop = nullptr;
+    QPushButton* m_cancel = nullptr;
     QPoint m_press;
     bool m_dragging = false;
     bool m_finished = false;
+    bool m_discard = false;      // 「不要了」按下去：收尾之后把文件删掉，别留一个废 MP4
 };

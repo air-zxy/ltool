@@ -9,6 +9,7 @@
 #include <QApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -225,6 +226,36 @@ WindowPicker::WindowPicker(QWidget* parent)
         }
         choose();
     });
+
+    // Esc 要能从输入框和列表里也收得到：QLineEdit 会把 Esc 吃掉（它有自己的 escapePressed），
+    // 所以除了 keyPressEvent，还得给这两个子控件装事件过滤器。
+    filter->installEventFilter(this);
+    list->installEventFilter(this);
+}
+
+void WindowPicker::keyPressEvent(QKeyEvent* e)
+{
+    if (e->key() == Qt::Key_Escape) {
+        hide();
+        return;
+    }
+    QWidget::keyPressEvent(e);
+}
+
+bool WindowPicker::eventFilter(QObject* watched, QEvent* e)
+{
+    if (e->type() == QEvent::KeyPress
+        && static_cast<QKeyEvent*>(e)->key() == Qt::Key_Escape) {
+        hide();
+        return true;
+    }
+    if (e->type() == QEvent::WindowDeactivate) {
+        // 点到别处 = 不录了。这个窗是 activateWindow 过的，失焦就是用户真的走开了；
+        // 不收起的话它会一直压在要录的那个窗口上面。
+        hide();
+        return false;
+    }
+    return QWidget::eventFilter(watched, e);
 }
 
 // ---------------- 悬浮条 ----------------
@@ -245,9 +276,14 @@ RecordBar::RecordBar(Recorder* rec, const QString& path, QWidget* parent)
     m_stop = new QPushButton(QStringLiteral("停止"), this);
     m_stop->setObjectName(QStringLiteral("stop"));
     m_stop->setCursor(Qt::PointingHandCursor);
+    m_cancel = new QPushButton(QStringLiteral("不要了"), this);
+    m_cancel->setObjectName(QStringLiteral("cancel"));
+    m_cancel->setCursor(Qt::PointingHandCursor);
+    m_cancel->setToolTip(QStringLiteral("停下这一局并且把已经录的丢掉（文件删掉，不留在录像目录里）"));
     lay->addWidget(dot);
     lay->addWidget(m_text);
     lay->addStretch(1);
+    lay->addWidget(m_cancel);
     lay->addWidget(m_stop);
     setStyleSheet("QWidget{background:#26272c;border:1px solid #4a4d57;border-radius:8px;}"
                   "QLabel{color:#e8ebf2;border:none;font-size:12px;}"
@@ -263,8 +299,21 @@ RecordBar::RecordBar(Recorder* rec, const QString& path, QWidget* parent)
 
     connect(m_stop, &QPushButton::clicked, this, [this] {
         m_stop->setEnabled(false);
+        m_cancel->setEnabled(false);
         m_text->setText(QStringLiteral("正在收尾（编码要把最后一帧写完）…"));
         QCoreApplication::processEvents();
+        m_rec->stop();
+        finish(m_rec->errorText());
+    });
+    // 「不要了」= 停下这一局并且把文件删掉。Recorder 没有"只停不写盘"这条路
+    // （MP4 是收尾才落盘的），所以照常收尾，然后把那个废文件原地删了 ——
+    // 录到一半的东西留在录像目录里就是垃圾，还得人去删。
+    connect(m_cancel, &QPushButton::clicked, this, [this] {
+        m_stop->setEnabled(false);
+        m_cancel->setEnabled(false);
+        m_text->setText(QStringLiteral("正在收尾（要把这一局丢掉）…"));
+        QCoreApplication::processEvents();
+        m_discard = true;
         m_rec->stop();
         finish(m_rec->errorText());
     });
@@ -292,6 +341,22 @@ void RecordBar::poll()
 void RecordBar::finish(const QString& error)
 {
     m_finished = true;   // 只收一次尾：以前这里每 200ms 重进一遍，日志被刷爆
+    if (m_discard) {
+        QFile::remove(m_path);
+        m_text->setText(QStringLiteral("已取消，没保存（丢掉 %1 帧）").arg(m_rec->framesCaptured()));
+        m_stop->setText(QStringLiteral("关闭"));
+        m_cancel->setVisible(false);
+        Utils::log(QString("record cancelled: %1 frames=%2 文件已删")
+                       .arg(m_path).arg(m_rec->framesCaptured()));
+        m_stop->setEnabled(true);
+        disconnect(m_stop, nullptr, this, nullptr);
+        connect(m_stop, &QPushButton::clicked, this, [this] { close(); });
+        auto* t = new QTimer(this);
+        connect(t, &QTimer::timeout, this, &QWidget::close);
+        t->setSingleShot(true);
+        t->start(8000);
+        return;
+    }
     if (!error.isEmpty()) {
         m_text->setText(QStringLiteral("没录成：%1").arg(error));
         m_stop->setText(QStringLiteral("知道了"));
@@ -359,11 +424,18 @@ void startViaPicker()
         QMessageBox::warning(nullptr, QStringLiteral("录屏"), why);
         return;
     }
-    if (!g_picker)
-        g_picker = new WindowPicker;
+    // 选择窗开着的时候再按一次 F2 = 取消（它没有标题栏、没有关闭按钮，
+    // 光靠 Esc 和"点到别处"还不够：手就放在热键上，再按一次最自然）
+    if (g_picker && g_picker->isVisible()) {
+        g_picker->hide();
+        return;
+    }
     // 每次都要重新数一遍窗口（他可能刚开/刚关了几个）
-    g_picker->hide();
-    delete g_picker;
+    if (g_picker) {
+        g_picker->hide();
+        delete g_picker;
+        g_picker = nullptr;
+    }
     g_picker = new WindowPicker;
     QObject::connect(g_picker, &WindowPicker::picked,
                      [](WId target, const QString& title, bool monitor) {
