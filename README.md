@@ -47,7 +47,7 @@ cmake --build build --config Release
 - **加新依赖就 `cmake -S . -B build`，别在仓库根上裸跑 `vcpkg install`**：命令行那次不读 `build\CMakeCache.txt`，会把整棵树按默认位置重装一份到 `<项目>\vcpkg_installed`（实测 2.2GB 的 Qt6 副本，构建根本不读它，只会让人以为依赖换了地方）。
 - 7z 那条后端的许可证：**`7zip.dll` 是 LGPL-2.1**（其中 `CPP/7zip/Compress/Rar*` 与 `Archive/Rar/*` 另带 **unRAR 限制条款** —— vcpkg 的端口把 Rar 解码器也编进去了，所以读 rar 的那条路受这一条约束），**bit7z 是 MPL-2.0**。两份**原文**由 CMake POST_BUILD 从 vcpkg 树的 `share/<端口>/copyright` 复制成 `licenses\7zip-LGPL-2.1-with-unRAR.txt` / `licenses\bit7z-MPL-2.0.txt` 跟着 exe 一起装（不自己抄，抄的迟早和上游不一致）。LGPL 的"库形式使用"这一条是满足的：7zip 是独立的 DLL，换掉它就能重新链接。
 - **别手动往 `D:\vcpkg\installed` 装**：那是 classic 树，本项目读的是 manifest 树，装了也链不上。
-- **一个目标里的 53 个 .cpp 是并行编的（`/MP`，见 CMakeLists 顶部）**。VS 生成器默认把同一目标内的编译排队串行跑，实测改一次 `src/Utils.h`（47 个 TU 包含它）串行要 **114.7 秒**，加 `/MP` 后 **16.4 秒**（20 核，约 7 倍）；全量重建 **18.3 秒**，改一个 .cpp **7.6 秒**，什么都没改 **2.4 秒**。
+- **一个目标里的 53 个 .cpp 是并行编的（`/MP`，见 CMakeLists 顶部），并且有预编译头（`src/pch.h`）**。VS 生成器默认把同一目标内的编译排队串行跑，实测改一次 `src/Utils.h`（47 个 TU 包含它）串行要 **114.7 秒**，加 `/MP` 后 **16.4 秒**；再加 PCH 之后（2026-10-12 同一台机器重测）：**改 `Utils.h` 19.9 → 13.7 秒**、**改 `main.cpp` 12.0 → 10.2 秒**、**全量重建 20.2 → 17.9 秒**、**什么都没改 2.5 秒**（这 2.5 秒是 msbuild 启动 + CMake 检查 + AUTOMOC 扫 53 个 TU 的固定税，改一个 5KB 的小 TU 也要 3.1 秒 —— 也就是说日常这一档基本是固定开销，不是编译）。PCH 里故意不放 `windows.h`：33 个文件要它，但录屏那几个要 C++/WinRT 的头、USN 那几个要 `winioctl.h`，放进 PCH 等于把这些顺序约束强加给所有 TU，而真正的大头是 Qt 那几个模块头。
 - 构建后自动执行 windeployqt，把 Qt DLL / platform 插件部署到 `build\Release`；但 **windeployqt 不管 vcpkg 的依赖**，`archive.dll` 及其传递依赖（zlib1 / liblzma / zstd / bz2 / lz4 / brotlicommon / brotlidec）是靠 CMake 的 applocal 复制落到 `build\Release` 的，安装包再按 `build\Release\*` 一起收走。（windeployqt 单跑只有 115ms，不是耗时瓶颈，所以留在每次构建里。）
 
 ## 打包 + 安装（每轮改动的交付闭环）
@@ -55,8 +55,9 @@ cmake --build build --config Release
 一条命令跑完整条链，并**逐段报耗时**（哪一步慢直接看数字，不用猜）：
 
 ```powershell
-powershell -File build\verify\deliver.ps1              :: 构建 → 打包(max) → 停旧实例 → 静默装 → 比 SHA256 → 重新起
-powershell -File build\verify\deliver.ps1 -Quick       :: 打包换成 lzma2/fast（2.4 秒，安装包 +5MB）
+powershell -File build\verify\deliver.ps1              :: 构建 → 打包(normal，6.7 秒/22.2MB) → 停旧实例 → 静默装 → 比 SHA256 → 重新起
+powershell -File build\verify\deliver.ps1 -Final       :: 打包换成 lzma2/max（9.9 秒，最小的 21.5MB）—— 出正式包
+powershell -File build\verify\deliver.ps1 -Quick       :: 打包换成 lzma2/fast（2.4 秒，26.5MB）—— 只想快点拿到一个能装的包
 powershell -File build\verify\deliver.ps1 -NoBuild     :: 跳过构建
 ```
 
@@ -70,7 +71,21 @@ cmake --build build --config Release
 installer\ltool-0.4.0-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 ```
 
-- **压缩档位**（payload 74MB，实测）：`lzma2/max` 9.7 秒 / 20.79MB（默认，交付用的就是它）、`lzma2/normal` 6.5 秒 / 21.5MB、`lzma2/fast` 2.4 秒 / 25.7MB。走 `ltool.iss` 里的 `#ifdef QUICK`，即 `ISCC.exe /DQUICK ltool.iss`。**`CompressionThreads` 对 max 档实测完全无效**（1 线程和 16 线程产物 md5 一模一样），所以没设；裸写 `Compression=lzma2` 等于 `lzma2/max`。
+- **压缩档位**（2026-10-12 重测，payload 71.1MB / 34 个二进制；括号里是整条 `deliver.ps1` 闭环）：
+  `lzma2/normal`+solid **6.7 秒 / 22.22MB（12.9 秒）← 现在的默认**、
+  `lzma2/max`+solid 9.9 秒 / 21.52MB（16.5 秒，出最小正式包用 `deliver.ps1 -Final`）、
+  `lzma2/max` 非 solid 7.9 秒 / 22.02MB、`lzma2/normal` 非 solid 6.5 秒 / 22.43MB、
+  `lzma2/fast`+solid 2.4 秒 / 26.54MB（`deliver.ps1 -Quick`）。选 normal 的理由只有一条：
+  安装包是本地装的，多 0.7MB 看不见，而每轮闭环少 3.6 秒天天摸得到。
+  **`CompressionThreads` 不用再试**：这次是用耗时量的（上次判"无效"只看产物 md5 相同，那只能证明输出确定），
+  不设 10.7 秒、1 线程 20.9 秒、2/4/8/16 全在 10.4~10.5 秒 —— 默认已经吃满多线程。
+  **payload 也剪不动**：按 PE 导入表从 `ltool.exe` 走闭包，71.1MB 里只有 4.0MB 不在闭包上，
+  而那 4.0MB 全是运行时按目录加载的插件（`platforms/qwindows`、`styles`、`imageformats`、`tls`）
+  和按需加载的 `7zip.dll`；最肥的 `icudt78.dll`（31.58MB，占整包 44%）是 Qt6Core 硬导入的 ICU 数据，
+  实测从安装目录藏掉它 `ltool.exe` 直接起不来。
+  走 `ltool.iss` 里的嵌套 `#ifdef FINAL / #ifdef QUICK`（**别写 `#elifdef`，ISPP 不认，整个编译当场 abort**，
+  而 `deliver.ps1` 现在会查 ISCC 退出码 + 安装包时间戳，不会再当成"打包成功、体积没变"）。
+  裸写 `Compression=lzma2` 等于 `lzma2/max`。
 - 装完确认装的就是刚构建的那份（`deliver.ps1` 会直接把两边 SHA256 比了并打 `MATCH`/`DIFF`）：
 
 ```powershell

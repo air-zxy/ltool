@@ -18,15 +18,32 @@ PrivilegesRequired=lowest
 OutputDir=installer
 OutputBaseFilename=ltool-{#MyAppVersion}-setup
 SetupIconFile=resources\ltool.ico
-; 压缩档位（2026-10-11 实测，payload 74MB）：
-;   lzma2/max   9.7 秒 / 21.80 MB   —— 默认，交付用的就是这个
-;   lzma2/normal 6.5 秒 / 22.53 MB
-;   lzma2/fast  2.4 秒 / 26.95 MB   —— 只想快速出一个能装的包时：ISCC.exe /DQUICK ltool.iss
-; CompressionThreads 对 max 档实测无效（1/16 线程产物字节完全相同），所以没加。
-#ifdef QUICK
-Compression=lzma2/fast
-#else
+; 压缩档位（2026-10-12 实测，payload 71.1MB / 34 个二进制，本机 20 核；括号里是整条
+; deliver.ps1 闭环的总耗时）：
+;   lzma2/max    solid   9.9 秒 / 21.52 MB   （16.5 秒）—— 最省体积，以前默认就是这个
+;   lzma2/max    非 solid 7.9 秒 / 22.02 MB   （14.1 秒）—— 每个文件独立压，多线程吃得更满
+;   lzma2/normal solid   6.7 秒 / 22.22 MB   （12.9 秒）—— ★ 现在的默认：比 max 省 3.2 秒，只大 0.7MB
+;   lzma2/normal 非 solid 6.5 秒 / 22.43 MB
+;   lzma2/fast   solid   2.4 秒 / 26.54 MB   —— 只想快速出一个能装的包：deliver.ps1 -Quick
+; 默认选 normal+solid 的理由就一条：安装包是本地装的，多 0.7MB 没人看得见，而每轮闭环
+; 少 3.6 秒是每天都摸得到的。要出最小的正式包用 deliver.ps1 -Final（回到 max+solid）。
+; CompressionThreads 不用再试了：2026-10-12 用耗时量过（上次是看产物 md5 相同判的"无效"，
+; 那只能证明输出确定），不设=10.7 秒、1 线程=20.9 秒、2/4/8/16 全在 10.4~10.5 秒，
+; 也就是默认已经吃满多线程。
+; payload 也剪不动：按 PE 导入表从 ltool.exe 走一遍闭包，71.1MB 里只有 4.0MB 不在闭包上，
+; 而那 4.0MB 全是运行时按目录加载的插件（platforms/qwindows、styles、imageformats、tls）
+; 加按需加载的 7zip.dll。最肥的 icudt78.dll（31.58MB，占整包 44%）是 Qt6Core 硬导入的
+; ICU 数据，实测从安装目录藏掉它，ltool.exe 直接起不来。
+; 注意别用 #elifdef —— ISPP 6 不认（"Unknown preprocessor directive"，整个编译当场 abort，
+; 而 deliver.ps1 那层只看文件在不在，会把它当成"打包成功、体积没变"糊过去），只能嵌套 #ifdef。
+#ifdef FINAL
 Compression=lzma2/max
+#else
+    #ifdef QUICK
+    Compression=lzma2/fast
+    #else
+    Compression=lzma2/normal
+    #endif
 #endif
 SolidCompression=yes
 WizardStyle=modern

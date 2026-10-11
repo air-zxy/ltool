@@ -15,7 +15,7 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTORCC OFF)   # 本项目没有 .qrc（图标走 resources/ltool.rc）
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent Network)
 
@@ -92,6 +92,11 @@ qt_add_executable(ltool WIN32
     resources/ltool.rc
 )
 add_dependencies(ltool appicon)
+
+# ---- 预编译头 ----
+# 53 个 TU 每个都要啃同一批 Qt 头（QApplication/QWidget/QtConcurrent 展开就是几万行），
+# /MP 只能并行"各自啃一遍"，PCH 才是根本不啃。内容见 src/pch.h（故意不含 windows.h）。
+target_precompile_headers(ltool PRIVATE src/pch.h)
 
 find_package(LibArchive REQUIRED)
 
