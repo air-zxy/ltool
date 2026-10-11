@@ -159,6 +159,35 @@ private:
     SearchWindow* m_w;
 };
 
+// 全角→半角：中文输入法在"全角"下打出来的是 ＱＱ（U+FF31），和索引里 ASCII 的 "qq"
+// 一个字符都对不上，界面上就变成"搜 QQ 搜不到应用"（2026-10-12 他报的这条）。
+// U+FF01–U+FF5E 是 U+0021–U+007E 各加 0xFEE0，全角空格是 U+3000。
+QString halfWidth(const QString& s)
+{
+    bool needs = false;
+    for (const QChar& c : s) {
+        const ushort u = c.unicode();
+        if ((u >= 0xFF01 && u <= 0xFF5E) || u == 0x3000) {
+            needs = true;
+            break;
+        }
+    }
+    if (!needs)
+        return s;                     // 绝大多数查询就是纯 ASCII，别每个键都重搭一遍串
+    QString out;
+    out.reserve(s.size());
+    for (const QChar& c : s) {
+        const ushort u = c.unicode();
+        if (u >= 0xFF01 && u <= 0xFF5E)
+            out.append(QChar(u - 0xFEE0));
+        else if (u == 0x3000)
+            out.append(QLatin1Char(' '));
+        else
+            out.append(c);
+    }
+    return out;
+}
+
 int scoreApp(const AppEntry& a, const QString& low)
 {
     const QString n = a.name.toLower();
@@ -664,7 +693,7 @@ void SearchWindow::runSearch()
     m_results.clear();
     m_regIssues.clear();
 
-    const QString q = m_input->text().trimmed();
+    const QString q = halfWidth(m_input->text()).trimmed();
     const QString low = q.toLower();
 
     // 一行工具结果：空查询的"常用"面板和搜工具时共用
@@ -1088,7 +1117,7 @@ void SearchWindow::startFileSearch(const QString& q)
                     runSearch();
                     return;
                 }
-                if (seq != m_searchSeq || m_input->text().trimmed() != q)
+                if (seq != m_searchSeq || halfWidth(m_input->text()).trimmed() != q)
                     return;   // 查询已变，结果作废
                 if (files.isEmpty())
                     return;

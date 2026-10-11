@@ -993,6 +993,17 @@ int main(int argc, char* argv[])
                         ++n;
                 return n;
             };
+            // 把结果里出现了哪些小节原样打出来：查"某个词为什么搜不到 X"的时候，
+            // 光看断言红不红不够，得看见是哪一节把页占了（直达 return 那一类）。
+            const auto sections = [list] {
+                QStringList out;
+                for (int i = 0; i < list->count(); ++i) {
+                    const QString t = list->item(i)->text();
+                    if (!t.isEmpty())
+                        out << t;
+                }
+                return out.join(QStringLiteral(" / "));
+            };
             const auto query = [&](const QString& q) {
                 input->setText(q);
                 settle();
@@ -1022,6 +1033,24 @@ int main(int argc, char* argv[])
             // 但它是关键词「清理」的开头 —— 这条守的是"别把直达搞成搜不到"。
             const auto t4 = query(QStringLiteral("qingli"));
             check("取整不伤直达：qingli 还是直达磁盘清理", t4.first ? "yes" : "no", "yes");
+            // 他报的第二件事：搜 qq 找不到 QQ。这台机器上 QQ 在应用索引里（apps.json 有
+            // name=QQ、target 在盘上），所以这里验的是搜索框那一条链，不是索引。
+            input->setText(QStringLiteral("qq"));
+            settle();
+            std::printf("INFO 端到端 qq：小节=[%s] 可执行行=%d\n",
+                        sections().toUtf8().constData(), int(rows()));
+            check("qq 能搜到应用（这台机器上 QQ 就在应用索引里）",
+                  hasSection(QStringLiteral("── 应用 ──")) ? "yes" : "no", "yes");
+            // 中文输入法在"全角"下打出来的 ＱＱ 不是 ASCII 的 qq —— 这条就是他报的那个形状，
+            // 现在归一到半角，两种打法都必须出同一个应用节
+            input->setText(QString::fromUtf8("\xef\xbc\xb1\xef\xbc\xb1"));
+            settle();
+            std::printf("INFO 端到端 全角ＱＱ：小节=[%s] 可执行行=%d\n",
+                        sections().toUtf8().constData(), int(rows()));
+            check("全角ＱＱ 也当半角 qq 用（输入法切错不该搜不到）",
+                  hasSection(QStringLiteral("── 应用 ──")) ? "yes" : "no", "yes");
+            input->setText(QStringLiteral("qq"));
+            settle();
             input->setText(QStringLiteral("rw"));
             settle();
             const bool appSect2 = hasSection(QStringLiteral("── 应用 ──"));
