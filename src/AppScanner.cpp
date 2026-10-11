@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSettings>
 
@@ -77,6 +78,78 @@ void collectLnkFiles(const QString& dir, int depth, QStringList* out)
 
 // 单个"应用目录"最多收多少个 exe：有人把层数配大、指到 C:\Windows 那种地方时兜底
 constexpr int kMaxExePerDir = 3000;
+
+// 从 PE 头读子系统那两个字节，判断这个 exe 是不是"点一下会有窗口"的程序。
+// 布局：0x3C 处 4 字节小端 = PE 头偏移；PE 签名 4 字节 + COFF 头 20 字节 = 可选头起点。
+// **Subsystem 在可选头 +68，3 = 控制台（CUI）、2 = GUI** —— 这个偏移不是按记忆写的：
+// 本机拿 74 个真 exe 验过（ping/cmd/7z 全在 +68 处读到 3，notepad 那批读到 2），
+// 而且 +70 紧跟着就是合法的 DllCharacteristics 掩码（0xc160 / 0x8160），相邻关系对得上。
+// 之前按"教科书 +44"写，实现和自造夹具一起错，测试当场白过 —— 别再凭印象写偏移。
+// 读不到头（打不开、不是 PE、被截断）按"不是命令行工具"处理，让下面名字那条规则去判 ——
+// 别把"我解析失败"变成"什么都不收"。
+bool isCommandLineTool(const QString& path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray head = f.read(1024);
+    f.close();
+    if (head.size() < 64)
+        return false;
+    const uchar* b = reinterpret_cast<const uchar*>(head.constData());
+    if (b[0] != 'M' || b[1] != 'Z')
+        return false;
+    const quint32 peOff = quint32(b[60]) | (quint32(b[61]) << 8)
+                          | (quint32(b[62]) << 16) | (quint32(b[63]) << 24);
+    if (peOff + 4 > quint32(head.size()) || b[peOff] != 'P' || b[peOff + 1] != 'E')
+        return false;
+    const qint64 subOff = qint64(peOff) + 4 + 20 + 68;
+    if (subOff + 1 >= head.size())
+        return false;
+    const int subsystem = int(b[subOff]) | (int(b[subOff + 1]) << 8);
+    return subsystem == 3;
+}
+
+// 目录扫出来的东西绝大多数不是"要启动的应用"：这台机器实测把 D:/software 配进去（往里两层）
+// 一下捞回 596 个 exe，全是 QQPCTray / BugReport / pg_ctl / 7z / cmake / git-bash /
+// fsnotifier / restarter / ShellFolder64 这种子进程和命令行工具，把搜索框彻底淹了。
+// 两条判据，命中任一条就不算应用：控制台子系统、名字或路径像助手。
+// 误杀的出路是配置那一栏里**直接写那个 exe 的完整路径** —— 点名加的不走过滤，无条件收。
+bool looksLikeHelper(const QString& exePath)
+{
+    static const QStringList nameBits = {
+        QStringLiteral("updater"), QStringLiteral("autoupdate"), QStringLiteral("upgrad"),
+        QStringLiteral("bugreport"), QStringLiteral("crash"), QStringLiteral("helper"),
+        QStringLiteral("render"), QStringLiteral("elevator"), QStringLiteral("restarter"),
+        QStringLiteral("service"), QStringLiteral("daemon"), QStringLiteral("agent"),
+        QStringLiteral("collector"), QStringLiteral("diagnos"), QStringLiteral("notifier"),
+        QStringLiteral("watcher"), QStringLiteral("bridge"), QStringLiteral("unins"),
+        QStringLiteral("installer"), QStringLiteral("patch"), QStringLiteral("debug"),
+        QStringLiteral("console"), QStringLiteral("cli"), QStringLiteral("bash"),
+    };
+    const QString base = QFileInfo(exePath).completeBaseName().toLower();
+    for (const QString& bit : nameBits)
+        if (base.contains(bit))
+            return true;
+    static const QStringList dirBits = {
+        QStringLiteral("locales"), QStringLiteral("swiftshader"), QStringLiteral("plugins"),
+        QStringLiteral("redist"), QStringLiteral("vcruntime"), QStringLiteral("helpers"),
+        QStringLiteral("x86"), QStringLiteral("x64"), QStringLiteral("i386"),
+        QStringLiteral("arm64"), QStringLiteral("win32"), QStringLiteral("win64"),
+    };
+    static const QRegularExpression versionDir(QStringLiteral("^v?[0-9]+(\.[0-9]+)+$"));
+    const QStringList parts = QDir::fromNativeSeparators(exePath).toLower()
+                                  .split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    for (int i = 0; i + 1 < parts.size(); ++i) {      // 最后一段是文件本身，名字归上面管
+        const QString& seg = parts[i];
+        for (const QString& bit : dirBits)
+            if (seg == bit)
+                return true;
+        if (versionDir.match(seg).hasMatch())
+            return true;                              // 18.1.30302.212 / 3.12 这种版本目录
+    }
+    return false;
+}
 
 // 自定义目录里的 exe：depth 是"再往里几层"（0 = 只看这个文件夹自己）。
 // 和 collectLnkFiles 同一套约定：目录联接/符号链接不进，防止环。
@@ -203,6 +276,7 @@ QVector<AppEntry> scan()
     int appDepth = 3;
     const QStringList appDirs = customAppDirs(&appDepth);
     int appCollected = 0;
+    int appFiltered = 0;
     QElapsedTimer appClock;
     appClock.start();
     for (const QString& raw : appDirs) {
@@ -221,6 +295,8 @@ QVector<AppEntry> scan()
             exes.append(fi.absoluteFilePath());
         else
             continue;                       // 指到了别的文件上：不是能启动的东西
+        // 直接点名那个 exe = 用户就要它，不跟目录来源一样过滤
+        const bool autoScan = fi.isDir();
         if (exes.size() > kMaxExePerDir) {
             Utils::log(QString("appscan: %1 里找到 %2 个 exe，只收前 %3 个（层数 %4）")
                            .arg(p).arg(exes.size()).arg(kMaxExePerDir).arg(appDepth));
@@ -231,6 +307,10 @@ QVector<AppEntry> scan()
             const QString low = base.toLower();
             if (low.startsWith("unins") || low.contains("uninstall") || base.startsWith("卸载"))
                 continue;                   // 卸载器不是要启动的应用，和快捷方式那条规则一致
+            if (autoScan && (isCommandLineTool(x) || looksLikeHelper(x))) {
+                ++appFiltered;              // 子进程和命令行工具：搜索框里没用，还占着前排
+                continue;
+            }
             AppEntry e;
             e.name = base;
             e.target = x;
@@ -241,8 +321,9 @@ QVector<AppEntry> scan()
         }
     }
     if (!appDirs.isEmpty())
-        Utils::log(QString("appscan: 应用目录 %1 个（往里 %2 层）收了 %3 个 exe，用了 %4ms")
-                       .arg(appDirs.size()).arg(appDepth).arg(appCollected).arg(appClock.elapsed()));
+        Utils::log(QString("appscan: 应用目录 %1 个（往里 %2 层）收了 %3 个应用，跳过 %4 个不像主程序的，用了 %5ms")
+                       .arg(appDirs.size()).arg(appDepth).arg(appCollected).arg(appFiltered)
+                       .arg(appClock.elapsed()));
 
     // 去重：
     //   目标为空（如 UWP）→ 按名称去重

@@ -26,6 +26,7 @@ private slots:
     void onOpenDataDir();
     void onClearIndexCache();
     void addAppRoot();
+    void addAppExe();
     void removeAppRoot();
 
 private:

@@ -109,6 +109,17 @@ QString dirSummary(const QString& dir, const QStringList& patterns)
         .arg(bytes / 1048576.0, 0, 'f', 1);
 }
 
+// 列表里"是目录的那几项"有几个：往里找几层这个设置只对目录有效，
+// 点名加的 exe 一条都不受它影响，所以状态行要把这两个数分开写
+int dirItemCount(QListWidget* list)
+{
+    int n = 0;
+    for (int i = 0; i < list->count(); ++i)
+        if (QFileInfo(list->item(i)->text()).isDir())
+            ++n;
+    return n;
+}
+
 } // namespace
 
 ConfigPage::ConfigPage(QWidget* parent)
@@ -209,33 +220,44 @@ ConfigPage::ConfigPage(QWidget* parent)
     m_maxEntries->setGroupSeparatorShown(true);
     indexLay->addRow("索引条目上限：", m_maxEntries);
 
-    auto* appDirs = new QGroupBox("应用搜索的额外目录", this);
+    auto* appDirs = new QGroupBox("应用搜索的额外项目", this);
     auto* appLay = new QFormLayout(appDirs);
-    // 这些目录是"启动器输名字要能搜到"的应用来源；填文件夹时往里找 exe，
-    // 找几层可配（默认 3 层）。扫描是重活，所以只在保存之后才跑，不随输入跑。
+    // 这些是"启动器输名字要能搜到"的应用来源。两种条目：填文件夹 = 往里找若干层，
+    // 只收看起来是主程序的那些 exe（子进程和命令行工具会被跳过）；点名填某个 exe = 一定要它，
+    // 无条件收。扫描是重活，所以只在保存之后才跑，不随输入跑。
     m_appRoots = new QListWidget(appDirs);
     m_appRoots->setMaximumHeight(120);
-    m_appRoots->setToolTip(QStringLiteral("每行一个目录。开始菜单那些快捷方式不用往这儿加，本来就扫。"));
+    m_appRoots->setToolTip(QStringLiteral(
+        "一行一个：文件夹（往里找 exe）或者某个 exe 的完整路径（直接收它）。\n"
+        "填目录时，命令行工具和子进程（7z / cmake / BugReport / updater 这类）不算应用，会被跳过；\n"
+        "真想要其中哪一个，用「添加应用…」点名指到那个 exe。\n"
+        "开始菜单那些快捷方式不用往这儿加，本来就扫。"));
     auto* rootRow = new QHBoxLayout;
     auto* addRoot = new QPushButton("添加目录…", appDirs);
+    addRoot->setObjectName(QStringLiteral("addAppDir"));
+    auto* addExe = new QPushButton("添加应用…", appDirs);
+    addExe->setObjectName(QStringLiteral("addAppExe"));
+    addExe->setToolTip(QStringLiteral("直接挑一个 exe：它一定进应用列表，不做\u201c像不像主程序\u201d那两道判断"));
     auto* delRoot = new QPushButton("移除选中", appDirs);
     rootRow->addWidget(m_appRoots, 1);
     auto* rootBtns = new QVBoxLayout;
     rootBtns->addWidget(addRoot);
+    rootBtns->addWidget(addExe);
     rootBtns->addWidget(delRoot);
     rootBtns->addStretch(1);
     rootRow->addLayout(rootBtns);
-    appLay->addRow("目录列表：", rootRow);
+    appLay->addRow("项目列表：", rootRow);
     m_appDepth = new QSpinBox(appDirs);
     m_appDepth->setRange(0, 6);
     m_appDepth->setSuffix(QStringLiteral(" 层"));
-    m_appDepth->setToolTip(QStringLiteral("0 = 只看这个目录本身；3 = 往里三层里的 exe 都算。"));
+    m_appDepth->setToolTip(QStringLiteral("只对填进来的**目录**起作用。0 = 只看这个目录本身；3 = 往里三层里的 exe 都算。"));
     appLay->addRow("往里找几层：", m_appDepth);
     m_appInfo = new QLabel(appDirs);
     m_appInfo->setObjectName("muted");
     m_appInfo->setWordWrap(true);
     appLay->addRow("当前：", m_appInfo);
     connect(addRoot, &QPushButton::clicked, this, &ConfigPage::addAppRoot);
+    connect(addExe, &QPushButton::clicked, this, &ConfigPage::addAppExe);
     connect(delRoot, &QPushButton::clicked, this, &ConfigPage::removeAppRoot);
 
     auto* data = new QGroupBox("数据", this);
@@ -345,8 +367,8 @@ void ConfigPage::load()
     for (const QString& r : cfg.value("apps/roots").toStringList())
         if (!r.trimmed().isEmpty())
             new QListWidgetItem(QDir::toNativeSeparators(r), m_appRoots);
-    m_appInfo->setText(QStringLiteral("%1 个目录 · 往里 %2 层 · 保存之后才会重扫应用列表")
-                           .arg(m_appRoots->count())
+    m_appInfo->setText(QStringLiteral("%1 项 · 其中目录 %2 个（往里 %3 层只对目录有效）· 保存之后才会重扫应用列表")
+                           .arg(m_appRoots->count()).arg(dirItemCount(m_appRoots))
                            .arg(m_appDepth->value()));
     refreshPathInfo();
     m_clip->setChecked(ClipboardStore::instance().enabled());
@@ -408,8 +430,8 @@ void ConfigPage::onSave()
                                  Qt::CaseInsensitive) != 0)
                 appChanged = true;
     }
-    m_appInfo->setText(QStringLiteral("%1 个目录 · 往里 %2 层 · 保存之后才会重扫应用列表")
-                           .arg(appRoots.size())
+    m_appInfo->setText(QStringLiteral("%1 项 · 其中目录 %2 个（往里 %3 层只对目录有效）· 保存之后才会重扫应用列表")
+                           .arg(appRoots.size()).arg(dirItemCount(m_appRoots))
                            .arg(m_appDepth->value()));
 
     const bool indexChanged = deepWas != m_deep->isChecked()
@@ -505,6 +527,26 @@ void ConfigPage::addAppRoot()
     for (int i = 0; i < m_appRoots->count(); ++i)
         if (m_appRoots->item(i)->text().compare(nat, Qt::CaseInsensitive) == 0)
             return;   // 同一个目录列两遍没有意义
+    new QListWidgetItem(nat, m_appRoots);
+}
+
+void ConfigPage::addAppExe()
+{
+    // 点名加某个 exe：这一条不走"像不像主程序"那两道判断，加了就一定在应用列表里 ——
+    // 目录扫描必然有误杀，这是给它留的出路（也是"这软件根本不在开始菜单"的那类东西）
+    const QString last = m_appRoots->count()
+        ? m_appRoots->item(m_appRoots->count() - 1)->text() : QString();
+    const QFileInfo li(last);
+    const QString start = last.isEmpty() ? QDir::rootPath()
+                                         : (li.isDir() ? last : li.absolutePath());
+    const QString got = QFileDialog::getOpenFileName(this, QStringLiteral("选要加进搜索的应用（exe）"),
+                                                     start, QStringLiteral("程序 (*.exe)"));
+    if (got.isEmpty())
+        return;
+    const QString nat = QDir::toNativeSeparators(got);
+    for (int i = 0; i < m_appRoots->count(); ++i)
+        if (m_appRoots->item(i)->text().compare(nat, Qt::CaseInsensitive) == 0)
+            return;                       // 同一个 exe 列两遍没有意义
     new QListWidgetItem(nat, m_appRoots);
 }
 

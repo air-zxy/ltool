@@ -751,7 +751,9 @@ int main(int argc, char* argv[])
             std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
                         got.join(",").toUtf8().constData(), want.join(",").toUtf8().constData());
         };
-        if (!root.startsWith(QDir::tempPath()) || !root.contains("appdirs-fixture")) {
+        const QString flt = Utils::dataDir() + "/appdirs-filter";
+        if (!root.startsWith(QDir::tempPath()) || !root.contains("appdirs-fixture")
+            || !flt.startsWith(QDir::tempPath()) || !flt.contains("appdirs-filter")) {
             std::printf("FAIL 夹具路径不对，什么都不建：%s\n", root.toUtf8().constData());
             std::fflush(stdout);
             return 1;
@@ -765,10 +767,37 @@ int main(int argc, char* argv[])
             f.close();
             return true;
         };
+        // 再建一棵"像不像主程序"的夹具树。上面那几个 exe 只写了 "MZ" 两个字节，PE 头根本读不
+        // 出来 —— 那是刻意的：解析失败不能变成"什么都不收"（真应用照样收得到），这条由老四条顺带守住。
+        const auto mkPe = [&flt](const QString& rel, int subsystem) {
+            QFile f(flt + "/" + rel);
+            if (!f.open(QIODevice::WriteOnly))
+                return false;
+            QByteArray img(512, '\0');
+            img[0] = 'M'; img[1] = 'Z';
+            img[60] = char(64);                       // e_lfanew = 64
+            img[64] = 'P'; img[65] = 'E';
+            img[64 + 24 + 68] = char(subsystem);      // Subsystem：可选头 +68（2=GUI，3=控制台）
+            f.write(img);
+            f.close();
+            return true;
+        };
+        QDir().mkpath(flt + "/7.4.1");
+        QDir().mkpath(flt + "/locales");
+        // 光有自造字节不够 —— 上一版实现和夹具按同一个错偏移写，测试当场白过。
+        // 再拷两个系统里现成的：ping 是控制台、notepad 是 GUI，让真实 PE 也过一遍这条判据。
+        const QString sysroot = qEnvironmentVariable("SystemRoot", QStringLiteral("C:/Windows"));
+        const bool copiedReal =
+            QFile::copy(sysroot + "/System32/ping.exe", flt + "/ping.exe")
+            && QFile::copy(sysroot + "/System32/notepad.exe", flt + "/notepad.exe");
         const bool built = mk("one.exe") && mk(QString::fromUtf8("中文目录/中文two.exe"))
                            && mk("中文目录/三层/three.exe")
                            && mk("中文目录/三层/四层/four.exe")
-                           && mk("Uninstall Bar.exe");
+                           && mk("Uninstall Bar.exe")
+                           && mkPe("gui.exe", 2) && mkPe("tool.exe", 3)
+                           && mkPe("FooUpdater.exe", 2)
+                           && mkPe("7.4.1/Inside.exe", 2) && mkPe("locales/X.exe", 2)
+                           && copiedReal;
         if (!built)
             std::printf("FAIL 夹具没建全（中文路径写不进去？）\n");
 
@@ -797,6 +826,15 @@ int main(int argc, char* argv[])
         check("直接指到一个 exe 上也收", namesWith({QDir::toNativeSeparators(
                   root + QString::fromUtf8("/中文目录/中文two.exe"))}, 3), {cn});
         check("目录不存在只是跳过，不报错", namesWith({"Q:/没有这个东西/ltool"}, 3), QStringList{});
+        // ---- "像不像主程序"那两道：控制台子系统、名字/路径像助手，都不该进应用列表 ----
+        const QString fltNat = QDir::toNativeSeparators(flt);
+        check("目录里只留看起来是主程序的（命令行工具/助手名/版本目录/运行时目录都跳过）",
+              namesWith({fltNat}, 1), QStringList{ "gui", "notepad" });
+        check("真实系统 exe 也算得对：ping（控制台）被跳、notepad（GUI）留下",
+              namesWith({fltNat}, 1).contains("ping") ? QStringList{ "ping 混进来了" } : QStringList{},
+              QStringList{});
+        check("点名指到那个命令行 exe：一定要它，不过滤",
+              namesWith({QDir::toNativeSeparators(flt + "/tool.exe")}, 3), QStringList{ "tool" });
         // 搜索框读的是 apps.json（loadIndex），不是 scan() 现扫的那份 ——
         // 所以还要验一遍"存进去再读回来，目录来源的那些条一条没丢"
         cfg.setValue("apps/roots", QStringList{nat});
@@ -814,6 +852,8 @@ int main(int argc, char* argv[])
         cfg.sync();
         if (!QDir(root).removeRecursively())
             std::printf("FAIL 夹具没删干净：%s\n", root.toUtf8().constData());
+        if (!QDir(flt).removeRecursively())
+            std::printf("FAIL 过滤夹具没删干净：%s\n", flt.toUtf8().constData());
         std::printf("appdirs: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad;
@@ -845,10 +885,20 @@ int main(int argc, char* argv[])
         say("「下载代理」只有一行", proxy == 1, QStringLiteral("数到 %1 行").arg(proxy));
         const int roots = rowCount(QStringLiteral("扫描根目录："));
         say("没生效过的「扫描根目录」已拿掉", roots == 0, QStringLiteral("数到 %1 行").arg(roots));
-        const bool hasList = hasRow(QStringLiteral("目录列表："));
+        const bool hasList = hasRow(QStringLiteral("项目列表："));
         const bool hasDepth = hasRow(QStringLiteral("往里找几层："));
-        say("应用目录那一栏在（列表 + 层数）", hasList && hasDepth,
-            QStringLiteral("目录列表=%1 往里找几层=%2").arg(hasList ? 1 : 0).arg(hasDepth ? 1 : 0));
+        say("应用那一栏在（列表 + 层数）", hasList && hasDepth,
+            QStringLiteral("项目列表=%1 往里找几层=%2").arg(hasList ? 1 : 0).arg(hasDepth ? 1 : 0));
+        int addExeBtn = 0;
+        int addDirBtn = 0;
+        for (QPushButton* b : page.findChildren<QPushButton*>()) {
+            if (b->objectName() == QStringLiteral("addAppExe"))
+                ++addExeBtn;
+            if (b->objectName() == QStringLiteral("addAppDir"))
+                ++addDirBtn;
+        }
+        say("「添加应用…」和「添加目录…」各只有一个", addExeBtn == 1 && addDirBtn == 1,
+            QStringLiteral("应用=%1 目录=%2").arg(addExeBtn).arg(addDirBtn));
         const auto lists = page.findChildren<QListWidget*>();
         say("列表控件真的建出来了", !lists.isEmpty(),
             QStringLiteral("%1 个 QListWidget").arg(lists.size()));
