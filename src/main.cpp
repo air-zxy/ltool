@@ -2,6 +2,7 @@
 #include "AdBlocker.h"
 #include "Base64Tool.h"
 #include "CaptureOverlay.h"
+#include "ConfigPage.h"
 #include "PinWindow.h"
 #include "RecProbe.h"
 #include "OcrBundle.h"
@@ -500,7 +501,7 @@ int main(int argc, char* argv[])
         const QString a = QString::fromLocal8Bit(argv[i]);
         if (a == QLatin1String("--pindel") || a == QLatin1String("--ocrchain")
             || a == QLatin1String("--pathcfg") || a == QLatin1String("--pintool")
-            || a == QLatin1String("--appdirs")) {
+            || a == QLatin1String("--appdirs") || a == QLatin1String("--cfgcheck")) {
             const QString sandbox = QDir::tempPath() + "/" + a.mid(2);
             QDir(sandbox).removeRecursively();
             QDir().mkpath(sandbox);
@@ -783,12 +784,62 @@ int main(int argc, char* argv[])
         check("直接指到一个 exe 上也收", namesWith({QDir::toNativeSeparators(
                   root + QString::fromUtf8("/中文目录/中文two.exe"))}, 3), {cn});
         check("目录不存在只是跳过，不报错", namesWith({"Q:/没有这个东西/ltool"}, 3), QStringList{});
+        // 搜索框读的是 apps.json（loadIndex），不是 scan() 现扫的那份 ——
+        // 所以还要验一遍"存进去再读回来，目录来源的那些条一条没丢"
+        cfg.setValue("apps/roots", QStringList{nat});
+        cfg.setValue("apps/depth", 3);
+        cfg.sync();
+        AppScanner::saveIndex(AppScanner::scan());
+        QStringList back;
+        for (const AppEntry& e : AppScanner::loadIndex())
+            if (e.category == QLatin1String("folder"))
+                back << e.name;
+        back.sort();
+        check("存进 apps.json 再读回来还在", back, {"four", "one", "three", cn});
         cfg.remove("apps/roots");
         cfg.remove("apps/depth");
         cfg.sync();
         if (!QDir(root).removeRecursively())
             std::printf("FAIL 夹具没删干净：%s\n", root.toUtf8().constData());
         std::printf("appdirs: 失败 %d 项\n", bad);
+        std::fflush(stdout);
+        return bad;
+    }
+
+    // --cfgcheck：离屏建一次配置页，把表单行名数一遍。
+    // 为什么要这条：这次「下载代理」在配置菜单里出现了两遍（回放历史时那一行被插了两次），
+    // 而配置页是 GUI —— 我不往他桌面上点，就只能把"某个行名出现几次"变成可断言的数字。
+    // 顺带盯住那行从来没生效过的「扫描根目录」别再被人加回来。沙箱 APPDATA，不碰真实配置。
+    if (args.contains("--cfgcheck")) {
+        int bad = 0;
+        ConfigPage page;
+        const auto labels = page.findChildren<QLabel*>();
+        const auto rowCount = [&labels](const QString& name) {
+            int n = 0;
+            for (const QLabel* l : labels)
+                if (l->text().trimmed() == name)
+                    ++n;
+            return n;
+        };
+        const auto hasRow = [&rowCount](const QString& name) { return rowCount(name) > 0; };
+        const auto say = [&bad](const char* what, bool ok, const QString& got) {
+            std::printf("%s %s：%s\n", ok ? "ok  " : "FAIL", what, got.toUtf8().constData());
+            if (!ok)
+                ++bad;
+            std::fflush(stdout);
+        };
+        const int proxy = rowCount(QStringLiteral("下载代理："));
+        say("「下载代理」只有一行", proxy == 1, QStringLiteral("数到 %1 行").arg(proxy));
+        const int roots = rowCount(QStringLiteral("扫描根目录："));
+        say("没生效过的「扫描根目录」已拿掉", roots == 0, QStringLiteral("数到 %1 行").arg(roots));
+        const bool hasList = hasRow(QStringLiteral("目录列表："));
+        const bool hasDepth = hasRow(QStringLiteral("往里找几层："));
+        say("应用目录那一栏在（列表 + 层数）", hasList && hasDepth,
+            QStringLiteral("目录列表=%1 往里找几层=%2").arg(hasList ? 1 : 0).arg(hasDepth ? 1 : 0));
+        const auto lists = page.findChildren<QListWidget*>();
+        say("列表控件真的建出来了", !lists.isEmpty(),
+            QStringLiteral("%1 个 QListWidget").arg(lists.size()));
+        std::printf("cfgcheck: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad;
     }

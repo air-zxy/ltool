@@ -142,16 +142,6 @@ ConfigPage::ConfigPage(QWidget* parent)
     m_proxy = new QLineEdit(general);
     if (const QString sys = DevEnv::systemProxyUrl(); !sys.isEmpty()) {
         m_proxy->setPlaceholderText(QString("留空 = 自动用系统代理（当前检测到 %1）").arg(sys));
-        m_proxy->setToolTip("填别的地址可覆盖系统代理。");
-    } else {
-        m_proxy->setPlaceholderText("例：http://127.0.0.1:10808（GitHub 包下载慢时有用）");
-        m_proxy->setToolTip("没检测到系统代理。填上本地代理后，winget 安装和下载器都会走它。");
-    }
-    m_proxy->setClearButtonEnabled(true);
-    generalLay->addRow("下载代理：", m_proxy);
-    m_proxy = new QLineEdit(general);
-    if (const QString sys = DevEnv::systemProxyUrl(); !sys.isEmpty()) {
-        m_proxy->setPlaceholderText(QString("留空 = 自动用系统代理（当前检测到 %1）").arg(sys));
         m_proxy->setToolTip("填别的地址可覆盖系统代理。\n"
                             "内置下载器一直走它；winget 要用命令行代理，需管理员先执行一次\n"
                             "  winget settings --enable ProxyCommandLineOptions\n"
@@ -218,9 +208,6 @@ ConfigPage::ConfigPage(QWidget* parent)
     m_maxEntries->setSingleStep(500000);
     m_maxEntries->setGroupSeparatorShown(true);
     indexLay->addRow("索引条目上限：", m_maxEntries);
-    m_roots = new QLineEdit(index);
-    m_roots->setPlaceholderText("留空 = 所有固定磁盘（如 C:\\;D:\\）");
-    indexLay->addRow("扫描根目录：", m_roots);
 
     auto* appDirs = new QGroupBox("应用搜索的额外目录", this);
     auto* appLay = new QFormLayout(appDirs);
@@ -352,7 +339,6 @@ void ConfigPage::load()
     m_deep->setChecked(cfg.value("index/deep", true).toBool());
     m_refreshHours->setValue(cfg.value("index/refreshHours", 6).toInt());
     m_maxEntries->setValue(cfg.value("index/maxEntries", 5000000).toInt());
-    m_roots->setText(cfg.value("index/roots").toString());
     m_appDepth->setValue(cfg.value("apps/depth", 3).toInt());
     m_appRoots->clear();
     for (const QString& r : cfg.value("apps/roots").toStringList())
@@ -394,7 +380,6 @@ void ConfigPage::onSave()
     // 索引
     const bool deepWas = cfg.value("index/deep", true).toBool();
     const int maxWas = cfg.value("index/maxEntries", 5000000).toInt();
-    const QString rootsWas = cfg.value("index/roots").toString();
     const int hoursWas = cfg.value("index/refreshHours", 6).toInt();
     cfg.setValue("web/engine", m_engine->currentData().toString());
     cfg.setValue("ui/favoritesOnEmpty", m_favorites->isChecked());
@@ -402,7 +387,6 @@ void ConfigPage::onSave()
     cfg.setValue("index/deep", m_deep->isChecked());
     cfg.setValue("index/maxEntries", m_maxEntries->value());
     cfg.setValue("index/refreshHours", m_refreshHours->value());
-    cfg.setValue("index/roots", m_roots->text().trimmed());
 
     // 应用目录：整个列表 + 层数一起比，变了才重扫（扫盘是重活，不能随输入跑）
     const QStringList appRootsWas = cfg.value("apps/roots").toStringList();
@@ -429,7 +413,6 @@ void ConfigPage::onSave()
 
     const bool indexChanged = deepWas != m_deep->isChecked()
                               || maxWas != m_maxEntries->value()
-                              || rootsWas != m_roots->text().trimmed()
                               || hoursWas != m_refreshHours->value()
                               || appChanged;
     if (indexChanged)

@@ -41,7 +41,6 @@ private:
     QCheckBox* m_deep = nullptr;
     QSpinBox* m_maxEntries = nullptr;
     QSpinBox* m_refreshHours = nullptr;
-    QLineEdit* m_roots = nullptr;
     // 应用搜索的额外目录（config.ini 的 apps/roots）+ 往里找几层（apps/depth）
     QListWidget* m_appRoots = nullptr;
     QSpinBox* m_appDepth = nullptr;
