@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>orient</title></head>
+<body>
+<pre id="out">pending</pre>
+<video id="v" muted playsinline></video>
+<script>
+// 独立于 Media Foundation 的第二意见：chrome 自己解 H.264，canvas 的第 0 行按定义就是画面上沿。
+// 用法：chrome --headless=new --dump-dom --virtual-time-budget=20000 "file:///.../orient.html#/<mp4 绝对路径>"
+var N = 8;
+var out = document.getElementById('out');
+function report(lines) { out.textContent = lines.join('\n'); document.title = 'done'; }
+var v = document.getElementById('v');
+v.src = 'file:///' + decodeURIComponent(location.hash.slice(1));
+var grabbed = false;
+function grab(tag) {
+  if (grabbed || v.videoWidth < 8) return;
+  grabbed = true;
+  var c = document.createElement('canvas');
+  c.width = N; c.height = N;
+  var g = c.getContext('2d');
+  g.drawImage(v, 0, 0, N, N);
+  var d = g.getImageData(0, 0, N, N).data;
+  var lines = ['src ' + v.videoWidth + 'x' + v.videoHeight + ' t=' + v.currentTime.toFixed(2) + ' via ' + tag];
+  var ramp = ' .:-=+*#%@';
+  for (var r = 0; r < N; ++r) {
+    var row = '', lum = [];
+    for (var q = 0; q < N; ++q) {
+      var i = (r * N + q) * 4;
+      var y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      lum.push(Math.round(y));
+      row += ramp[Math.max(0, Math.min(9, Math.floor(y * 9 / 255)))];
+    }
+    lines.push('|' + row + '|  ' + lum.join(','));
+  }
+  report(lines);
+}
+v.addEventListener('loadeddata', function () {
+  grab('loadeddata');
+  if (v.duration > 1.2) { try { v.currentTime = 1.0; } catch (e) {} }
+});
+v.addEventListener('seeked', function () { grabbed = false; grabbed = false; grab('seeked'); });
+v.addEventListener('timeupdate', function () { if (!grabbed && v.currentTime > 0.8) grab('timeupdate'); });
+v.play().catch(function (e) { report(['play failed ' + e]); });
+setTimeout(function () { if (!grabbed) report(['TIMEOUT readyState=' + v.readyState]); }, 9000);
+</script>
+</body></html>

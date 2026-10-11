@@ -1,0 +1,55 @@
+// 安装失败时，把 winget 指出的 MSI 日志里的关键行摘出来：光看 1603/0x8a150049 这种
+// 退出码没法定位，真正的"为什么"在那本日志里（它是 UTF-16，且动辄几万行）。
+QString msiLogDigest(const QString& output)
+{
+    int at = output.indexOf("Installer log is available at:");
+    QString marker = QStringLiteral("Installer log is available at:");
+    if (at < 0) {
+        at = output.indexOf(QStringLiteral("安装程序日志位于:"));
+        marker = QStringLiteral("安装程序日志位于:");
+    }
+    if (at < 0)
+        return {};
+    QString path = output.mid(at + marker.size()).split(QLatin1Char('\n')).first().trimmed();
+    if (path.isEmpty() || !QFileInfo::exists(path))
+        return {};
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    const QByteArray raw = f.readAll();
+    QString text;
+    if (raw.startsWith("\xfe\xff") || raw.startsWith("\xff\xfe"))
+        text = QString::fromUtf16((const char16_t*)(raw.constData() + 2),
+                                  (raw.size() - 2) / 2);
+    else
+        text = QString::fromLocal8Bit(raw);
+
+    static const QStringList needles = {
+        QStringLiteral("MainEngineThread is returning"),
+        QStringLiteral("Doing action"),
+        QStringLiteral("Error 1"),
+        QStringLiteral("Return value 3"),
+        QStringLiteral("sufficient privileges"),
+        QStringLiteral("Another process is an installer"),
+        QStringLiteral("verify file hash"),
+    };
+    QStringList hits;
+    for (const QString& line : text.split(QLatin1Char('\n'))) {
+        const QString t = line.trimmed();
+        if (t.isEmpty())
+            continue;
+        for (const QString& n : needles) {
+            if (t.contains(n, Qt::CaseInsensitive)) {
+                hits.append(t);
+                break;
+            }
+        }
+    }
+    if (hits.isEmpty())
+        return QStringLiteral("MSI 日志（%1）里没有匹配到关键行，请手动查看该文件").arg(path);
+    while (hits.size() > 8)
+        hits.removeFirst();
+    return hits.join(QLatin1Char('\n'));
+}
+

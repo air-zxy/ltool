@@ -1,0 +1,13 @@
+build/*
+# build/verify 是这一轮交付闭环的脚本（deliver.ps1 / archtest.ps1 / 各探针），
+# 必须入库；build 底下别的一概不收（Release 的 dll、CMake 缓存、vcpkg 灌出来的 2.2GB）
+!build/verify/
+build-*/
+
+vcpkg_installed/
+out/
+*.user
+.vs/
+
+# 恢复工程时留下的重复副本（和 README.md 同一份内容），不入库
+README (1).md

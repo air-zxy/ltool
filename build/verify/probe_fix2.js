@@ -1,0 +1,10 @@
+const fs = require('fs');
+const p = 'D:/project/cpp/ltool/src/FileOps.cpp';
+let s = fs.readFileSync(p, 'utf8');
+const bs = String.fromCharCode(92), q = String.fromCharCode(39), d = String.fromCharCode(34);
+const bad = 'probePath += L' + q + bs + bs + 'kernel32.dll' + q + ';';
+const good = 'probePath += L' + d + bs + bs + 'kernel32.dll' + d + ';';
+if (s.indexOf(bad) < 0) throw new Error('bad literal not found');
+s = s.replace(bad, good);
+fs.writeFileSync(p, s, 'utf8');
+console.log('literal fixed to a wide string');

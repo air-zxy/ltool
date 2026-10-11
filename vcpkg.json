@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "ltool",
+  "version-string": "0.3.0",
+  "description": "uTools-like launcher for Windows (app search / file search / dev-env plugins / PATH & registry tools)",
+  "builtin-baseline": "e64546260d40765da00e64390b19fcade13f3986",
+  "dependencies": [
+    "qtbase",
+    "libarchive",
+    "bit7z"
+  ],
+  "overrides": [
+    { "name": "qtbase", "version": "6.10.2" }
+  ]
+}

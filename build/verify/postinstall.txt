@@ -1,0 +1,22 @@
+void postInstallEnvSetup(const QString& langId, const QString& displayName, int code, int jobId)
+{
+    if (code != 0 && quint32(code) != 0x8A15002B) {   // 0x8A15002B = 已是最新，也算"装好了"
+        SilentInstallLog::append(jobId,
+            "安装未成功，跳过环境变量配置" "\n");
+        return;
+    }
+    EnvPath::syncProcessPath();   // 安装器自己改的 PATH 也先吸收进来
+    const QVector<LangVersion> vers = detectVersions(langId);
+    if (vers.isEmpty()) {
+        SilentInstallLog::append(jobId,
+            QString("%1 已安装，但没探测到可配置的本机路径，环境变量请手动检查" "\n")
+                .arg(displayName).toUtf8());
+        return;
+    }
+    QString what, err;
+    // activate=false：只保证"能用"，不去改用户当前选中的版本
+    const bool ok = applyEnvFor(langId, vers.first().path, vers.first().label, false, &what, &err);
+    SilentInstallLog::append(jobId,
+        (ok ? QString("环境变量：%1" "\n").arg(what)
+            : QString("环境变量配置失败：%1" "\n").arg(err)).toUtf8());
+}

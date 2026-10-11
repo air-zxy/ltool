@@ -1,0 +1,24 @@
+using System;
+using System.Runtime.InteropServices;
+public static class Grab5 {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+    [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hh, bool repaint);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int l; public int t; public int r; public int b; }
+    public static IntPtr Biggest(uint target) {
+        IntPtr best = IntPtr.Zero; long area = 0;
+        EnumWindows((h, l) => {
+            uint pid; GetWindowThreadProcessId(h, out pid);
+            if (pid != target || !IsWindowVisible(h)) return true;
+            RECT r; GetWindowRect(h, out r);
+            long a = (long)(r.r - r.l) * (long)(r.b - r.t);
+            if (a > area) { area = a; best = h; }
+            return true;
+        }, IntPtr.Zero);
+        return best;
+    }
+}
