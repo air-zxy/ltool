@@ -1,4 +1,5 @@
 #pragma once
+#include "core-api.h"
 
 #include <QAtomicInt>
 #include <QByteArray>
@@ -29,7 +30,7 @@ struct FileDeepEntry {
     quint64 frn = 0;
 };
 
-class FileIndexer : public QObject {
+class LTOOL_CORE_API FileIndexer : public QObject {
     Q_OBJECT
 public:
     enum class DeepStatus { Ok, NoAccess, NeedRebuild };

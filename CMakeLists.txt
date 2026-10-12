@@ -33,8 +33,20 @@ add_custom_command(
 )
 add_custom_target(appicon DEPENDS ${ICON_FILE})
 
-qt_add_executable(ltool WIN32
-    src/main.cpp
+# ============================================================================
+# ltoolcore.dll —— 主程序和 DLL 插件共用的一份实现
+#
+# 为什么要有它：工具页搬进插件之后，"插件里也要用"和"主程序自己也要用"的那部分
+# 代码只能有一份，否则同一个后台状态会出现两份（界面里关了广告拦截、主程序那份还在拦）。
+# 边界是按引用查出来的：AdBlocker 主程序在后台跑、DevEnv/SilentInstallLog 被配置页/语言页/
+# 软件页/设置窗用、RegClean 与 SysTools 被搜索框用、FileTools 被搜索框和广告页用、
+# InfoRow 被卸载页用 —— 这些都进 core；只有那 9 个工具页往插件里搬。
+#
+# 导出方式用 WINDOWS_EXPORT_ALL_SYMBOLS（CMake 扫 obj 自动生成 .def），而不是给
+# 每个函数贴 __declspec：本项目跨界的几乎全是自由函数和类成员，自动导出够用；
+# 查过 src/*.h 里没有 extern 全局数据，所以"数据导不出来"这个已知限制踩不到。
+# ============================================================================
+qt_add_library(ltoolcore SHARED
     src/Utils.cpp
     src/EnvPath.cpp
     src/RegClean.cpp
@@ -63,8 +75,8 @@ qt_add_executable(ltool WIN32
     src/SilentInstallLog.cpp
     src/FileTools.cpp
     src/RepairPage.cpp
-    src/AdBlocker.cpp
     src/AdsPage.cpp
+    src/AdBlocker.cpp
     src/DiskScan.cpp
     src/DiskPage.cpp
     src/NetworkPage.cpp
@@ -91,14 +103,16 @@ qt_add_executable(ltool WIN32
     src/ConfigPage.cpp
     src/SettingsDialog.cpp
     src/SearchWindow.cpp
-    resources/ltool.rc
 )
-add_dependencies(ltool appicon)
+set_target_properties(ltoolcore PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+# core-api.h 靠它决定是 dllexport 还是 dllimport（只有编 core 这一份目标定义）
+target_compile_definitions(ltoolcore PRIVATE LTOOL_CORE_BUILD)
 
 # ---- 预编译头 ----
 # 53 个 TU 每个都要啃同一批 Qt 头（QApplication/QWidget/QtConcurrent 展开就是几万行），
 # /MP 只能并行"各自啃一遍"，PCH 才是根本不啃。内容见 src/pch.h（故意不含 windows.h）。
-target_precompile_headers(ltool PRIVATE src/pch.h)
+# 挂在 INTERFACE 上：exe 和九个插件都复用 core 编好的那一份，不用每个目标各啃一遍。
+target_precompile_headers(ltoolcore INTERFACE src/pch.h)
 
 find_package(LibArchive REQUIRED)
 
@@ -113,26 +127,74 @@ find_package(LibArchive REQUIRED)
 # 许可证：7zip.dll 是 LGPL-2.1（其中 Rar* 那几个文件另带 unRAR 限制条款），bit7z 是 MPL-2.0。
 find_package(unofficial-bit7z CONFIG REQUIRED)
 
-target_include_directories(ltool PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-# ONNX Runtime 不链接进 exe（它是首次用到时下载到 %APPDATA%\ltool\ocr 的那个 dll，
-# 运行时 LoadLibrary + C API 函数指针），编译期只要这一个头
-target_include_directories(ltool PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime)
-if(TARGET LibArchive::LibArchive)
-    # 用导入目标：包含目录和 debug/release 的库都由它带
-    target_link_libraries(ltool PRIVATE LibArchive::LibArchive)
-else()
-    target_include_directories(ltool PRIVATE ${LIBARCHIVE_INCLUDE_DIR})
-endif()
+# 每个 ltool 目标（core / exe / 插件）都要的这一套，收成一个函数免得三处漂移
+function(ltool_target_setup tgt)
+    target_include_directories(${tgt} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    # ONNX Runtime 不链接进 core（它是首次用到时下载到 %APPDATA%\ltool\ocr 的那个 dll，
+    # 运行时 LoadLibrary + C API 函数指针），编译期只要这一个头
+    target_include_directories(${tgt} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime)
+    if(TARGET LibArchive::LibArchive)
+        # 用导入目标：包含目录和 debug/release 的库都由它带
+        target_link_libraries(${tgt} PRIVATE LibArchive::LibArchive)
+    else()
+        target_include_directories(${tgt} PRIVATE ${LIBARCHIVE_INCLUDE_DIR})
+    endif()
+    target_link_libraries(${tgt} PRIVATE
+        Qt6::Widgets
+        Qt6::Concurrent
+        Qt6::Network
+        user32
+        shell32
+        ole32
+        advapi32
+        uuid
+        runtimeobject
+        version
+        dwmapi
+        rstrtmgr
+        iphlpapi
+        crypt32
+        wintrust
+        ws2_32
+        winhttp
+        mfplat
+        mf
+        mfreadwrite
+        mfuuid
+        d3d11
+        dxgi
+        unofficial::bit7z::bit7z64
+    )
+    target_compile_definitions(${tgt} PRIVATE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        UNICODE
+        _UNICODE
+    )
+    if(MSVC)
+        target_compile_options(${tgt} PRIVATE /utf-8 /permissive- /W3)
+    endif()
+    # ---- C++/WinRT：F2 录屏按窗口取帧用的 Windows.Graphics.Capture。
+    #      投影头在 Windows SDK 的 cppwinrt 目录里，不在 MSVC 默认包含路径上，要自己加；
+    #      RoInitialize / 激活工厂这些符号在 runtimeobject.lib（上面已经链了）----
+    if(MSVC)
+        foreach(_root "C:/Program Files (x86)/Windows Kits/10" "C:/Program Files/Windows Kits/10")
+            set(_inc "${_root}/Include/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/cppwinrt")
+            if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION AND EXISTS "${_inc}")
+                target_include_directories(${tgt} PRIVATE "${_inc}")
+                break()
+            endif()
+        endforeach()
+    endif()
+endfunction()
 
-# ---- C++/WinRT：F2 录屏按窗口取帧用的 Windows.Graphics.Capture。
-#      投影头在 Windows SDK 的 cppwinrt 目录里，不在 MSVC 默认包含路径上，要自己加；
-#      RoInitialize / 激活工厂这些符号在 runtimeobject.lib ----
+ltool_target_setup(ltoolcore)
+
 if(MSVC)
     set(_winrt_found FALSE)
     foreach(_root "C:/Program Files (x86)/Windows Kits/10" "C:/Program Files/Windows Kits/10")
-        set(_inc "${_root}/Include/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/cppwinrt")
-        if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION AND EXISTS "${_inc}")
-            target_include_directories(ltool PRIVATE "${_inc}")
+        if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION
+           AND EXISTS "${_root}/Include/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/cppwinrt")
             set(_winrt_found TRUE)
             break()
         endif()
@@ -144,43 +206,14 @@ if(MSVC)
     endif()
 endif()
 
-target_link_libraries(ltool PRIVATE
-    Qt6::Widgets
-    Qt6::Concurrent
-    Qt6::Network
-    user32
-    shell32
-    ole32
-    advapi32
-    uuid
-    runtimeobject
-    version
-    dwmapi
-    rstrtmgr
-    iphlpapi
-    crypt32
-    wintrust
-    ws2_32
-    winhttp
-    mfplat
-    mf
-    mfreadwrite
-    mfuuid
-    d3d11
-    dxgi
-    unofficial::bit7z::bit7z64
+# ---- 主程序：现在只剩 main.cpp（热键、托盘、单实例、命令行自测入口）----
+qt_add_executable(ltool WIN32
+    src/main.cpp
+    resources/ltool.rc
 )
-
-target_compile_definitions(ltool PRIVATE
-    NOMINMAX
-    WIN32_LEAN_AND_MEAN
-    UNICODE
-    _UNICODE
-)
-
-if(MSVC)
-    target_compile_options(ltool PRIVATE /utf-8 /permissive- /W3)
-endif()
+add_dependencies(ltool appicon)
+target_link_libraries(ltool PRIVATE ltoolcore)
+ltool_target_setup(ltool)
 
 # ---- DLL 插件示例：编到 build\Release\plugins\ 下，主程序运行时扫那个目录 ----
 # 装进包里靠 ltool.iss 那条 `Source: "build\Release\*"... recursesubdirs`，不用另加一行。

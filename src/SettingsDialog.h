@@ -1,4 +1,5 @@
 #pragma once
+#include "core-api.h"
 
 #include <QDialog>
 
@@ -10,7 +11,7 @@ class ToolsPage;
 
 // ltool 配置页面（搜索框右侧齿轮打开）：左侧菜单 + 右侧内容
 //   语言 / 软件 / 网站 / 下载器 / 定时任务 / 工具 / 配置
-class SettingsDialog : public QDialog {
+class LTOOL_CORE_API SettingsDialog : public QDialog {
     Q_OBJECT
 public:
     explicit SettingsDialog(QWidget* parent = nullptr);

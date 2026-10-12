@@ -1,4 +1,5 @@
 #pragma once
+#include "core-api.h"
 
 #include <QPointer>
 #include <QWidget>
@@ -44,7 +45,7 @@ struct SearchResult {
     bool isSection = false;
 };
 
-class SearchWindow : public QWidget {
+class LTOOL_CORE_API SearchWindow : public QWidget {
     Q_OBJECT
 public:
     explicit SearchWindow(QWidget* parent = nullptr);

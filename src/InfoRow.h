@@ -1,4 +1,5 @@
 #pragma once
+#include "core-api.h"
 
 #include <QString>
 #include <QWidget>
@@ -16,7 +17,7 @@ class QPixmap;
 // 整行（除勾选框外）都设了 WA_TransparentForMouseEvents，点击穿透回 QListWidget，
 // 这样"选中一行"照常工作；勾选则用行里的真 QCheckBox —— item 自带的 check 指示器
 // 在被持久控件盖住时点不中（注册表分析页踩过）。
-class InfoRow : public QWidget {
+class LTOOL_CORE_API InfoRow : public QWidget {
     Q_OBJECT
 public:
     enum Badge { Neutral, Good, Warn, Bad, Muted };

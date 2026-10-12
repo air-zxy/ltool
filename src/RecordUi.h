@@ -1,4 +1,5 @@
 #pragma once
+#include "core-api.h"
 
 #include <QWidget>
 
@@ -18,7 +19,7 @@ bool isRecording();
 
 } // namespace RecordUi
 
-class WindowPicker : public QWidget {
+class LTOOL_CORE_API WindowPicker : public QWidget {
     Q_OBJECT
 public:
     explicit WindowPicker(QWidget* parent = nullptr);
