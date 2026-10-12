@@ -309,6 +309,14 @@ void SettingsDialog::ensurePage(int index)
     m_stack->setCurrentIndex(index);
 }
 
+void SettingsDialog::showPlugin(const QString& id)
+{
+    ensurePage(5);             // 和 showTool 同一套路：先把设置页开到「工具」那一行
+    m_menu->setCurrentRow(5);
+    if (m_toolsPage)
+        m_toolsPage->showPlugin(id);
+}
+
 void SettingsDialog::showTool(int toolIndex)
 {
     if (toolIndex < 0 || toolIndex >= ToolsPage::tools().size())

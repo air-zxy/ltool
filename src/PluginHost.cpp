@@ -1,0 +1,155 @@
+#include "PluginHost.h"
+
+#include "Utils.h"
+
+#include <QCoreApplication>
+#include <QDir>
+#include <QHash>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QPluginLoader>
+#include <QWidget>
+
+namespace {
+
+QVector<PluginHost::Meta> g_metas;
+QHash<QString, QPluginLoader*> g_loaders;      // 只装不卸：卸载会留下悬空的 QWidget
+QHash<QString, LToolPlugin*> g_plugins;
+QHash<QString, QWidget*> g_pages;
+bool g_scanned = false;
+
+QString str(const QJsonObject& o, const char* key)
+{
+    return o.value(QLatin1String(key)).toString();
+}
+
+// Q_PLUGIN_METADATA(FILE "plugin.json") 把那个文件的内容**嵌在 "MetaData" 这一层下面**，
+// 不是并到顶层（顶层只有 IID/ClassName/Qt 版本）。两层都找，先 MetaData 再顶层，
+// 免得以后 Qt 改了嵌套方式又变成"读到空"。
+QJsonObject metaOf(const QJsonObject& md)
+{
+    const QJsonObject inner = md.value(QLatin1String("MetaData")).toObject();
+    return inner.isEmpty() ? md : inner;
+}
+
+} // namespace
+
+namespace PluginHost {
+
+QString pluginsDir()
+{
+    return QCoreApplication::applicationDirPath() + QStringLiteral("/ltool-plugins");
+}
+
+void reload()
+{
+    g_metas.clear();
+    g_scanned = false;
+    scan();
+}
+
+const QVector<Meta>& scan()
+{
+    if (g_scanned)
+        return g_metas;
+    g_scanned = true;
+    const QDir dir(pluginsDir());
+    if (!dir.exists())
+        return g_metas;
+    const auto files = dir.entryList({QStringLiteral("*.dll")}, QDir::Files, QDir::Name);
+    for (const QString& f : files) {
+        const QString path = dir.absoluteFilePath(f);
+        Meta m;
+        m.file = path;
+        QPluginLoader probe(path);
+        const QJsonObject md = probe.metaData();
+        if (str(md, "IID") != QLatin1String(LTOOL_PLUGIN_IID)) {
+            // 不是 ltool 的插件（可能是 Qt 自己的图片格式插件被人误拷进来）—— 说清楚再跳过
+            m.error = QStringLiteral("不是 ltool 插件（iid=%1）").arg(str(md, "IID"));
+            g_metas.append(m);
+            continue;
+        }
+        const QJsonObject meta = metaOf(md);
+        m.id = str(meta, "Id");
+        m.name = str(meta, "Name");
+        m.desc = str(meta, "Desc");
+        m.api = meta.value(QLatin1String("Api")).toInt();
+        const QJsonArray ks = meta.value(QLatin1String("Keywords")).toArray();
+        for (const QJsonValue& v : ks)
+            m.keywords << v.toString();
+        if (m.id.isEmpty() || m.name.isEmpty())
+            m.error = QStringLiteral("plugin.json 缺 Id/Name，读到的元数据=%1")
+                          .arg(QString::fromUtf8(
+                              QJsonDocument(md).toJson(QJsonDocument::Compact)));
+        else if (m.api != LTOOL_PLUGIN_API_VERSION)
+            m.error = QStringLiteral("这个插件是给 API %1 编的，ltool 现在是 API %2")
+                          .arg(m.api).arg(LTOOL_PLUGIN_API_VERSION);
+        g_metas.append(m);
+        if (m.ok())
+            Utils::log(QStringLiteral("plugin: 看到 %1 (%2) 关键词=%3")
+                           .arg(m.name, m.id, m.keywords.join(",")));
+        else
+            Utils::log(QStringLiteral("plugin: 拒绝 %1：%2").arg(path, m.error));
+    }
+    return g_metas;
+}
+
+LToolPlugin* plugin(const QString& id)
+{
+    if (g_plugins.contains(id))
+        return g_plugins.value(id);
+    const QVector<Meta>& metas = scan();
+    for (const Meta& m : metas) {
+        if (m.id != id || !m.ok())
+            continue;
+        auto* loader = new QPluginLoader(m.file);
+        QObject* obj = loader->instance();
+        if (!obj) {
+            Utils::log(QStringLiteral("plugin: 起不来 %1：%2").arg(m.file, loader->errorString()));
+            delete loader;
+            return nullptr;
+        }
+        auto* p = qobject_cast<LToolPlugin*>(obj);
+        if (!p) {
+            Utils::log(QStringLiteral("plugin: %1 没实现 LToolPlugin 接口").arg(m.file));
+            loader->unload();
+            delete loader;
+            return nullptr;
+        }
+        // 元数据里写的 Api 只是"声明"，实例自己报的才算数（两边不一致就是插件自己乱写）
+        if (p->apiVersion() != LTOOL_PLUGIN_API_VERSION) {
+            Utils::log(QStringLiteral("plugin: %1 运行时报 API %2，主程序是 %3，不加载")
+                           .arg(id).arg(p->apiVersion()).arg(LTOOL_PLUGIN_API_VERSION));
+            loader->unload();
+            delete loader;
+            return nullptr;
+        }
+        g_loaders.insert(id, loader);        // 故意留着不卸
+        g_plugins.insert(id, p);
+        return p;
+    }
+    return nullptr;
+}
+
+QWidget* page(const QString& id, QWidget* parent, QString* err)
+{
+    if (g_pages.contains(id))
+        return g_pages.value(id);
+    LToolPlugin* p = plugin(id);
+    if (!p) {
+        if (err)
+            *err = QStringLiteral("插件 %1 没能加载（看日志 plugin: 那几行）").arg(id);
+        return nullptr;
+    }
+    QWidget* w = p->createPage(parent);
+    if (!w) {
+        if (err)
+            *err = QStringLiteral("插件 %1 的 createPage 返回了空").arg(id);
+        return nullptr;
+    }
+    g_pages.insert(id, w);
+    Utils::log(QStringLiteral("plugin: 建页 %1").arg(id));
+    return w;
+}
+
+} // namespace PluginHost

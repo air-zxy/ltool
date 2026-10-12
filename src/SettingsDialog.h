@@ -17,6 +17,7 @@ public:
 
     // 搜索框直接打开某个工具：跳到「工具」页并展开那张卡片对应的内嵌页
     void showTool(int toolIndex);
+    void showPlugin(const QString& id);   // DLL 插件：进工具页并点开那张卡
     void openAt(int menuRow, int tab = -1, int embedded = -1);   // 直达某一页（可选里面的第几个 tab）
 
 signals:

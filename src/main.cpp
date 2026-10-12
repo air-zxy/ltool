@@ -17,6 +17,8 @@
 #include "DiskPage.h"
 #include "UserAccount.h"
 #include "ToolsPage.h"
+#include "PluginHost.h"
+#include "ltool-plugin.h"
 #include "DiskScan.h"
 #include "FileIndexer.h"
 #include "FileOps.h"
@@ -738,6 +740,104 @@ int main(int argc, char* argv[])
         check("槽位是 0..N-1 连着的（ToolsPage 的占位数正好盖住）",
               contiguous ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
         std::printf("username: 失败 %d 项\n", bad);
+        std::fflush(stdout);
+        return bad == 0 ? 0 : 1;
+    }
+
+    // --plugintest：DLL 插件那条链从头到尾真跑一遍（这次是**真的 LoadLibrary**，
+    // 但一次都不 show()，不碰他的桌面）。
+    // 名字为什么不叫 --plugin：Qt 自己把 "--plugin" 当命令行选项吃掉了 ——
+    // 实测 argc 直接变成 1（--pluginx 就还在），所以这里换个不带歧义的名字。
+    if (args.contains("--plugintest")) {
+        int bad = 0;
+        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
+            const bool ok = got == want;
+            if (!ok)
+                ++bad;
+            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
+                        got.toUtf8().constData(), want.toUtf8().constData());
+        };
+        const auto has = [&bad](const char* name, bool ok) {
+            std::printf("%s %s\n", ok ? "PASS" : "FAIL", name);
+            if (!ok)
+                ++bad;
+        };
+        const QDir dir(PluginHost::pluginsDir());
+        std::printf("INFO 插件目录：%s\n", dir.absolutePath().toUtf8().constData());
+        has("插件目录在，里面有 ltool-base64.dll",
+            dir.exists() && QFile::exists(dir.absoluteFilePath(QStringLiteral("ltool-base64.dll"))));
+        const auto& metas = PluginHost::scan();
+        std::printf("INFO 扫到 %d 个 dll\n", int(metas.size()));
+        const PluginHost::Meta* b64 = nullptr;
+        for (const PluginHost::Meta& m : metas)
+            if (m.id == QLatin1String("base64"))
+                b64 = &m;
+        has("元数据里有 base64 这个插件，且没被拒", b64 != nullptr && b64->ok());
+        if (b64) {
+            check("插件名和关键词读到了",
+                  QStringLiteral("%1/%2").arg(b64->name).arg(b64->keywords.size()),
+                  QStringLiteral("Base64（插件版）/3"));
+            check("元数据声明的 API 版本", QString::number(b64->api),
+                  QString::number(LTOOL_PLUGIN_API_VERSION));
+        }
+        LToolPlugin* p1 = PluginHost::plugin(QStringLiteral("base64"));
+        has("真的 LoadLibrary + instance + qobject_cast 到接口，版本闸放行", p1 != nullptr);
+        if (p1)
+            check("插件自己报的 API 版本", QString::number(p1->apiVersion()),
+                  QString::number(LTOOL_PLUGIN_API_VERSION));
+        QString err;
+        QWidget* page = PluginHost::page(QStringLiteral("base64"), nullptr, &err);
+        std::printf("INFO 建页：%s\n", err.isEmpty() ? "ok" : err.toUtf8().constData());
+        has("createPage 给出了一张页", page != nullptr);
+        if (page) {
+            check("就是插件里那张（objectName）", page->objectName(),
+                  QStringLiteral("pluginBase64Page"));
+            check("没 show 过（不碰他的桌面）",
+                  page->isVisible() ? QStringLiteral("yes") : QStringLiteral("no"),
+                  QStringLiteral("no"));
+            int btns = 0;
+            for (QPushButton* b : page->findChildren<QPushButton*>())
+                if (b->text().contains(QStringLiteral("编码"))
+                    || b->text().contains(QStringLiteral("解码")))
+                    ++btns;
+            check("编码/解码两颗按钮都在", QString::number(btns), QStringLiteral("2"));
+            check("再要一次拿到的是同一张页（懒创建 + 缓存）",
+                  PluginHost::page(QStringLiteral("base64"), nullptr, &err) == page
+                      ? QStringLiteral("yes") : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+        }
+        // 搜索框那一档：命中插件；而且不能像「计划任务」那次一样把整页独占掉
+        SearchWindow w;
+        auto* input = w.findChild<QLineEdit*>(QStringLiteral("input"));
+        auto* list = w.findChild<QListWidget*>(QStringLiteral("list"));
+        const auto settle = [] {
+            for (int i = 0; i < 40; ++i) {
+                QCoreApplication::processEvents();
+                QThread::msleep(10);
+            }
+        };
+        const auto section = [list](const QString& s) {
+            if (!list)
+                return QStringLiteral("no");
+            for (int i = 0; i < list->count(); ++i)
+                if (list->item(i)->text() == s)
+                    return QStringLiteral("yes");
+            return QStringLiteral("no");
+        };
+        has("拿得到输入框和结果列表", input != nullptr && list != nullptr);
+        if (input && list) {
+            input->setText(QStringLiteral("b64"));
+            settle();
+            check("搜 b64 出「插件」那一节", section(QStringLiteral("插件")), QStringLiteral("yes"));
+            input->setText(QStringLiteral("renwu"));
+            settle();
+            check("搜 renwu 不该被插件掺和", section(QStringLiteral("插件")), QStringLiteral("no"));
+            check("搜 renwu 时应用那一节还在（插件绝不独占整页）",
+                  section(QStringLiteral("── 应用 ──")), QStringLiteral("yes"));
+            input->clear();
+            settle();
+        }
+        std::printf("plugintest: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad == 0 ? 0 : 1;
     }

@@ -6,6 +6,7 @@
 #include "JsonTool.h"
 #include "NetworkPage.h"
 #include "RegistryPage.h"
+#include "PluginHost.h"
 #include "UserAccount.h"
 #include "StartupPage.h"
 #include "RepairPage.h"
@@ -186,6 +187,18 @@ QWidget* ToolsPage::buildGrid()
     const auto& list = tools();
     for (int i = 0; i < list.size(); ++i)
         addCard(grid, i, list[i]);
+    // DLL 插件排在自带卡片后面：只读元数据就能画卡，点开才真的 LoadLibrary
+    int slot = list.size();
+    for (const PluginHost::Meta& m : PluginHost::scan()) {
+        if (!m.ok())
+            continue;
+        const QString id = m.id;
+        auto* card = new ToolCard(m.name, m.desc, QColor(150, 120, 60),
+                                [this, id] { showPlugin(id); }, this);
+        grid->addWidget(card, slot / kGridColumns, slot % kGridColumns);
+        grid->setColumnStretch(slot % kGridColumns, 1);
+        ++slot;
+    }
     lay->addLayout(grid);
     lay->addStretch(1);
     return page;
@@ -204,6 +217,22 @@ void ToolsPage::addCard(QGridLayout* grid, int slot, const ToolDef& td)
     }, this);
     grid->addWidget(card, slot / kGridColumns, slot % kGridColumns);
     grid->setColumnStretch(slot % kGridColumns, 1);
+}
+
+void ToolsPage::showPlugin(const QString& id)
+{
+    QString err;
+    QWidget* w = PluginHost::page(id, this, &err);
+    if (!w) {
+        m_heading->setText(QStringLiteral("插件"));
+        Utils::log(QStringLiteral("plugin: 打不开 %1：%2").arg(id, err));
+        return;
+    }
+    if (m_stack->indexOf(w) < 0)
+        m_stack->addWidget(w);
+    m_stack->setCurrentWidget(w);
+    m_back->setVisible(true);
+    m_heading->setText(QStringLiteral("插件 · %1").arg(w->objectName().isEmpty() ? id : w->objectName()));
 }
 
 void ToolsPage::showEmbedded(int which)

@@ -10,6 +10,7 @@
 #include "JsonTool.h"
 #include "SettingsDialog.h"
 #include "ToolsPage.h"
+#include "PluginHost.h"
 #include "Pinyin.h"
 #include "Utils.h"
 
@@ -944,6 +945,44 @@ void SearchWindow::runSearch()
         return;
     }
 
+    // 插件那一节。定义在这儿、两处都调：工具直达命中时会 return 独占，
+    // 那一节必须先补上，否则插件行会被内置工具吞掉（搜 b64 实测就是这样）。
+    // 两条规矩是从「计划任务抢页」那次教训直接抄过来的：
+    // 命中只认开头（matchStart），而且**绝不 return 独占整页** —— 插件名撞上常用词的时候，
+    // 应用那一节不能被它顶掉。
+    const auto addPluginRows = [&]() -> bool {
+        const auto& plugins = PluginHost::scan();
+        QVector<int> hits;
+        for (int i = 0; i < plugins.size(); ++i) {
+            const PluginHost::Meta& m = plugins[i];
+            if (!m.ok())
+                continue;
+            bool hit = m.name.contains(q, Qt::CaseInsensitive)
+                       || m.id.compare(low, Qt::CaseInsensitive) == 0;
+            for (const QString& kw : m.keywords)
+                if (!hit && (kw.compare(low, Qt::CaseInsensitive) == 0
+                             || (low.size() > 1 && kw.contains(low, Qt::CaseInsensitive))))
+                    hit = true;
+            if (!hit && Pinyin::matchStart(m.name, low) != Pinyin::None)
+                hit = true;
+            if (hit)
+                hits << i;
+        }
+        if (!hits.isEmpty()) {
+            addSection(QStringLiteral("插件"));
+            for (const int i : std::as_const(hits)) {
+                const PluginHost::Meta& m = plugins[i];
+                SearchResult r;
+                r.kind = SearchResult::Command;
+                r.title = m.name;
+                r.subtitle = QStringLiteral("%1 · DLL 插件（点开才加载）").arg(m.desc);
+                r.target = QStringLiteral("plugin:%1").arg(m.id);
+                r.icon = letterIcon(m.name, QColor(150, 120, 60));
+                addItem(r);
+            }
+        }
+        return !hits.isEmpty();
+    };
     // 工具直达：卡片墙里那六件事，搜名字或关键词都能打开（关键词表在 ToolsPage::tools()，
     // 和卡片共用一份，不会两边漂移）。只有"整条查询就是这个词"时才独占结果，
     // 否则只在末尾追加一节 —— 不然"下载""网络"这种常用词会把应用列表挤掉。
@@ -997,6 +1036,7 @@ void SearchWindow::runSearch()
             addSection(QStringLiteral("工具"));
             for (const int i : std::as_const(exact))
                 addToolRow(i);
+            addPluginRows();
             rebuildList();
             return;
         }
@@ -1077,6 +1117,9 @@ void SearchWindow::runSearch()
         for (const int i : std::as_const(toolLoose))
             addToolRow(i);
     }
+
+    addPluginRows();
+
 
     // 文件搜索（≥2 个字符才搜，避免太泛）：丢到线程池，结果稍后插回列表
     if (low.size() >= 2)
@@ -1304,6 +1347,11 @@ void SearchWindow::activateRow(int row)
                 if (auto* dlg = qobject_cast<SettingsDialog*>(m_settingsDlg.data()))
                     dlg->showTool(i);
             }
+        } else if (r.target.startsWith(QLatin1String("plugin:"))) {
+            hide();
+            openSettings();
+            if (auto* dlg = qobject_cast<SettingsDialog*>(m_settingsDlg.data()))
+                dlg->showPlugin(r.target.mid(7));
         } else if (r.target.startsWith(QLatin1String("clip:"))) {
             const QString arg = r.target.mid(5);
             if (arg == QLatin1String("on")) {

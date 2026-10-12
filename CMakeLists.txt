@@ -72,6 +72,7 @@ qt_add_executable(ltool WIN32
     src/Base64Tool.cpp
     src/ClipboardStore.cpp
     src/ToolsPage.cpp
+    src/PluginHost.cpp
     src/Firewall.cpp
     src/InfoRow.cpp
     src/UninstallPage.cpp
@@ -179,6 +180,29 @@ target_compile_definitions(ltool PRIVATE
 
 if(MSVC)
     target_compile_options(ltool PRIVATE /utf-8 /permissive- /W3)
+endif()
+
+# ---- DLL 插件示例：编到 build\Release\plugins\ 下，主程序运行时扫那个目录 ----
+# 装进包里靠 ltool.iss 那条 `Source: "build\Release\*"... recursesubdirs`，不用另加一行。
+qt_add_plugin(ltool-base64 CLASS_NAME Base64Plugin)
+target_sources(ltool-base64 PRIVATE plugins/base64/base64plugin.cpp)
+# 产物先落在 Release 树**外面**：Qt 的插件部署会把依赖倒进目标的输出目录，
+# 放进 build\Release 里会被 ltool.iss 那条 `build\Release\*` 一起收进安装包（实测多 58MB）。
+set_target_properties(ltool-base64 PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/plugin-build
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/plugin-build)
+# 只把这一个 dll 拷进 exe 旁边的 ltool-plugins\（Qt 自己占 plugins 这个名字，别去抢）
+add_custom_command(TARGET ltool-base64 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/Release/ltool-plugins
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:ltool-base64>
+            ${CMAKE_BINARY_DIR}/Release/ltool-plugins/ltool-base64.dll
+    COMMENT "ltool-base64: 拷进 Release/ltool-plugins")
+target_include_directories(ltool-base64 PRIVATE src)
+target_link_libraries(ltool-base64 PRIVATE Qt6::Widgets)
+target_compile_definitions(ltool-base64 PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+if(MSVC)
+    target_compile_options(ltool-base64 PRIVATE /utf-8 /permissive- /W3)
 endif()
 
 # ---- Qt 运行库部署：把 exe 所需的 Qt DLL / platform 插件复制到输出目录，

@@ -34,6 +34,7 @@ public:
 
     static const QVector<ToolDef>& tools();
     void showEmbedded(int which);        // 搜索框也要用：直接展开某张内嵌卡片
+    void showPlugin(const QString& id);    // DLL 插件：点开才加载、才建页
 
 private:
     QWidget* buildGrid();
