@@ -42,7 +42,8 @@
 # 注意：这里原来是 `build/`，改成 `build/*` 是为了把 build/verify 那批交付脚本放进来
 # —— git 不允许"父目录被排除后再重新包含里面的文件"，写 `!build/verify/` 也没用。
 build/*
-Build/
+# 上一行原来还有 `Build/`（GitHub 模板带来的），这台机器上文件系统不分大小写，
+# 它把整个 build 目录又盖掉了 —— 新写的交付脚本（gen_plugins.py 那批）永远进不了库。
 build-*/
 
 # CMake generated files
