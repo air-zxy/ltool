@@ -39,6 +39,7 @@ qt_add_executable(ltool WIN32
     src/EnvPath.cpp
     src/RegClean.cpp
     src/RegistryPage.cpp
+    src/UserAccount.cpp
     src/StartupAudit.cpp
     src/StartupPage.cpp
     src/AppScanner.cpp

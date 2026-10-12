@@ -6,6 +6,7 @@
 #include "JsonTool.h"
 #include "NetworkPage.h"
 #include "RegistryPage.h"
+#include "UserAccount.h"
 #include "StartupPage.h"
 #include "RepairPage.h"
 #include "Utils.h"
@@ -103,6 +104,12 @@ QVector<ToolDef> makeTools()
                   QStringLiteral("startup"), QStringLiteral("autostart"), QStringLiteral("服务"),
                   QStringLiteral("计划任务")},
                  QColor(60, 140, 120), 5});
+    v.push_back({QStringLiteral("Windows 用户名"),
+                 QStringLiteral("看清自己是哪个账户，改显示名或改账户名（都要管理员授权）"),
+                 {QStringLiteral("用户名"), QStringLiteral("账户"), QStringLiteral("改名"),
+                  QStringLiteral("user"), QStringLiteral("username"), QStringLiteral("account"),
+                  QStringLiteral("fullname")},
+                 QColor(120, 90, 200), 6});
     v.push_back({QStringLiteral("JSON 格式化"),
                  QStringLiteral("可折叠树 + 自动换行，文本区可直接改"),
                  {QStringLiteral("json"), QStringLiteral("格式化"), QStringLiteral("json格式化")},
@@ -148,7 +155,7 @@ ToolsPage::ToolsPage(QWidget* parent)
 
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(buildGrid());     // 0 = 卡片墙
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
         auto* placeholder = new QWidget(m_stack);
         m_stack->addWidget(placeholder); // 1..4 = 内嵌页，首次点开才换真页面
     }
@@ -213,7 +220,8 @@ void ToolsPage::showEmbedded(int which)
         case 2: slot = new DiskPage(this); break;
         case 3: slot = new NetworkPage(this); break;
         case 4: slot = new RegistryPage(this); break;
-        default: slot = new StartupPage(this); break;
+        case 5: slot = new StartupPage(this); break;
+        default: slot = new UserAccountPage(this); break;
         }
         m_stack->removeWidget(m_stack->widget(which + 1));
         m_stack->insertWidget(which + 1, slot);

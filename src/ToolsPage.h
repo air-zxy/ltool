@@ -42,5 +42,5 @@ private:
     QStackedWidget* m_stack = nullptr;
     QToolButton* m_back = nullptr;
     QLabel* m_heading = nullptr;
-    QWidget* m_embedded[6] = {};
+    QWidget* m_embedded[7] = {};
 };
