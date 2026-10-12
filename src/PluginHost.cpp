@@ -7,6 +7,7 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLibrary>
 #include <QPluginLoader>
 #include <QWidget>
 
@@ -77,6 +78,14 @@ const QVector<Meta>& scan()
         const QJsonArray ks = meta.value(QLatin1String("Keywords")).toArray();
         for (const QJsonValue& v : ks)
             m.keywords << v.toString();
+        // 卡片图标的颜色：plugin.json 里 "Color":"87,160,40"。没写就别整张卡一个色 ——
+        // 按 id 派生一个色相，九个工具摆在一起还是分得开。
+        const QString rgb = str(meta, "Color");
+        const QStringList parts = rgb.split(QLatin1Char(','), Qt::SkipEmptyParts);
+        if (parts.size() == 3)
+            m.color = QColor(parts[0].toInt(), parts[1].toInt(), parts[2].toInt());
+        else
+            m.color = QColor::fromHsv(int(qHash(m.id) % 360), 120, 170);
         if (m.id.isEmpty() || m.name.isEmpty())
             m.error = QStringLiteral("plugin.json 缺 Id/Name，读到的元数据=%1")
                           .arg(QString::fromUtf8(
@@ -150,6 +159,39 @@ QWidget* page(const QString& id, QWidget* parent, QString* err)
     g_pages.insert(id, w);
     Utils::log(QStringLiteral("plugin: 建页 %1").arg(id));
     return w;
+}
+
+const Meta* meta(const QString& id)
+{
+    for (const Meta& m : scan())
+        if (m.id == id)
+            return &m;
+    return nullptr;
+}
+
+bool feed(const QString& id, const QString& text)
+{
+    LToolPlugin* p = plugin(id);
+    return p && p->feedText(text);
+}
+
+void* selftestEntry(const QString& id)
+{
+    if (!plugin(id))       // 先真加载，符号只在已装载的 dll 上找得到
+        return nullptr;
+    // Qt6 把 QPluginLoader::resolve 删掉了，所以按同一个文件路径开一份 QLibrary：
+    // Windows 的 LoadLibrary 按路径复用模块句柄，这里不会把插件 dll 装第二遍。
+    // 对象留着不销毁 —— 析构会把引用计数放掉，下次再 resolve 就可能重新走一遍装载。
+    static QHash<QString, QLibrary*> libs;
+    QLibrary* lib = libs.value(id, nullptr);
+    if (!lib) {
+        const Meta* m = meta(id);
+        if (!m)
+            return nullptr;
+        lib = new QLibrary(m->file);
+        libs.insert(id, lib);
+    }
+    return lib->resolve("ltoolPluginSelftest");
 }
 
 } // namespace PluginHost

@@ -69,6 +69,24 @@ if ($bh -and $bh -eq $ih) { $verdict = 'MATCH ' + $bh.Substring(0, 12) }
 # 7z 压缩的后端是 7zip.dll：漏打包不会让程序起不来（按需加载），但右键「压缩为 .7z」
 # 就是坏的，而且界面只给一句"加载不了这个库"—— 所以装完必须点名确认它在。
 if (-not (Test-Path 'D:\software\ltool\7zip.dll')) { $verdict += '  !!! 7zip.dll MISSING in install dir' }
+# ltoolcore.dll 是硬导入：缺了**根本不是"某个功能坏了"，是整个程序起不来**（实测把 build 那份
+# 藏掉，ltool.exe 直接 error while loading shared libraries）。九个工具 dll 少一个就是卡片墙
+# 少一张卡。两类都要点名，而且要按哈希比 —— 只看文件在不在，会放过"装了旧的一份"。
+$coreB = (Get-FileHash "$root\build\Release\ltoolcore.dll" -Algorithm SHA256).Hash
+$coreI = if (Test-Path 'D:\software\ltool\ltoolcore.dll') { (Get-FileHash 'D:\software\ltool\ltoolcore.dll' -Algorithm SHA256).Hash } else { '' }
+if ($coreB -ne $coreI) { $verdict += ('  !!! ltoolcore.dll 不对（build {0} inst {1}）' -f $coreB.Substring(0,8), $coreI.Substring(0,8)) }
+$plugins = @()
+if (Test-Path 'D:\software\ltool\ltool-plugins') {
+  $plugins = @(Get-ChildItem 'D:\software\ltool\ltool-plugins\*.dll' -ErrorAction SilentlyContinue)
+}
+$want = @(Get-ChildItem "$root\build\Release\ltool-plugins\*.dll" -ErrorAction SilentlyContinue)
+if ($plugins.Count -ne $want.Count) { $verdict += "  !!! 工具插件装了 $($plugins.Count) 个，构建里有 $($want.Count) 个" }
+foreach ($w in $want) {
+  $d = "D:\software\ltool\ltool-plugins\$($w.Name)"
+  if (-not (Test-Path $d) -or (Get-FileHash $d -Algorithm SHA256).Hash -ne (Get-FileHash $w.FullName -Algorithm SHA256).Hash) {
+    $verdict += "  !!! $($w.Name) 没装或和构建不一致"
+  }
+}
 Phase 'install' $sw $verdict
 
 Start-Process -FilePath 'D:\software\ltool\ltool.exe'

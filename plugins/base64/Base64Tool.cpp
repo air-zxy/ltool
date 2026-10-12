@@ -23,7 +23,6 @@
 
 namespace {
 
-QPointer<Base64Tool> s_win;
 
 // 第一个非法字符的位置（-1 = 全部合法）
 int firstBadChar(const QString& s)
@@ -178,18 +177,11 @@ Base64Tool::Base64Tool(QWidget* parent)
     setMode(true);
 }
 
-void Base64Tool::open(const QString& input)
+void Base64Tool::setText(const QString& text)
 {
-    if (!s_win)
-        s_win = new Base64Tool(nullptr);
-    if (!input.isEmpty()) {
-        s_win->m_input->setPlainText(input);
-        s_win->recompute();
-    }
-    s_win->show();
-    s_win->raise();
-    s_win->activateWindow();
-    Utils::log(QStringLiteral("base64 tool: opened (%1 chars)").arg(s_win->m_input->toPlainText().size()));
+    m_input->setPlainText(text);
+    recompute();
+    Utils::log(QStringLiteral("base64tool: 收到 %1 个字符").arg(text.size()));
 }
 
 void Base64Tool::setMode(bool decode)

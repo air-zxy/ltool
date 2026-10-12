@@ -309,25 +309,13 @@ void SettingsDialog::ensurePage(int index)
     m_stack->setCurrentIndex(index);
 }
 
-void SettingsDialog::showPlugin(const QString& id)
+// 工具都是 DLL 插件，所以这里只剩一条路：把设置页开到「工具」那一行，再展开那张卡。
+// 返回 false = 那个 id 没加载起来（ToolsPage 里已经写了一条带原因的日志）。
+bool SettingsDialog::showTool(const QString& id, const QString& text)
 {
-    ensurePage(5);             // 和 showTool 同一套路：先把设置页开到「工具」那一行
-    m_menu->setCurrentRow(5);
-    if (m_toolsPage)
-        m_toolsPage->showPlugin(id);
-}
-
-void SettingsDialog::showTool(int toolIndex)
-{
-    if (toolIndex < 0 || toolIndex >= ToolsPage::tools().size())
-        return;
-    const int embedded = ToolsPage::tools()[toolIndex].embedded;
-    if (embedded < 0)          // 独立窗口的工具不该走这条路，但别静默吞掉
-        return;
     ensurePage(5);             // 「工具」那一行
     m_menu->setCurrentRow(5);
-    if (m_toolsPage)
-        m_toolsPage->showEmbedded(embedded);
+    return m_toolsPage && m_toolsPage->showTool(id, text);
 }
 
 void SettingsDialog::showEvent(QShowEvent* e)
@@ -342,7 +330,7 @@ void SettingsDialog::showEvent(QShowEvent* e)
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
-void SettingsDialog::openAt(int menuRow, int tab, int embedded)
+void SettingsDialog::openAt(int menuRow, int tab, const QString& toolId)
 {
     m_menu->setCurrentRow(qBound(0, menuRow, m_menu->count() - 1));
     if (tab >= 0) {
@@ -350,6 +338,6 @@ void SettingsDialog::openAt(int menuRow, int tab, int embedded)
         if (auto* tabs = page ? page->findChild<QTabWidget*>() : nullptr)
             tabs->setCurrentIndex(qBound(0, tab, tabs->count() - 1));
     }
-    if (embedded >= 0 && m_toolsPage)
-        m_toolsPage->showEmbedded(embedded);
+    if (!toolId.isEmpty() && m_toolsPage)
+        m_toolsPage->showTool(toolId);
 }

@@ -1,47 +1,35 @@
 #pragma once
 
-#include <QColor>
 #include <QString>
-#include <QStringList>
-#include <QVector>
 #include <QWidget>
 
-#include <functional>
-
-class QGridLayout;
 class QLabel;
 class QStackedWidget;
 class QToolButton;
 
-// 一个工具条目。这张表是唯一来源：卡片墙按它画，搜索框也按它匹配，
-// 加一个工具只需要在这里加一行。
-struct ToolDef {
-    QString name;
-    QString desc;
-    QStringList keywords;   // 搜索框里的命中词（小写）
-    QColor color;
-    int embedded;           // >=0 = 内嵌页索引；-1 = JSON 窗口；-2 = Base64 窗口
-};
-
-// 配置 - 工具页：七张小卡片。
-//   五张是内嵌页面（DLL 修复 / 广告弹窗 / 磁盘清理 / 网络 / 注册表分析），点进去在原地展开，带返回条；
-//   两张是独立窗口（JSON 格式化 / Base64 编解码），点开的是各自的工具窗。
-// 内嵌页面懒创建：DiskPage 这类页面构造时就会读盘/建 UI，不该在打开设置页时全建好。
+// 配置 - 工具页。卡片墙**完全由插件目录决定**：`<exe 目录>\ltool-plugins\*.dll`。
+// 九个自带工具（DLL 修复 / 广告弹窗 / 磁盘清理 / 网络 / 注册表分析 / 开机启动分析 /
+// Windows 用户名 / JSON / Base64）现在也是插件，和别人写的插件走同一条路，没有特判。
+//
+// 画卡片只读元数据（plugin.json 嵌在 dll 里），点开才 LoadLibrary + createPage；
+// 加载过的页缓存着复用，插件 dll 只装不卸。
+// 目录空了 / 某个 dll 没通过检查 —— 界面上一行老实话说出来，不能默默一张卡都不显示。
 class ToolsPage : public QWidget {
     Q_OBJECT
 public:
     explicit ToolsPage(QWidget* parent = nullptr);
 
-    static const QVector<ToolDef>& tools();
-    void showEmbedded(int which);        // 搜索框也要用：直接展开某张内嵌卡片
-    void showPlugin(const QString& id);    // DLL 插件：点开才加载、才建页
+    // 搜索框 / 托盘都走这条：展开那张页，可选地把一段文本递给它。
+    // 返回 false = 这个 id 没加载起来（错误已经进日志，界面上说了一句人话）。
+    bool showTool(const QString& id, const QString& text = QString());
+
+    void rebuildGrid();       // 重新扫插件目录之后重画卡片墙
 
 private:
     QWidget* buildGrid();
-    void addCard(QGridLayout* grid, int slot, const ToolDef& td);
 
     QStackedWidget* m_stack = nullptr;
     QToolButton* m_back = nullptr;
     QLabel* m_heading = nullptr;
-    QWidget* m_embedded[7] = {};
+    QWidget* m_grid = nullptr;    // stack 的第 0 格，就是卡片墙本身
 };

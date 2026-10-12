@@ -50,10 +50,7 @@ qt_add_library(ltoolcore SHARED
     src/Utils.cpp
     src/EnvPath.cpp
     src/RegClean.cpp
-    src/RegistryPage.cpp
-    src/UserAccount.cpp
     src/StartupAudit.cpp
-    src/StartupPage.cpp
     src/AppScanner.cpp
     src/Pinyin.cpp
     src/SysTools.cpp
@@ -74,14 +71,8 @@ qt_add_library(ltoolcore SHARED
     src/InstallLogDialog.cpp
     src/SilentInstallLog.cpp
     src/FileTools.cpp
-    src/RepairPage.cpp
-    src/AdsPage.cpp
     src/AdBlocker.cpp
     src/DiskScan.cpp
-    src/DiskPage.cpp
-    src/NetworkPage.cpp
-    src/JsonTool.cpp
-    src/Base64Tool.cpp
     src/ClipboardStore.cpp
     src/ToolsPage.cpp
     src/PluginHost.cpp
@@ -104,7 +95,10 @@ qt_add_library(ltoolcore SHARED
     src/SettingsDialog.cpp
     src/SearchWindow.cpp
 )
-set_target_properties(ltoolcore PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+set_target_properties(ltoolcore PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON
+    # 导入库（1.7MB）挪出 Release 树：安装包按 build\Release\* 递归收走，躺在里面的
+    # ltoolcore.lib/.exp 不是运行时文件，纯属被误打包
+    ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/lib)
 # core-api.h 靠它决定是 dllexport 还是 dllimport（只有编 core 这一份目标定义）
 target_compile_definitions(ltoolcore PRIVATE LTOOL_CORE_BUILD)
 
@@ -215,28 +209,49 @@ add_dependencies(ltool appicon)
 target_link_libraries(ltool PRIVATE ltoolcore)
 ltool_target_setup(ltool)
 
-# ---- DLL 插件示例：编到 build\Release\plugins\ 下，主程序运行时扫那个目录 ----
-# 装进包里靠 ltool.iss 那条 `Source: "build\Release\*"... recursesubdirs`，不用另加一行。
-qt_add_plugin(ltool-base64 CLASS_NAME Base64Plugin)
-target_sources(ltool-base64 PRIVATE plugins/base64/base64plugin.cpp)
-# 产物先落在 Release 树**外面**：Qt 的插件部署会把依赖倒进目标的输出目录，
+# ---- 工具插件：九个各一个 dll，产出后拷进 exe 旁边的 ltool-plugins\ ----
+#
+# 产物先落在 Release 树**外面**（plugin-build）：Qt 的插件部署会往目标的输出目录倒依赖，
 # 放进 build\Release 里会被 ltool.iss 那条 `build\Release\*` 一起收进安装包（实测多 58MB）。
-set_target_properties(ltool-base64 PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/plugin-build
-    LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/plugin-build)
-# 只把这一个 dll 拷进 exe 旁边的 ltool-plugins\（Qt 自己占 plugins 这个名字，别去抢）
-add_custom_command(TARGET ltool-base64 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/Release/ltool-plugins
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:ltool-base64>
-            ${CMAKE_BINARY_DIR}/Release/ltool-plugins/ltool-base64.dll
-    COMMENT "ltool-base64: 拷进 Release/ltool-plugins")
-target_include_directories(ltool-base64 PRIVATE src)
-target_link_libraries(ltool-base64 PRIVATE Qt6::Widgets)
-target_compile_definitions(ltool-base64 PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
-if(MSVC)
-    target_compile_options(ltool-base64 PRIVATE /utf-8 /permissive- /W3)
-endif()
+# 只有那一个 dll 进 ltool-plugins\ —— 目录名不能叫 plugins，Qt 自己占那个名字（windeployqt
+# 会往里面放 imageformats/platforms 那些）。
+#
+# 每个插件的三件套：<id>plugin.cpp（实现 LToolPlugin 的那层壳）、页面本体（从 src 搬过来的）、
+# plugin.json（Id/Name/Desc/Keywords/Api/Color，宿主只读元数据就能画卡片，不用实例化）。
+function(ltool_add_tool id cls)
+    set(tgt ltool-${id})
+    qt_add_plugin(${tgt} CLASS_NAME ${cls})
+    target_sources(${tgt} PRIVATE ${ARGN} plugins/${id}/plugin.json)
+    set_target_properties(${tgt} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/plugin-build
+        LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/plugin-build)
+    add_custom_command(TARGET ${tgt} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/Release/ltool-plugins
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:${tgt}>
+                ${CMAKE_BINARY_DIR}/Release/ltool-plugins/$<TARGET_FILE_NAME:${tgt}>
+        COMMENT "${tgt}: 拷进 Release/ltool-plugins")
+    # 链 core：工具页要用 Utils/InfoRow/DiskScan 那一份共享实现，不是复制一份
+    target_link_libraries(${tgt} PRIVATE ltoolcore)
+    ltool_target_setup(${tgt})
+endfunction()
+
+ltool_add_tool(repair RepairPlugin      plugins/repair/RepairPage.cpp plugins/repair/repairplugin.cpp)
+ltool_add_tool(ads AdsPlugin            plugins/ads/AdsPage.cpp plugins/ads/adsplugin.cpp)
+ltool_add_tool(disk DiskPlugin          plugins/disk/DiskPage.cpp plugins/disk/diskplugin.cpp)
+ltool_add_tool(network NetworkPlugin    plugins/network/NetworkPage.cpp plugins/network/networkplugin.cpp)
+ltool_add_tool(registry RegistryPlugin  plugins/registry/RegistryPage.cpp plugins/registry/registryplugin.cpp)
+ltool_add_tool(startup StartupPlugin    plugins/startup/StartupPage.cpp plugins/startup/startupplugin.cpp)
+ltool_add_tool(user UserPlugin          plugins/user/UserAccount.cpp plugins/user/userplugin.cpp
+                                                      plugins/user/userselftest.cpp)
+ltool_add_tool(json JsonPlugin          plugins/json/JsonTool.cpp plugins/json/jsonplugin.cpp)
+ltool_add_tool(base64 Base64Plugin      plugins/base64/Base64Tool.cpp plugins/base64/base64plugin.cpp)
+
+# 交付闭环是 `cmake --build --target ltool`（只编主程序那一棵）。插件目标只依赖 core，
+# 不在 ltool 的依赖图上 —— 不点名挂上去，改完页面不重编，ISCC 照旧把**上一个 dll**
+# 打进安装包，装出来的还是旧的（构建那一段照样报绿）。
+add_dependencies(ltool ltool-repair ltool-ads ltool-disk ltool-network ltool-registry
+                        ltool-startup ltool-user ltool-json ltool-base64)
 
 # ---- Qt 运行库部署：把 exe 所需的 Qt DLL / platform 插件复制到输出目录，
 #      避免 "no Qt platform plugin could be initialized" ----

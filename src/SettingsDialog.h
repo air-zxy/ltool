@@ -16,10 +16,11 @@ class LTOOL_CORE_API SettingsDialog : public QDialog {
 public:
     explicit SettingsDialog(QWidget* parent = nullptr);
 
-    // 搜索框直接打开某个工具：跳到「工具」页并展开那张卡片对应的内嵌页
-    void showTool(int toolIndex);
-    void showPlugin(const QString& id);   // DLL 插件：进工具页并点开那张卡
-    void openAt(int menuRow, int tab = -1, int embedded = -1);   // 直达某一页（可选里面的第几个 tab）
+    // 搜索框/托盘直接打开某个工具：跳到「工具」页并展开那张卡（工具现在全是 DLL 插件）。
+    // text 非空 = 顺手把这段文本递给那个工具。返回 false = 那个 id 没加载起来。
+    bool showTool(const QString& id, const QString& text = QString());
+    // 直达某一页（可选里面的第几个 tab；toolId 非空就再展开那个工具的页）
+    void openAt(int menuRow, int tab = -1, const QString& toolId = QString());
 
 signals:
     // 索引相关设置变化，需要触发一次重新扫描

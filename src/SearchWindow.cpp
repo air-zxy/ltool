@@ -1,13 +1,11 @@
 #include "SearchWindow.h"
 
-#include "Base64Tool.h"
 #include "CaptureOverlay.h"
 #include "ClipboardStore.h"
 #include "DevEnv.h"
 #include "EnvPath.h"
 #include "FileTools.h"
 #include "FileIndexer.h"
-#include "JsonTool.h"
 #include "SettingsDialog.h"
 #include "ToolsPage.h"
 #include "PluginHost.h"
@@ -437,6 +435,15 @@ void SearchWindow::openSettings()
     dlg->activateWindow();
 }
 
+// 托盘那两项和搜索框的结果行都走这条：弹设置页 → 工具页 → 展开那个插件的页。
+// 工具全搬进 DLL 插件之后，主程序里再没有 JsonTool/Base64Tool 这两个类可以 new 了。
+void SearchWindow::openTool(const QString& id, const QString& text)
+{
+    openSettings();
+    if (auto* dlg = qobject_cast<SettingsDialog*>(m_settingsDlg.data()))
+        dlg->showTool(id, text);
+}
+
 // ---------- 显示/隐藏 ----------
 
 void SearchWindow::showLauncher()
@@ -705,19 +712,28 @@ void SearchWindow::runSearch()
     const QString q = halfWidth(m_input->text()).trimmed();
     const QString low = q.toLower();
 
-    // 一行工具结果：空查询的"常用"面板和搜工具时共用
+    // 一行工具结果：空查询的"常用"面板和搜工具时共用。
+    // 索引指的是 PluginHost::scan() 里那一条 —— 九个自带工具现在也是插件，这里没有特判。
     const auto addToolRow = [this](int i) {
-        const ToolDef& td = ToolsPage::tools()[i];
+        const PluginHost::Meta& td = PluginHost::scan()[i];
         SearchResult r;
         r.kind = SearchResult::Command;
         r.title = QStringLiteral("打开 %1").arg(td.name);
-        r.subtitle = td.embedded >= 0 ? QStringLiteral("%1 · 在设置 → 工具里展开")
-                                       .arg(td.desc)
-                                      : QStringLiteral("%1 · 独立窗口").arg(td.desc);
-        r.target = QStringLiteral("tool:%1").arg(i);
+        r.subtitle = QStringLiteral("%1 · DLL 工具（点开才加载）").arg(td.desc);
+        r.target = QStringLiteral("tool:%1").arg(td.id);
         r.icon = letterIcon(td.name, td.color);
         addItem(r);
     };
+
+    // 插件目录里"通过检查"的那几条的下标，卡片墙和这里共用同一个顺序。
+    // 没通过的不在结果里（工具页那面会单独把原因写出来），但也不能因为它就少一张卡。
+    QVector<int> toolIndices;
+    {
+        const auto& metas = PluginHost::scan();
+        for (int i = 0; i < metas.size(); ++i)
+            if (metas[i].ok())
+                toolIndices << i;
+    }
 
     if (q.isEmpty()) {
         if (!m_showFavorites) {
@@ -795,7 +811,7 @@ void SearchWindow::runSearch()
         }
 
         addSection("── 工具 ──");
-        for (int i = 0; i < ToolsPage::tools().size(); ++i)
+        for (const int i : toolIndices)
             addToolRow(i);
 
         // 文件：只列真正打开过的（usage 里以 file: 前缀记录），并且现在还在
@@ -866,14 +882,14 @@ void SearchWindow::runSearch()
         return;
     }
 
-    // json 命令行（带内容）：直接把那串丢进 JSON 工具窗解析
+    // json 命令行（带内容）：直接把那串递给 JSON 工具那张页解析
     if (tok0 == "json" && !q.mid(tok0.size()).trimmed().isEmpty()) {
         SearchResult r;
         r.kind = SearchResult::Command;
         r.title = "json — 把后面这串丢进 JSON 格式化";
         const QString payload = q.mid(tok0.size()).trimmed();
-        r.subtitle = QStringLiteral("按 Enter 打开工具窗并解析 %1 个字符").arg(payload.size());
-        r.target = "json";
+        r.subtitle = QStringLiteral("按 Enter 打开工具页并解析 %1 个字符").arg(payload.size());
+        r.target = "tool:json";
         r.extra = payload;
         r.icon = letterIcon("{}", QColor(90, 140, 220));
         addItem(r);
@@ -881,14 +897,14 @@ void SearchWindow::runSearch()
         return;
     }
 
-    // base64 命令行（带内容）：直接把那串丢进编解码工具
+    // base64 命令行（带内容）：直接把那串递给编解码那张页
     if ((tok0 == "b64" || tok0 == "base64") && !q.mid(tok0.size()).trimmed().isEmpty()) {
         SearchResult r;
         r.kind = SearchResult::Command;
         r.title = "b64 — 把后面这串拿去解码";
         const QString payload = q.mid(tok0.size()).trimmed();
-        r.subtitle = QStringLiteral("按 Enter 打开工具窗并解码 %1 个字符").arg(payload.size());
-        r.target = "b64";
+        r.subtitle = QStringLiteral("按 Enter 打开工具页并解码 %1 个字符").arg(payload.size());
+        r.target = "tool:base64";
         r.extra = payload;
         r.icon = letterIcon("=", QColor(190, 130, 60));
         addItem(r);
@@ -945,61 +961,28 @@ void SearchWindow::runSearch()
         return;
     }
 
-    // 插件那一节。定义在这儿、两处都调：工具直达命中时会 return 独占，
-    // 那一节必须先补上，否则插件行会被内置工具吞掉（搜 b64 实测就是这样）。
+    // 工具直达：卡片墙那些事，搜名字或关键词都能打开。
+    // 现在九个自带工具和别人写的插件是同一张表（PluginHost::scan()），这里没有"内置"特判。
     // 两条规矩是从「计划任务抢页」那次教训直接抄过来的：
-    // 命中只认开头（matchStart），而且**绝不 return 独占整页** —— 插件名撞上常用词的时候，
-    // 应用那一节不能被它顶掉。
-    const auto addPluginRows = [&]() -> bool {
-        const auto& plugins = PluginHost::scan();
-        QVector<int> hits;
-        for (int i = 0; i < plugins.size(); ++i) {
-            const PluginHost::Meta& m = plugins[i];
-            if (!m.ok())
-                continue;
-            bool hit = m.name.contains(q, Qt::CaseInsensitive)
-                       || m.id.compare(low, Qt::CaseInsensitive) == 0;
-            for (const QString& kw : m.keywords)
-                if (!hit && (kw.compare(low, Qt::CaseInsensitive) == 0
-                             || (low.size() > 1 && kw.contains(low, Qt::CaseInsensitive))))
-                    hit = true;
-            if (!hit && Pinyin::matchStart(m.name, low) != Pinyin::None)
-                hit = true;
-            if (hit)
-                hits << i;
-        }
-        if (!hits.isEmpty()) {
-            addSection(QStringLiteral("插件"));
-            for (const int i : std::as_const(hits)) {
-                const PluginHost::Meta& m = plugins[i];
-                SearchResult r;
-                r.kind = SearchResult::Command;
-                r.title = m.name;
-                r.subtitle = QStringLiteral("%1 · DLL 插件（点开才加载）").arg(m.desc);
-                r.target = QStringLiteral("plugin:%1").arg(m.id);
-                r.icon = letterIcon(m.name, QColor(150, 120, 60));
-                addItem(r);
-            }
-        }
-        return !hits.isEmpty();
-    };
-    // 工具直达：卡片墙里那六件事，搜名字或关键词都能打开（关键词表在 ToolsPage::tools()，
-    // 和卡片共用一份，不会两边漂移）。只有"整条查询就是这个词"时才独占结果，
-    // 否则只在末尾追加一节 —— 不然"下载""网络"这种常用词会把应用列表挤掉。
+    // ① 命中只认开头（matchStart）—— 中段撞上是"名字里正好含这几个字母"，
+    //    拿它独占整页会把用户要的那个顶掉（搜 renwu 想要任务管理器，却被「开机启动分析」
+    //    的关键词"计划任务"当成直达）；
+    // ② 只有"整条查询就是这个词"才 return 独占，否则只在末尾追加一节 ——
+    //    不然"下载""网络"这种常用词会把应用列表挤掉。
     QVector<int> toolLoose;
     {
-        const auto& list = ToolsPage::tools();
+        const auto& metas = PluginHost::scan();
         if (low == QStringLiteral("工具") || low == QStringLiteral("tools")
             || low == QStringLiteral("工具箱")) {   // 想看全部就搜"工具"
             addSection(QStringLiteral("工具"));
-            for (int i = 0; i < list.size(); ++i)
+            for (const int i : std::as_const(toolIndices))
                 addToolRow(i);
             rebuildList();
             return;
         }
         QVector<int> exact;
-        for (int i = 0; i < list.size(); ++i) {
-            const ToolDef& td = list[i];
+        for (const int i : std::as_const(toolIndices)) {
+            const PluginHost::Meta& td = metas[i];
             const QString name = td.name.toLower();
             bool hitExact = (low == name);
             bool hitLoose = low.contains(name);
@@ -1012,11 +995,8 @@ void SearchWindow::runSearch()
                 if (low.contains(k))
                     hitLoose = true;
             }
-            // 拼音直达：cipanqingli / cpql 也算"就要这个工具"。工具就卡片墙那六件事，
+            // 拼音直达：cipanqingli / cpql 也算"就要这个工具"。工具就卡片墙那几件事，
             // 命中面比应用列表窄得多，所以首字母也当直达（应用那边首字母只排第三档）。
-            // 但**必须从开头命中**（matchStart）：中段命中是"名字里正好含这几个字母"，
-            // 拿它独占整页结果会把用户要的那个顶掉 —— 搜 renwu 想要任务管理器，
-            // 却因为「开机启动分析」的关键词"计划任务"（jihua+renwu）被当成直达。
             if (!hitExact && Pinyin::usableQuery(low)) {
                 if (Pinyin::matchStart(td.name, low) != Pinyin::None)
                     hitExact = true;
@@ -1036,7 +1016,6 @@ void SearchWindow::runSearch()
             addSection(QStringLiteral("工具"));
             for (const int i : std::as_const(exact))
                 addToolRow(i);
-            addPluginRows();
             rebuildList();
             return;
         }
@@ -1118,7 +1097,6 @@ void SearchWindow::runSearch()
             addToolRow(i);
     }
 
-    addPluginRows();
 
 
     // 文件搜索（≥2 个字符才搜，避免太泛）：丢到线程池，结果稍后插回列表
@@ -1326,32 +1304,10 @@ void SearchWindow::activateRow(int row)
         if (r.target == "rescan") {
             m_hint->setText("正在重新扫描，完成后会自动刷新…");
             startScan(false, true);
-        } else if (r.target == "json") {
-            hide();
-            JsonTool::open(r.extra);
-        } else if (r.target == "b64") {
-            hide();
-            Base64Tool::open(r.extra);
         } else if (r.target.startsWith(QLatin1String("tool:"))) {
-            const int i = r.target.mid(5).toInt();
-            if (i < 0 || i >= ToolsPage::tools().size())
-                break;
-            const ToolDef& td = ToolsPage::tools()[i];
+            // 工具就是 DLL 插件：先弹设置页，再展开那张卡；r.extra 有内容就顺手递给那页
             hide();
-            if (td.embedded == -1) {
-                JsonTool::open();
-            } else if (td.embedded == -2) {
-                Base64Tool::open();
-            } else {
-                openSettings();   // 内嵌页在设置页里，先弹设置页再展开那张卡片
-                if (auto* dlg = qobject_cast<SettingsDialog*>(m_settingsDlg.data()))
-                    dlg->showTool(i);
-            }
-        } else if (r.target.startsWith(QLatin1String("plugin:"))) {
-            hide();
-            openSettings();
-            if (auto* dlg = qobject_cast<SettingsDialog*>(m_settingsDlg.data()))
-                dlg->showPlugin(r.target.mid(7));
+            openTool(r.target.mid(5), r.extra);
         } else if (r.target.startsWith(QLatin1String("clip:"))) {
             const QString arg = r.target.mid(5);
             if (arg == QLatin1String("on")) {

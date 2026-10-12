@@ -128,7 +128,7 @@ installer\ltool-0.4.0-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 - `searchUrl`：可选；配置后输入 `gh qt6` 会提供"在 GitHub 搜索 qt6"
 - 输入完整网址（如 `linux.do`）也会直接提供"在浏览器打开"
 
-## 开发环境插件
+## 开发环境插件（JSON）
 
 默认插件是 JSON 文件，放在 `%APPDATA%\ltool\plugins\`（首次运行自动生成）：
 
@@ -146,6 +146,53 @@ installer\ltool-0.4.0-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 
 - `cmd`：检测命令（是否存在 + 输出版本）
 - `wingetId`：缺失时 Enter 触发的 winget 包（可省略，配 `note` 纯提示）
+
+## 工具插件（DLL）—— 九个自带工具就是这套机制跑出来的
+
+设置 → 工具那一面的卡片墙**完全由插件目录决定**：`<exe 目录>\ltool-plugins\*.dll`。
+现在的九个（DLL 修复 / 广告弹窗 / 磁盘清理 / 网络 / 注册表分析 / 开机启动分析 /
+Windows 用户名 / JSON 格式化 / Base64 编解码）和第三方插件走同一条路，主程序里没有"内置工具"特判。
+
+| 目录 | 是什么 |
+| --- | --- |
+| `ltool.exe`（318 KB） | 只剩热键、托盘、单实例、命令行自测入口 |
+| `ltoolcore.dll`（2.6 MB） | 主程序和插件**共用的一份实现**：`Utils` / `DevEnv` / `SilentInstallLog` / `AdBlocker` / `RegClean` / `InfoRow` / `FileTools` / `SysTools` / `DiskScan` / `StartupAudit` + 启动器/设置窗那一整套界面 |
+| `ltool-plugins\ltool-<id>.dll` | 一个工具一个：页面本体 + 一层 `LToolPlugin` 壳 + 嵌在 dll 里的 `plugin.json` |
+
+`src/ltool-plugin.h` 是两边唯一的契约：`apiVersion / id / name / desc / keywords / createPage / feedText / save / load`。
+要点：
+
+- **画卡片只读元数据**（`QPluginLoader::metaData()`，`plugin.json` 的内容嵌在 `MetaData` 那一层下面），
+  点开才 `LoadLibrary` + `createPage`；页建过一次就缓存复用。
+- **只装不卸**：Qt 插件 unload 之后里面活着的 `QWidget`/定时器就是悬空指针。要禁用某个工具就把 dll 改名或删掉，下次启动生效。
+- 版本闸两层：IID 不符 `QPluginLoader` 自己拒；`Api` 不等主程序拒，并在卡片墙那行**说人话**
+  （"这个插件是给 API 1 编的，ltool 现在是 API 2"），不让人对着"加载失败"猜。
+- 元数据不齐（缺 `Id`/`Name`）或者塞进来一个 Qt 自己的图片格式插件，同样点名说清楚，
+  而不是默默少一张卡。目录整个空了 = 这个安装是坏的，界面上也会这么写。
+- 搜索框里工具那一节按名字/关键词/拼音匹配，**命中只认开头**（`Pinyin::matchStart`）且绝不独占整页
+  —— 否则搜 `renwu` 想要任务管理器会被「开机启动分析」的关键词"计划任务"顶掉。
+- `feedText`（API 2）：`json 这串…` / `b64 这串…` 把一段文本递给那个工具的页。
+
+加一个工具（或把现有的拆出去自己维护）只要三样，都在 `plugins/<id>/` 下：
+
+1. `plugin.json`：`{"Id":"...","Name":"...","Desc":"...","Api":2,"Keywords":[...],"Color":"r,g,b"}`
+2. 页面本体：一个 `QWidget` 子类（怎么排版、读什么数据都随意，用 `ltoolcore` 的现成件就行）
+3. 壳：`QObject` + `LToolPlugin` 两个基类，`Q_PLUGIN_METADATA(IID LTOOL_PLUGIN_IID FILE "plugin.json")`
+   + `Q_INTERFACES(LToolPlugin)`，照 `plugins/network/networkplugin.cpp` 抄一份改五个函数
+
+然后在 `CMakeLists.txt` 里 `ltool_add_tool(network NetworkPlugin plugins/network/NetworkPage.cpp plugins/network/networkplugin.cpp)`
+加一行（它负责把产物拷进 `build\Release\ltool-plugins\`，安装包按 `build\Release\*` 递归收走）。
+`build/verify/gen_plugins.py` 是这九个壳的生成器 —— 名字/描述/关键词/颜色只有一个来源，
+`--plugintest` 会把 `plugin.json` 那份和壳里那五个 `override` 对一遍，漂移当场变红。
+
+编译要求（不是建议，是"凑不齐就崩在两边的堆上"）：**同一个 MSVC 工具集、同一份按 /MD 运行的
+Qt6\*.dll、同为 Release**；跨边界只递 Qt 类型，不递 `std::string`/`std::vector`。
+自测入口 `ltool.exe --plugintest`（约 60 条，全程离屏、一次都不 `show()`）：九个插件逐个验
+"元数据通过 → 真加载 → 建页 → 没显示 → 缓存命中 → 两边元数据一致"，外加递文本、
+卡片墙张数与几何（`WA_DontShowOnScreen` 走完整布局但不往屏幕上贴像素）。
+判据反证做过：把 `ltool-disk.dll` 藏掉 → 4 条红（含"九个工具都在卡片墙上 got=[8]"）；
+把 `ltoolcore.dll` 藏掉 → `ltool.exe` 连进程都起不来（实测 error while loading shared libraries），
+所以交付闭环按 SHA256 逐个比 core 和九个插件 dll，装错装漏都硬停。
 
 ## 配置与数据目录
 

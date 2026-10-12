@@ -28,7 +28,6 @@
 
 namespace {
 
-QPointer<JsonTool> s_win;
 
 // 树里一个节点显示成 "键 = 值"；容器把子项数量也写出来，折叠时一眼看得出里面有多少东西
 QString scalarText(const QJsonValue& v)
@@ -185,18 +184,11 @@ JsonTool::JsonTool(QWidget* parent)
     connect(m_edit, &QPlainTextEdit::textChanged, debounce, [debounce] { debounce->start(); });
 }
 
-void JsonTool::open(const QString& text)
+void JsonTool::setText(const QString& text)
 {
-    if (!s_win)
-        s_win = new JsonTool(nullptr);
-    if (!text.isEmpty()) {
-        s_win->m_edit->setPlainText(text);
-        s_win->reparse(true);
-    }
-    s_win->show();
-    s_win->raise();
-    s_win->activateWindow();
-    Utils::log(QStringLiteral("json tool: opened (%1 chars)").arg(s_win->m_edit->toPlainText().size()));
+    m_edit->setPlainText(text);
+    reparse(true);
+    Utils::log(QStringLiteral("jsontool: 收到 %1 个字符").arg(text.size()));
 }
 
 void JsonTool::reparse(bool rewriteText)

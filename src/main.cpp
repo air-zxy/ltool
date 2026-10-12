@@ -1,6 +1,5 @@
 #include "AppScanner.h"
 #include "AdBlocker.h"
-#include "Base64Tool.h"
 #include "CaptureOverlay.h"
 #include "ConfigPage.h"
 #include "PinWindow.h"
@@ -14,10 +13,10 @@
 #include "QMouseEvent"
 #include "ClipboardStore.h"
 #include "DevEnv.h"
-#include "DiskPage.h"
-#include "UserAccount.h"
 #include "ToolsPage.h"
 #include "PluginHost.h"
+#include <algorithm>
+#include <QPlainTextEdit>
 #include "ltool-plugin.h"
 #include "DiskScan.h"
 #include "FileIndexer.h"
@@ -28,7 +27,6 @@
 #include "Ocr.h"
 #include "OcrPp.h"
 #include "OcrPanel.h"
-#include "JsonTool.h"
 #include "RegClean.h"
 #include "Firewall.h"
 #include "SoftwarePage.h"
@@ -278,6 +276,25 @@ int runFwProbe(const QStringList& args)
 
 // --uptime：无界面地把"软件"菜单那一行的两个页面各构造一次，量出卡顿在哪一段
 // --adscan：量一次"广告拦截每 5 秒在 GUI 线程上做的事"到底有多贵（无界面）
+// 跑某个插件自带的判据（插件里导出 extern "C" int ltoolPluginSelftest()）。
+// 页面代码搬进 DLL 之后主程序链接不到它内部的测试函数，只能这样点名要。
+// 找不到符号**必须算失败**，不能当通过 —— 否则"插件没加载起来"会伪装成"测试全绿"。
+int runPluginSelftest(const QString& id)
+{
+    using Fn = int (*)();
+    const auto fn = reinterpret_cast<Fn>(PluginHost::selftestEntry(id));
+    if (!fn) {
+        std::printf("FAIL %s：没有可用的判据入口（插件没加载起来，或没导出 ltoolPluginSelftest）\n",
+                    id.toUtf8().constData());
+        std::printf("%s: 失败 1 项\n", id.toUtf8().constData());
+        return 1;
+    }
+    const int bad = fn();
+    std::printf("%s: 失败 %d 项\n", id.toUtf8().constData(), bad);
+    std::fflush(stdout);
+    return bad == 0 ? 0 : 1;
+}
+
 int runAdScan()
 {
     for (int pass = 0; pass < 3; ++pass) {
@@ -587,162 +604,15 @@ int main(int argc, char* argv[])
         return runDiskTiming();
 
     // --rowmenu：磁盘页两栏列表的右键（只有界面在用，且真按一下就会拉起资源管理器，
-    // 所以判据放在 DiskPage.cpp 里、这里只负责跑）。
-    if (args.contains("--rowmenu")) {
-        const int bad = diskRowMenuSelftest();
-        std::printf("rowmenu: 失败 %d 项\n", bad);
-        return bad == 0 ? 0 : 1;
-    }
+    // 所以判据放在插件里 DiskPage.cpp，这里只负责点名跑它）。
+    if (args.contains("--rowmenu"))
+        return runPluginSelftest(QStringLiteral("disk"));
 
-    // --username：验「工具 → Windows 用户名」这一页的判据。
+    // --username：验「工具 → Windows 用户名」这一页的判据。页面搬进 DLL 插件之后，
+    // 判据跟着页一起进插件（主程序链接不到 UserAccountPage），这儿只负责点名跑它。
     // **一条都不真的去改账户/建账户** —— 那是不可逆级别的动作，只能在界面上由人按下。
-    // 这里量的是：读回来的现场、拼出去的那段提权脚本长什么样（引号翻倍 = 没有逃逸口）、
-    // 名字合法性、以及页面上的按钮真的摆在布局里。
-    if (args.contains("--username")) {
-        int bad = 0;
-        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
-            const bool ok = got == want;
-            if (!ok)
-                ++bad;
-            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
-                        got.toUtf8().constData(), want.toUtf8().constData());
-        };
-        const auto has = [&bad](const char* name, bool ok) {
-            std::printf("%s %s\n", ok ? "PASS" : "FAIL", name);
-            if (!ok)
-                ++bad;
-        };
-        using namespace UserAccount;
-
-        // ---- 引号：这段是要提权执行的，逃逸口必须没有 ----
-        check("psQuote 把单引号翻倍", psQuote(QStringLiteral("a'b")), QStringLiteral("'a''b'"));
-        check("psQuote 包住整串", psQuote(QStringLiteral("x")).left(1) + psQuote(QStringLiteral("x")).right(1),
-              QStringLiteral("''"));
-        const QString evil = QStringLiteral("x'; Add-LocalGroupMember -Group 'Administrators'; #");
-        const QString quoted = psQuote(evil);
-        has("psQuote 对注入串：首尾各一个引号、里面没有裸单引号",
-            quoted.startsWith(QLatin1Char('\'')) && quoted.endsWith(QLatin1Char('\''))
-                && [&quoted] {
-                    const QString inner = quoted.mid(1, quoted.size() - 2);
-                    for (int i = 0; i < inner.size(); ++i) {
-                        if (inner.at(i) != QLatin1Char('\''))
-                            continue;
-                        // 单引号只能成对出现；下一格不是引号就是逃逸口
-                        if (i + 1 >= inner.size() || inner.at(i + 1) != QLatin1Char('\''))
-                            return false;
-                        ++i;
-                    }
-                    return true;
-                }());
-        std::printf("INFO 逃逸尝试拼出来的是：%s\n", quoted.toUtf8().constData());
-
-        // ---- 名字合法性 ----
-        has("空名被拒", !reject(QStringLiteral("   "), true).isEmpty());
-        has("带斜杠被拒", !reject(QStringLiteral("a/b"), true).isEmpty());
-        has("带引号被拒", !reject(QStringLiteral("a\"b"), true).isEmpty());
-        has("带换行被拒", !reject(QString::fromUtf8("a") + QChar(10) + QString::fromUtf8("b"), true).isEmpty());
-        has("账户名 20 字通过", reject(QString(20, QLatin1Char('a')), true).isEmpty());
-        has("账户名 21 字被拒", !reject(QString(21, QLatin1Char('a')), true).isEmpty());
-        has("显示名可以长一点（40 字通过）", reject(QString(40, QLatin1Char('a')), false).isEmpty());
-        has("中文显示名通过", reject(QString::fromUtf8("张三"), false).isEmpty());
-
-        // ---- 拼出去的脚本 ----
-        const QString fs = fullNameScript(QStringLiteral("MACH"), QStringLiteral("usr"),
-                                          QString::fromUtf8("新名字"));
-        has("改显示名：ADSI 路径是拼出来的（单引号不会变成名字的一部分）",
-            fs.contains(QStringLiteral("\"WinNT://\" + 'MACH' + '/' + 'usr' + ',user'")));
-        has("改显示名：新值作为单引号字面量传进去", fs.contains(QStringLiteral("$u.FullName = '")
-                                                             + QString::fromUtf8("新名字") + QStringLiteral("'")));
-        has("改显示名：SetInfo 在", fs.contains(QStringLiteral("SetInfo")));
-        const QString ns1 = newUserScript(QStringLiteral("newbie"), QString(), QStringLiteral("p'w"), true);
-        has("新建用户：New-LocalUser 在", ns1.contains(QStringLiteral("New-LocalUser -Name 'newbie'")));
-        has("新建用户：管理员组按 SID 找（不写死组名）", ns1.contains(QStringLiteral("S-1-5-32-544"))
-            && ns1.contains(QStringLiteral("Add-LocalGroupMember")));
-        has("新建用户：密码里的单引号也翻倍", ns1.contains(QStringLiteral("'p''w'")));
-        const QString ns0 = newUserScript(QStringLiteral("newbie"), QString(),
-                                          QStringLiteral("pw"), false);
-        has("新建用户：不勾管理员就不加组", !ns0.contains(QStringLiteral("Add-LocalGroupMember")));
-        has("新建用户：留空显示名时拿账户名顶上", ns0.contains(QStringLiteral("-FullName 'newbie'")));
-        has("改账户名：走 Rename-LocalUser",
-            renameScript(QStringLiteral("M"), QStringLiteral("old"), QStringLiteral("new"))
-                .contains(QStringLiteral("Rename-LocalUser -Name 'old' -NewName 'new'")));
-
-        // ---- 真实读取（只读）----
-        const Info me = read();
-        has("读得到当前账户", me.readable);
-        std::printf("INFO 当前：%s@%s 本地=%d 显示名=[%s] 目录=%s\n", me.name.toUtf8().constData(),
-                    me.machine.toUtf8().constData(), me.local ? 1 : 0,
-                    me.fullName.toUtf8().constData(), me.profileDir.toUtf8().constData());
-        has("账户名非空", !me.name.isEmpty());
-        has("SID 长得对", me.sid.startsWith(QStringLiteral("S-1-")));
-        has("用户目录真的在盘上", !me.profileDir.isEmpty() && QFileInfo::exists(me.profileDir));
-        const Probe ghost = probe(QStringLiteral("ltool-no-such-user-zz"));
-        has("查一个不存在的账户：可读、且不存在", ghost.readable && !ghost.exists);
-
-        // ---- 页面：三颗按钮都得摆在布局里（数 findChild 不等于界面可见，配置页栽过）----
-        UserAccountPage page;
-        QSet<const QWidget*> laidOut;
-        std::function<void(QLayout*)> walk = [&](QLayout* l) {
-            if (!l)
-                return;
-            for (int i = 0; i < l->count(); ++i) {
-                QLayoutItem* it = l->itemAt(i);
-                if (!it)
-                    continue;
-                if (QWidget* w = it->widget()) {
-                    laidOut.insert(w);
-                    walk(w->layout());
-                } else if (QLayout* sub = it->layout())
-                    walk(sub);
-            }
-        };
-        walk(page.layout());
-        int onLayout = 0;
-        for (const char* objName : { "applyFull", "applyName", "applyCreate" }) {
-            QWidget* w = page.findChild<QWidget*>(QString::fromLatin1(objName));
-            if (w && laidOut.contains(w))
-                ++onLayout;
-        }
-        check("改显示名/改账户名/新建用户 三颗按钮都在布局里", QString::number(onLayout),
-              QStringLiteral("3"));
-        // 后台那次读取要真等到回包，别拿"正在读"当状态
-        for (int i = 0; i < 120; ++i) {
-            QCoreApplication::processEvents();
-            QThread::msleep(20);
-        }
-        const auto labels = page.findChildren<QLabel*>();
-        QString state;
-        for (const QLabel* l : labels)
-            if (l->text().contains(QStringLiteral("账户名")))
-                state = l->text();
-        has("页面读完之后状态行填上了（不是停在「正在读」）",
-            !state.isEmpty() && !state.contains(QStringLiteral("正在读")));
-
-        // ---- 工具页那张卡片：内嵌槽位不能指到一个没建的页 ----
-        const auto& tools = ToolsPage::tools();
-        QSet<int> usedSlots;
-        int embedded = 0;
-        bool dup = false;
-        for (const ToolDef& td : tools) {
-            if (td.embedded < 0)
-                continue;
-            ++embedded;
-            if (usedSlots.contains(td.embedded))
-                dup = true;
-            usedSlots.insert(td.embedded);
-        }
-        has("内嵌工具的槽位互不重复", !dup);
-        check("内嵌页数量 = 卡片上 embedded>=0 的条数", QString::number(embedded), QStringLiteral("7"));
-        bool contiguous = true;
-        for (int i = 0; i < embedded; ++i)
-            if (!usedSlots.contains(i))
-                contiguous = false;
-        check("槽位是 0..N-1 连着的（ToolsPage 的占位数正好盖住）",
-              contiguous ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
-        std::printf("username: 失败 %d 项\n", bad);
-        std::fflush(stdout);
-        return bad == 0 ? 0 : 1;
-    }
+    if (args.contains("--username"))
+        return runPluginSelftest(QStringLiteral("user"));
 
     // --plugintest：DLL 插件那条链从头到尾真跑一遍（这次是**真的 LoadLibrary**，
     // 但一次都不 show()，不碰他的桌面）。
@@ -762,51 +632,69 @@ int main(int argc, char* argv[])
             if (!ok)
                 ++bad;
         };
+        // 九个自带工具现在全是 dll 插件。这张名单是"装齐了没有"的判据：
+        // 少一个就是安装包少了文件，或者那个 dll 没通过检查 —— 别让它在界面上悄悄少一张卡。
+        static const char* const kTools[] = { "repair", "ads", "disk", "network", "registry",
+                                              "startup", "user", "json", "base64" };
         const QDir dir(PluginHost::pluginsDir());
         std::printf("INFO 插件目录：%s\n", dir.absolutePath().toUtf8().constData());
-        has("插件目录在，里面有 ltool-base64.dll",
-            dir.exists() && QFile::exists(dir.absoluteFilePath(QStringLiteral("ltool-base64.dll"))));
         const auto& metas = PluginHost::scan();
-        std::printf("INFO 扫到 %d 个 dll\n", int(metas.size()));
-        const PluginHost::Meta* b64 = nullptr;
-        for (const PluginHost::Meta& m : metas)
-            if (m.id == QLatin1String("base64"))
-                b64 = &m;
-        has("元数据里有 base64 这个插件，且没被拒", b64 != nullptr && b64->ok());
-        if (b64) {
-            check("插件名和关键词读到了",
-                  QStringLiteral("%1/%2").arg(b64->name).arg(b64->keywords.size()),
-                  QStringLiteral("Base64（插件版）/3"));
-            check("元数据声明的 API 版本", QString::number(b64->api),
-                  QString::number(LTOOL_PLUGIN_API_VERSION));
+        std::printf("INFO 扫到 %d 个 dll，其中通过检查 %d 个\n", int(metas.size()),
+                    int(std::count_if(metas.begin(), metas.end(),
+                                      [](const PluginHost::Meta& m) { return m.ok(); })));
+        for (const char* id : kTools) {
+            const PluginHost::Meta* m = PluginHost::meta(QLatin1String(id));
+            has((QString::fromLatin1(id) + " 在目录里且元数据通过检查").toUtf8().constData(),
+                m != nullptr && m->ok());
         }
-        LToolPlugin* p1 = PluginHost::plugin(QStringLiteral("base64"));
-        has("真的 LoadLibrary + instance + qobject_cast 到接口，版本闸放行", p1 != nullptr);
-        if (p1)
-            check("插件自己报的 API 版本", QString::number(p1->apiVersion()),
-                  QString::number(LTOOL_PLUGIN_API_VERSION));
-        QString err;
-        QWidget* page = PluginHost::page(QStringLiteral("base64"), nullptr, &err);
-        std::printf("INFO 建页：%s\n", err.isEmpty() ? "ok" : err.toUtf8().constData());
-        has("createPage 给出了一张页", page != nullptr);
-        if (page) {
-            check("就是插件里那张（objectName）", page->objectName(),
-                  QStringLiteral("pluginBase64Page"));
-            check("没 show 过（不碰他的桌面）",
+        // 每个插件都跑一遍同一条链：加载 → 建页 → 没 show → 缓存 → 元数据和自报一致
+        for (const char* idc : kTools) {
+            const QString id = QLatin1String(idc);
+            const PluginHost::Meta* m = PluginHost::meta(id);
+            if (!m || !m->ok())
+                continue;
+            LToolPlugin* p = PluginHost::plugin(id);
+            has((id + "：真的 LoadLibrary + instance + 版本闸放行").toUtf8().constData(),
+                p != nullptr);
+            if (!p)
+                continue;
+            check((id + "：插件自报的 API 版本").toUtf8().constData(),
+                  QString::number(p->apiVersion()), QString::number(LTOOL_PLUGIN_API_VERSION));
+            // plugin.json 那份和 C++ 里那五个 override 是同一件事的两处写法，对不上就是漂移
+            check((id + "：plugin.json 与插件自报的名字/描述/关键词一致").toUtf8().constData(),
+                  QStringLiteral("%1/%2/%3").arg(p->name(), p->desc())
+                      .arg(p->keywords().size()),
+                  QStringLiteral("%1/%2/%3").arg(m->name, m->desc).arg(m->keywords.size()));
+            QString err;
+            QWidget* page = PluginHost::page(id, nullptr, &err);
+            has((id + "：createPage 给出一张页（" + err + "）").toUtf8().constData(), page != nullptr);
+            if (!page)
+                continue;
+            check((id + "：没 show 过（不碰他的桌面）").toUtf8().constData(),
                   page->isVisible() ? QStringLiteral("yes") : QStringLiteral("no"),
                   QStringLiteral("no"));
-            int btns = 0;
-            for (QPushButton* b : page->findChildren<QPushButton*>())
-                if (b->text().contains(QStringLiteral("编码"))
-                    || b->text().contains(QStringLiteral("解码")))
-                    ++btns;
-            check("编码/解码两颗按钮都在", QString::number(btns), QStringLiteral("2"));
-            check("再要一次拿到的是同一张页（懒创建 + 缓存）",
-                  PluginHost::page(QStringLiteral("base64"), nullptr, &err) == page
-                      ? QStringLiteral("yes") : QStringLiteral("no"),
+            check((id + "：再要一次是同一张页（懒创建 + 缓存）").toUtf8().constData(),
+                  PluginHost::page(id, nullptr, &err) == page ? QStringLiteral("yes")
+                                                              : QStringLiteral("no"),
                   QStringLiteral("yes"));
         }
-        // 搜索框那一档：命中插件；而且不能像「计划任务」那次一样把整页独占掉
+        // 递文本那条路（API 2 新加的）：搜索框"json 这串"/"b64 这串"靠它
+        QString err;
+        QWidget* jp = PluginHost::page(QStringLiteral("json"), nullptr, &err);
+        has("json 页在（递文本测试要用它）", jp != nullptr);
+        if (jp) {
+            has("把一段 JSON 递给 json 工具，插件接住了",
+                PluginHost::feed(QStringLiteral("json"), QStringLiteral("{ \"a\": 1 }")));
+            auto* edit = jp->findChild<QPlainTextEdit*>();
+            check("那段文本真的进了工具", edit && edit->toPlainText().contains('1')
+                  ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
+        }
+        has("没实现 feedText 的工具老实返回 false（不假装收下了）",
+            !PluginHost::feed(QStringLiteral("disk"), QStringLiteral("随便一段文本")));
+        // 插件自带的判据：resolve 得到符号才算这条链通
+        has("disk 插件带着自己的判据入口", PluginHost::selftestEntry(QStringLiteral("disk")) != nullptr);
+        has("user 插件带着自己的判据入口", PluginHost::selftestEntry(QStringLiteral("user")) != nullptr);
+        // 搜索框那一档：工具那一节要出得来，而且不能像「计划任务」那次一样把整页独占掉
         SearchWindow w;
         auto* input = w.findChild<QLineEdit*>(QStringLiteral("input"));
         auto* list = w.findChild<QListWidget*>(QStringLiteral("list"));
@@ -828,15 +716,86 @@ int main(int argc, char* argv[])
         if (input && list) {
             input->setText(QStringLiteral("b64"));
             settle();
-            check("搜 b64 出「插件」那一节", section(QStringLiteral("插件")), QStringLiteral("yes"));
+            check("搜 b64 出「工具」那一节", section(QStringLiteral("工具")), QStringLiteral("yes"));
+            input->setText(QStringLiteral("cipanqingli"));
+            settle();
+            check("拼音直达也认插件（cipanqingli → 磁盘清理）",
+                  section(QStringLiteral("工具")), QStringLiteral("yes"));
             input->setText(QStringLiteral("renwu"));
             settle();
-            check("搜 renwu 不该被插件掺和", section(QStringLiteral("插件")), QStringLiteral("no"));
-            check("搜 renwu 时应用那一节还在（插件绝不独占整页）",
+            check("搜 renwu 不该被工具顶掉", section(QStringLiteral("工具")), QStringLiteral("no"));
+            check("搜 renwu 时应用那一节还在（工具绝不独占整页）",
                   section(QStringLiteral("── 应用 ──")), QStringLiteral("yes"));
             input->clear();
             settle();
         }
+        // 卡片墙：九个工具现在全靠插件目录，卡片数必须等于"通过检查的插件数"，
+        // 而且每张卡都要能在布局里走到（数 findChild 不等于界面可见 —— 配置页那栏
+        // 就是这么隐身的，2026-10-12 他报的）。这条替掉了原来那两条"内嵌槽位 0..N-1"。
+        ToolsPage wall;
+        QSet<const QWidget*> laidOut;
+        std::function<void(QLayout*)> walk = [&](QLayout* l) {
+            if (!l)
+                return;
+            for (int i = 0; i < l->count(); ++i) {
+                QLayoutItem* it = l->itemAt(i);
+                if (!it)
+                    continue;
+                if (QWidget* w = it->widget()) {
+                    laidOut.insert(w);
+                    walk(w->layout());
+                } else if (QLayout* sub = it->layout())
+                    walk(sub);
+            }
+        };
+        walk(wall.layout());
+        int cards = 0;
+        for (QFrame* c : wall.findChildren<QFrame*>())
+            if (c->objectName() == QLatin1String("row"))
+                ++cards;
+        int reachable = 0;
+        for (QFrame* c : wall.findChildren<QFrame*>())
+            if (c->objectName() == QLatin1String("row") && laidOut.contains(c))
+                ++reachable;
+        int okCount = 0;
+        for (const PluginHost::Meta& m : metas)
+            if (m.ok())
+                ++okCount;
+        check("卡片数 = 通过检查的插件数", QString::number(cards), QString::number(okCount));
+        check("每张卡都真的摆在布局里（不是只 new 出来）", QString::number(reachable),
+              QString::number(cards));
+        check("九个工具都在卡片墙上", QString::number(cards), QStringLiteral("9"));
+        // 卡片墙的几何：离屏 resize 之后布局会算，不用 show（show 就把设置窗拍到他桌面上）。
+        // 这条盯的是"九张卡摆得开吗"—— 卡片来源换成插件目录之后，这是新Shape。
+        // WA_DontShowOnScreen：走完整的 show/布局激活路径，但不往屏幕上贴一个像素、
+        // 也不抢焦点。裸 resize() 不够 —— 没 show 过的顶层窗口布局根本不算，
+        // 第一版就是这么量出"九张卡全在 (0,0,0,0)"，那是探针坏了不是卡片坏了。
+        wall.setAttribute(Qt::WA_DontShowOnScreen, true);
+        wall.resize(940, 720);
+        wall.show();
+        for (int i = 0; i < 20; ++i)
+            QCoreApplication::processEvents();
+        QList<QRect> rects;
+        for (QFrame* c : wall.findChildren<QFrame*>())
+            if (c->objectName() == QLatin1String("row"))
+                rects << c->geometry();
+        bool sized = true;
+        bool overlap = false;
+        for (int i = 0; i < rects.size(); ++i) {
+            if (rects[i].width() < 120 || rects[i].height() < 80)
+                sized = false;
+            for (int j = i + 1; j < rects.size(); ++j)
+                if (rects[i].intersects(rects[j]))
+                    overlap = true;
+        }
+        if (!rects.isEmpty())
+            std::printf("INFO 第一张卡的矩形=(%d,%d %dx%d)\n", rects.first().x(), rects.first().y(),
+                        rects.first().width(), rects.first().height());
+        wall.hide();
+        check("每张卡都有画得出来的尺寸（最窄 120x80）", sized ? QStringLiteral("yes") : QStringLiteral("no"),
+              QStringLiteral("yes"));
+        check("卡片互不重叠（三列排版真的分开了）", overlap ? QStringLiteral("yes") : QStringLiteral("no"),
+              QStringLiteral("no"));
         std::printf("plugintest: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad == 0 ? 0 : 1;
@@ -2868,10 +2827,12 @@ int main(int argc, char* argv[])
     };
     QObject::connect(menu.addAction("设置"), &QAction::triggered, &win, &SearchWindow::openSettings);
     QObject::connect(menu.addAction("重新扫描"), &QAction::triggered, &win, &SearchWindow::rescan);
+    // 这两项以前是直接 new 那两个工具窗（JsonTool/Base64Tool）。它们搬进 DLL 插件之后，
+    // 主程序够不着那两个类了，只能走和搜索框同一条路：弹设置页 → 展开那张卡。
     QObject::connect(menu.addAction("JSON 格式化"), &QAction::triggered,
-                     [] { JsonTool::open(); });
+                     [&win] { win.openTool(QStringLiteral("json")); });
     QObject::connect(menu.addAction("Base64 编解码"), &QAction::triggered,
-                     [] { Base64Tool::open(); });
+                     [&win] { win.openTool(QStringLiteral("base64")); });
     QAction* logAction = menu.addAction("安装日志");
     QObject::connect(logAction, &QAction::triggered, [] { SilentInstallLog::showLog(); });
     QAction* autoRun = menu.addAction("开机自启");
@@ -2960,7 +2921,7 @@ int main(int argc, char* argv[])
         const QStringList rest = args.mid(args.indexOf("--settingspage") + 1);
         const int row = rest.value(0, "0").toInt();
         const int tab = rest.size() > 1 ? rest.value(1).toInt() : -1;
-        const int emb = rest.size() > 2 ? rest.value(2).toInt() : -1;
+        const QString emb = rest.size() > 2 ? rest.value(2) : QString();
         QTimer::singleShot(700, &app, [row, tab, emb] {
             for (QWidget* w : QApplication::topLevelWidgets()) {
                 if (auto* dlg = qobject_cast<SettingsDialog*>(w)) {
