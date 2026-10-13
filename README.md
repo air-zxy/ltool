@@ -252,3 +252,7 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - `reg clean` 里 HKLM 的项需要管理员权限，无权限时该项会失败并提示（HKCU 项不受影响）。
 - `Alt+Space` 被其他程序占用时自动降级到备选热键（日志与托盘提示）。
 - 截图"提取文字"的引擎是**自带的 PaddleOCR PP-OCRv4**（det 4.5MB + rec 10.4MB + `onnxruntime.dll` 17.6MB）。这三样**不打进安装包**：第一次用到时从 PyPI 现下（两个固定版本的 wheel，SHA256 钉死，解包只抽这三个成员），落在 `%APPDATA%\ltool\ocr`，之后完全离线；下不到就明说"没装上"。以前用的系统自带 `Windows.Media.Ocr` 已经**完全移除** —— 它取决于对方在 设置→应用→可选功能 里装没装「中文(简体) 光学字符识别」，很多机器上没有。运行时用 `LoadLibrary` + ONNX Runtime 的 C API（`third_party/onnxruntime/*.h` 只要头，不链接），det 找行 → 每行 crop 后 rec 认字 → CTC 贪心解码，字典从 `rec.onnx` 的元数据 `character` 里读（6625 类：0 是 blank，尾巴一个是空格）。**只做正放的文字**：det 的连通域取轴对齐外接矩形，不做 minAreaRect/透视矫正（对外的 `Ocr::Line` 本来就是 QRect）。实测：640×180 三行字 0.5s；2560×1440 整屏 2.1s、219 行；一个字一个框（划词因此不用等宽切）。手工补下：`ltool.exe --ocrget`。
+
+## 社区
+
+本开源项目已链接并认可 [LINUX DO 社区](https://linux.do)。
