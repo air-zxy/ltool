@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ltool VERSION 0.4.0 LANGUAGES CXX)
+project(ltool VERSION 0.5.0 LANGUAGES CXX)
 
 # ---- MSVC：让一个目标里的所有 .cpp 并行编译（/MP）----
 # VS 生成器默认把一个目标里的编译任务排队串行跑：本项目 53 个 TU，改一次 src/Utils.h

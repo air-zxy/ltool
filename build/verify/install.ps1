@@ -4,6 +4,6 @@ Get-Process ltool -ErrorAction SilentlyContinue | ForEach-Object {
     Stop-Process -Id $_.Id -Force
 }
 Start-Sleep -Milliseconds 800
-$p = Start-Process -FilePath 'D:/project/cpp/ltool/installer/ltool-0.4.0-setup.exe' `
+$p = Start-Process -FilePath (Get-ChildItem 'D:/project/cpp/ltool/installer/ltool-*-setup.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName `
     -ArgumentList '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES' -PassThru -Wait
 Write-Output ("installer exit=" + $p.ExitCode)

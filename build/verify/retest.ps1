@@ -5,7 +5,7 @@ $t3 = $s -replace '(?s).*?(?=版本)', ''
 "orig=[$s]"
 "t1=[$t1]"
 "t2=[$t2]"
-$u = '允许 ltool 版本 0.4.0'
+$u = 'ltool'   # 窗口标题里带版本号，别再写死（0.4.0 那版一升版本这条探针就找不到了）
 "u2=[$($u -replace '\s*版本\s*[0-9][0-9a-zA-Z._\-]*\s*$', '')]"
 $v = 'ltool 允许 Microsoft Visual Studio Code (User)'
 "v1=[$($v -replace '^ltool\s+允许\s+', '')]"

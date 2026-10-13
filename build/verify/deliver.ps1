@@ -39,7 +39,10 @@ $iscc = 'D:\software\InnoSetup6\ISCC.exe'
 # -Final 回到 max+solid 出最小体积的正式包（9.9 秒 / 21.5MB）
 $isccArgs = @()
 if ($Final) { $isccArgs += '/DFINAL' } elseif ($Quick) { $isccArgs += '/DQUICK' }
-$setupPath = "$root\installer\ltool-0.4.0-setup.exe"
+# 版本号只写在 ltool.iss 那一条 #define 里：脚本从那儿读，别再抄一遍
+# （0.4.0 那版散在六个脚本 + README + iss 注释里，升一次版本要改七处，漏一处就是"装了个旧包"）
+$appVer = ([regex]::Match((Get-Content "$root\ltool.iss" -Raw), '(?m)^#define MyAppVersion "([^"]+)"')).Groups[1].Value
+$setupPath = "$root\installer\ltool-$appVer-setup.exe"
 $before = if (Test-Path $setupPath) { (Get-Item $setupPath).LastWriteTime } else { [datetime]::MinValue }
 $p = & $iscc @isccArgs "$root\ltool.iss" 2>&1
 $isccCode = $LASTEXITCODE

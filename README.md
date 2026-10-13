@@ -69,7 +69,7 @@ powershell -File build\verify\deliver.ps1 -NoBuild     :: 跳过构建
 ```bat
 cmake --build build --config Release
 "D:\software\InnoSetup6\ISCC.exe" ltool.iss
-installer\ltool-0.4.0-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
+installer\ltool-0.5.0-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 ```
 
 - **压缩档位**（2026-10-12 重测，payload 71.1MB / 34 个二进制；括号里是整条 `deliver.ps1` 闭环）：

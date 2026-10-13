@@ -1,4 +1,4 @@
-$exe = 'D:\project\cpp\ltool\installer\ltool-0.4.0-setup.exe'
+$exe = (Get-ChildItem 'D:\project\cpp\ltool\installer\ltool-*-setup.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
 Get-Process ltool -ErrorAction SilentlyContinue | ForEach-Object { "killing ltool pid=$($_.Id)"; Stop-Process -Id $_.Id -Force }
 Start-Sleep -Milliseconds 800
 $p = Start-Process -FilePath $exe -ArgumentList @('/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES','/LOG=D:\project\cpp\ltool\build\verify\setup.log') -Wait -PassThru

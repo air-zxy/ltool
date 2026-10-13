@@ -1,0 +1,25 @@
+        // ---- 工具页那张卡片：内嵌槽位不能指到一个没建的页 ----
+        const auto& tools = ToolsPage::tools();
+        QSet<int> usedSlots;
+        int embedded = 0;
+        bool dup = false;
+        for (const ToolDef& td : tools) {
+            if (td.embedded < 0)
+                continue;
+            ++embedded;
+            if (usedSlots.contains(td.embedded))
+                dup = true;
+            usedSlots.insert(td.embedded);
+        }
+        has("内嵌工具的槽位互不重复", !dup);
+        check("内嵌页数量 = 卡片上 embedded>=0 的条数", QString::number(embedded), QStringLiteral("7"));
+        bool contiguous = true;
+        for (int i = 0; i < embedded; ++i)
+            if (!usedSlots.contains(i))
+                contiguous = false;
+        check("槽位是 0..N-1 连着的（ToolsPage 的占位数正好盖住）",
+              contiguous ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
+        std::printf("username: 失败 %d 项\n", bad);
+        std::fflush(stdout);
+        return bad == 0 ? 0 : 1;
+    }
