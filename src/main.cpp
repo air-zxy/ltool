@@ -6,6 +6,7 @@
 #include "DevEnv.h"
 #include "ToolsPage.h"
 #include "PluginHost.h"
+#include "PluginStore.h"
 #include "AboutPage.h"
 #include <QComboBox>
 #include <QPixmap>
@@ -43,6 +44,8 @@
 #include <QMessageBox>
 #include <QLineEdit>
 #include <QThread>
+#include <QFrame>
+#include <QRegularExpression>
 #include <QPushButton>
 #include <QGroupBox>
 #include <QLayout>
@@ -579,14 +582,16 @@ int main(int argc, char* argv[])
     // 默认 "C" 下任何非 ASCII 名字都转不过去，压缩带中文名的东西会直接失败。
     setlocale(LC_CTYPE, "");
     // --pindel 会真删 captures 目录里的往期截图，--ocrchain 要验"引擎还没下载"那条链（会真下 26MB），
-    // --pathcfg 会写 config.ini 并建目录，--appdirs 会写 apps/roots 并扫盘：
+    // --pathcfg 会写 config.ini 并建目录，--appdirs 会写 apps/roots 并扫盘，
+    // --storetest 会写 store/indexUrl 这一项（它就是验"配置里改了地址就跟着走"）：
     // 这几种都把数据目录整个挪到临时目录再跑，碰不到用户真实的 %APPDATA%\ltool。
     // 必须在第一次 dataDir() 之前设好。
     for (int i = 1; i < argc; ++i) {
         const QString a = QString::fromLocal8Bit(argv[i]);
         if (a == QLatin1String("--pindel") || a == QLatin1String("--ocrchain")
             || a == QLatin1String("--pathcfg") || a == QLatin1String("--pintool")
-            || a == QLatin1String("--appdirs") || a == QLatin1String("--cfgcheck")) {
+            || a == QLatin1String("--appdirs") || a == QLatin1String("--cfgcheck")
+            || a == QLatin1String("--storetest")) {
             const QString sandbox = QDir::tempPath() + "/" + a.mid(2);
             QDir(sandbox).removeRecursively();
             QDir().mkpath(sandbox);
@@ -1910,6 +1915,204 @@ int main(int argc, char* argv[])
         std::fflush(stdout);
         return bad == 0 ? 0 : 1;
     }
+    // --storetest：验插件商店那一条链 —— 解析清单、和本地比、按哈希落盘、改名禁用/恢复。
+    // **一次都不联网**：联网那两段（拉 index.json、下 dll）只是把字节交给下面这几个纯函数，
+    // 这里直接喂文件进去。数据目录已经被挪到 %TEMP%\ltool-storetest（见 main() 开头那个循环），
+    // 假 dll 全写进那里面，最后按算出来的绝对路径删掉。
+    if (args.contains("--storetest")) {
+        int bad = 0;
+        using Entry = PluginStore::Entry;   // 这一段里全是商店的条目，写全名会把判据挤出行宽
+        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
+            const bool ok = got == want;
+            if (!ok)
+                ++bad;
+            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
+                        got.toUtf8().constData(), want.toUtf8().constData());
+        };
+        const QString box = Utils::dataDir() + "/store";
+        QDir().mkpath(box);
+        const auto word = [](PluginStore::State s) {
+            return PluginStore::stateWord(s);
+        };
+        // 造一个"插件 dll"：内容随便，哈希是真算出来的（商店判的就是哈希，内容不需要真是 PE）
+        const auto makeFile = [](const QString& path, const QByteArray& content) {
+            QFile f(path);
+            if (!f.open(QIODevice::WriteOnly))
+                return QString();
+            f.write(content);
+            f.close();
+            return PluginStore::sha256Of(path);
+        };
+
+        // ---- 1. 清单解析：好的收下，坏的点名拒收 ----
+        const QString goodSha = makeFile(box + "/src-good.bin", QByteArray("GOOD-DLL-CONTENT"));
+        const QString otherSha = makeFile(box + "/src-other.bin", QByteArray("OTHER"));
+        const QString indexJson = QStringLiteral(
+            R"({"schema":1,"core":"0.9.0","plugins":[)"
+            R"({"id":"good","name":"好的那个","desc":"d","api":%2,"keywords":[],"actions":[],"color":"1,2,3",)"
+            R"("file":"ltool-good.dll","bytes":16,"sha256":"%1",)"
+            R"("url":"https://raw.githubusercontent.com/mateo-ki/ltool_plugin/main/dist/ltool-good.dll"},)"
+            R"({"id":"trav","name":"路径穿越","desc":"d","api":%2,"keywords":[],"actions":[],"color":"1,2,3",)"
+            R"("file":"../ltool-trav.dll","bytes":1,"sha256":"%3",)"
+            R"("url":"https://raw.githubusercontent.com/mateo-ki/ltool_plugin/main/dist/ltool-trav.dll"},)"
+            R"({"id":"plain","name":"不加密","desc":"d","api":%2,"keywords":[],"actions":[],"color":"1,2,3",)"
+            R"("file":"ltool-plain.dll","bytes":1,"sha256":"%3",)"
+            R"("url":"http://example.invalid/ltool-plain.dll"},)"
+            R"({"id":"badhash","name":"哈希不像哈希","desc":"d","api":%2,"keywords":[],"actions":[],"color":"1,2,3",)"
+            R"("file":"ltool-bad.dll","bytes":1,"sha256":"deadbeef",)"
+            R"("url":"https://example.invalid/ltool-bad.dll"},)"
+            R"({"id":"oldapi","name":"接口太旧","desc":"d","api":1,"keywords":[],"actions":[],"color":"1,2,3",)"
+            R"("file":"ltool-old.dll","bytes":1,"sha256":"%3",)"
+            R"("url":"https://example.invalid/ltool-old.dll"}]})"
+            ).arg(goodSha).arg(LTOOL_PLUGIN_API_VERSION).arg(otherSha);
+
+        QStringList problems;
+        const auto entries = PluginStore::parseIndex(indexJson.toUtf8(), &problems);
+        // 没收下的每一条都说出来：这一面红了要能在三秒内看出是哪个字段被拒
+        for (const QString& q : problems)
+            std::printf("INFO 拒收 %s\n", q.toUtf8().constData());
+        // 五条里 oldapi 是"条目本身没毛病、只是接口版本不对"，它要走到 compare 才被判装不了，
+        // 所以解析这一步该收两条、拒三条。
+        check("五条里收下两条（good 和 oldapi）", QString::number(entries.size()), "2");
+        check("拒掉的三条各说一句", QString::number(problems.size()), "3");
+        check("拒收点名到 id", problems.join(QStringLiteral("|")).contains(QStringLiteral("trav"))
+                  && problems.join(QStringLiteral("|")).contains(QStringLiteral("plain"))
+                  && problems.join(QStringLiteral("|")).contains(QStringLiteral("badhash"))
+              ? "yes" : "no", "yes");
+        check("好的那条认得出的确是好的", entries.isEmpty() ? QStringLiteral("-") : entries[0].id, "good");
+        {
+            QStringList p2;
+            const auto none = PluginStore::parseIndex(
+                QByteArrayLiteral(R"({"schema":2,"plugins":[]})"), &p2);
+            check("schema 不认就一条都不接", QString::number(none.size()), "0");
+            check("schema 不认要说清是哪一侧", p2.join(QString()).contains(QStringLiteral("schema"))
+                      ? "yes" : "no", "yes");
+            QStringList p3;
+            check("不是 JSON 也别当没事", PluginStore::parseIndex(QByteArrayLiteral(" plainly-not-json"), &p3).isEmpty()
+                      && !p3.isEmpty() ? "yes" : "no", "yes");
+        }
+
+        // ---- 2. 和本地比：没装/已装/可更新/装不了 ----
+        const Entry* found = nullptr;
+        for (const Entry& e : entries)
+            if (e.id == QLatin1String("good"))
+                found = &e;
+        check("收下的那两条里有 good", found ? "yes" : "no", "yes");
+        if (!found) {
+            std::printf("storetest: 失败 %d 项（good 没被收下，后面没法跑）\n", bad + 1);
+            QDir(box).removeRecursively();
+            return 1;
+        }
+        const Entry& good = *found;
+        QString note;
+        check("目录里什么都没有 = 能装", word(PluginStore::compare(good, &note, box)), "能装");
+        QFile::copy(box + "/src-good.bin", box + "/ltool-good.dll");
+        check("哈希就是清单里那个 = 已装", word(PluginStore::compare(good, &note, box)), "已装");
+        {
+            makeFile(box + "/ltool-good.dll", QByteArray("一个更早的版本"));
+            const QString st = word(PluginStore::compare(good, &note, box));
+            check("同一个文件名但内容不同 = 可更新", st, "可更新");
+            check("可更新那句里带两边的哈希头", note.contains(QStringLiteral("本机")) && note.contains(QStringLiteral("清单"))
+                      ? "yes" : "no", "yes");
+        }
+        {
+            Entry old = good;
+            old.api = 1;
+            check("清单里的 Api 和宿主对不上 = 装不了", word(PluginStore::compare(old, &note, box)), "装不了");
+            QFile::remove(box + "/ltool-good.dll");
+            makeFile(box + "/ltool-old2.dll", QByteArray("x"));
+            Entry o2 = good;
+            o2.file = QStringLiteral("ltool-old2.dll");
+            o2.api = 99;
+            check("就算文件在，Api 不对也先拒", word(PluginStore::compare(o2, &note, box)), "装不了");
+        }
+
+        // ---- 3. 落盘：先验哈希，再改名；半成品不许冒充 ----
+        {
+            makeFile(box + "/ltool-new.dll.part", QByteArray("GOOD-DLL-CONTENT"));
+            Entry e = good;
+            e.file = QStringLiteral("ltool-new.dll");
+            const QString err = PluginStore::finishDownload(box + "/ltool-new.dll.part", e, box);
+            check("哈希对了就落进目录（回报空串）", err.isEmpty() ? "ok" : err, "ok");
+            check("落下来的文件哈希还是那个", PluginStore::sha256Of(box + "/ltool-new.dll"), goodSha);
+            check("落下来之后 .part 不该留着", QFile::exists(box + "/ltool-new.dll.part") ? "yes" : "no", "no");
+        }
+        {
+            makeFile(box + "/ltool-badhash.dll.part", QByteArray("被人动过的内容"));
+            Entry e = good;
+            e.file = QStringLiteral("ltool-badhash.dll");
+            const QString err = PluginStore::finishDownload(box + "/ltool-badhash.dll.part", e, box);
+            check("哈希不对必须报错", err.isEmpty() ? "ok" : "err", "err");
+            check("报错里说清是哈希", err.contains(QStringLiteral("哈希")) ? "yes" : "no", "yes");
+            check("哈希不对的那份要删掉，不许留下半成品",
+                  QFile::exists(box + "/ltool-badhash.dll.part") ? "yes" : "no", "no");
+            check("没落进目录", QFile::exists(box + "/ltool-badhash.dll") ? "yes" : "no", "no");
+        }
+        {
+            makeFile(box + "/ltool-trunc.dll.part", QByteArray("GOOD-DLL-CONTENT"));
+            Entry e = good;
+            e.file = QStringLiteral("ltool-trunc.dll");
+            e.bytes = 1 << 20;    // 清单说要 1MB，下到的是 16B —— 传输被截断的形状
+            const QString err = PluginStore::finishDownload(box + "/ltool-trunc.dll.part", e, box);
+            check("字节数不符也拒", err.contains(QStringLiteral("字节数")) ? "yes" : "no", "yes");
+            check("字节数不符的那份也删掉", QFile::exists(box + "/ltool-trunc.dll.part") ? "yes" : "no", "no");
+        }
+
+        // ---- 4. 禁用/恢复 = 在 <file> 和 <file>.off 之间改名 ----
+        {
+            makeFile(box + "/ltool-off.dll", QByteArray("GOOD-DLL-CONTENT"));
+            Entry e = good;
+            e.file = QStringLiteral("ltool-off.dll");
+            check("禁用回报空串", [&] {
+                const QString r = PluginStore::setEnabled(e.file, false, box);
+                return r.isEmpty() ? QStringLiteral("ok") : r;
+            }(), "ok");
+            check("禁用之后 live 没了", QFile::exists(box + "/ltool-off.dll") ? "yes" : "no", "no");
+            check("禁用之后 .off 在", QFile::exists(box + "/ltool-off.dll.off") ? "yes" : "no", "yes");
+            check("目录里那种状态认得出已禁用", word(PluginStore::compare(e, &note, box)), "已禁用");
+            check("再禁一次不算失败", [&] {
+                const QString r = PluginStore::setEnabled(e.file, false, box);
+                return r.isEmpty() ? QStringLiteral("ok") : r;
+            }(), "ok");
+            check("恢复：.off 改回 live", [&] {
+                const QString r = PluginStore::setEnabled(e.file, true, box);
+                return (r.isEmpty() && QFile::exists(box + "/ltool-off.dll")
+                        && !QFile::exists(box + "/ltool-off.dll.off"))
+                          ? QStringLiteral("ok") : r;
+            }(), "ok");
+            check("目录里又认得出已装", word(PluginStore::compare(e, &note, box)), "已装");
+            check("没装过的东西谈不上禁用",
+                  PluginStore::setEnabled(QStringLiteral("ltool-never.dll"), false, box).isEmpty()
+                      ? QStringLiteral("ok") : QStringLiteral("err"), "err");
+        }
+
+        // ---- 5. 索引地址：留空用内置那条，配了就用配的 ----
+        {
+            check("内置地址是插件仓库那份 raw 清单",
+                  PluginStore::defaultIndexUrl().startsWith(
+                      QStringLiteral("https://raw.githubusercontent.com/mateo-ki/ltool_plugin/main/dist/"))
+                      ? "yes" : "no", "yes");
+            QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+            check("没配过就用内置那条", PluginStore::indexUrl() == PluginStore::defaultIndexUrl()
+                      ? "yes" : "no", "yes");
+            cfg.setValue(QStringLiteral("store/indexUrl"), QStringLiteral("https://example.invalid/index.json"));
+            cfg.sync();
+            check("配了就用配的", PluginStore::indexUrl(), "https://example.invalid/index.json");
+            cfg.setValue(QStringLiteral("store/indexUrl"), QStringLiteral("   "));
+            cfg.sync();
+            check("清空等于回到内置", PluginStore::indexUrl() == PluginStore::defaultIndexUrl()
+                      ? "yes" : "no", "yes");
+        }
+
+        // 全程没碰真目录：商店判的是传进去的那个 dir
+        check("没把假 dll 写进真正的插件目录",
+              QFile::exists(PluginHost::pluginsDir() + "/ltool-new.dll") ? "yes" : "no", "no");
+        QDir(box).removeRecursively();
+        std::printf("storetest: 失败 %d 项\n", bad);
+        std::fflush(stdout);
+        return bad == 0 ? 0 : 1;
+    }
+
 
     // --pintool：离屏验置顶窗那两个"收起"开关。判据本体在 plugins/capture。
     if (args.contains("--pintool"))
@@ -2042,7 +2245,8 @@ int main(int argc, char* argv[])
     // —— 看着像通过，其实一行都没跑（2026-10-14 撞见 --smoke 也是这个形状，已提到守卫之前）。
     // 所以带这两面旗时必须自己起循环。
     const bool inLoopSelftest = args.contains(QLatin1String("--capgeo"))
-                                || args.contains(QLatin1String("--capflash"));
+                                || args.contains(QLatin1String("--capflash"))
+                                || args.contains(QLatin1String("--storenet"));
     if (!inLoopSelftest) {
         QLocalSocket probe;
         probe.connectToServer(QString::fromWCharArray(kInstanceKey));
@@ -2455,6 +2659,86 @@ int main(int argc, char* argv[])
         });
     }
 
+    // --storenet：商店**联网那一段**的界面判据 —— 建一个离屏的 ToolsPage，点「刷新清单」，
+    // 等回复落地，然后数画出来的行、和状态行里那个数对一遍。
+    // 它和 --storetest 分家是必须的：那条一次都不联网；这条要真去拉 github raw，
+    // 没网的环境跑它就是自找的红，所以也不进 CI（他点头之后再手动跑）。
+    int storeNetBad = 0;
+    if (args.contains("--storenet")) {
+        QTimer::singleShot(120, &app, [&app, &storeNetBad] {
+            ToolsPage page;
+            page.setAttribute(Qt::WA_DontShowOnScreen, true);
+            page.resize(940, 720);
+            page.show();
+            for (int i = 0; i < 10; ++i)
+                QCoreApplication::processEvents();
+            const auto check = [&storeNetBad](const char* name, bool ok, const QString& got) {
+                std::printf("%s %s got=[%s]\n", ok ? "PASS" : "FAIL", name, got.toUtf8().constData());
+                if (!ok)
+                    ++storeNetBad;
+            };
+            QPushButton* refresh = page.findChild<QPushButton*>(QStringLiteral("storeRefresh"));
+            check("商店那一栏真有一颗「刷新清单」，而且在布局里", refresh && refresh->isVisible(),
+                  QStringLiteral("找得到=%1 可见=%2").arg(refresh ? 1 : 0)
+                      .arg(refresh && refresh->isVisible() ? 1 : 0));
+            if (!refresh) {
+                std::printf("storenet: 失败 %d 项（没有刷新按钮，后面没法跑）\n", storeNetBad);
+                app.quit();
+                return;
+            }
+            refresh->click();
+            // 等到长出行为止：raw 那一份一次往返几百毫秒，五秒都等不出来就是没网或对端变了
+            int rows = 0;
+            for (int i = 0; i < 100
+                     && (rows = page.findChildren<QFrame*>(QStringLiteral("storeRow")).size()) == 0; ++i) {
+                QCoreApplication::processEvents();
+                QThread::msleep(50);
+            }
+            QLabel* status = nullptr;
+            for (QLabel* l : page.findChildren<QLabel*>()) {
+                if (l->text().startsWith(QStringLiteral("清单 "))) {
+                    status = l;
+                    break;
+                }
+            }
+            const QString st = status ? status->text() : QStringLiteral("(状态行还停在没拉过的样子)");
+            std::printf("INFO 状态行：%s\n", st.toUtf8().constData());
+            // 从状态行里把那两个数抠出来：界面写的数必须和界面画出来的东西一致
+            QRegularExpression re(QStringLiteral("清单 (\\d+) 条（地址 .+?）· 能装或可更新 (\\d+) · 拒收 (\\d+)"));
+            const auto m = re.match(st);
+            check("状态行是那句形状对的（拉到了就说数）", m.hasMatch(), st.left(60));
+            if (m.hasMatch()) {
+                const int said = m.captured(1).toInt();
+                const int canInstall = m.captured(2).toInt();
+                const int rejected = m.captured(3).toInt();
+                check("画出来的行数 = 状态行说的条数", rows == said, QStringLiteral("画了 %1 行 / 说了 %2 条").arg(rows).arg(said));
+                check("插件仓库那十二个都在清单里", rows >= 12, QStringLiteral("数到 %1 行").arg(rows));
+                // 按钮数对得上"能装或可更新"：这一条盯的就是"界面说有三条能装、实际一颗按钮都没有"
+                int installers = 0;
+                for (QPushButton* b : page.findChildren<QPushButton*>())
+                    if (b->text() == QStringLiteral("装") || b->text() == QStringLiteral("更新"))
+                        ++installers;
+                check("能按的装/更新按钮数 = 状态行说的数", installers == canInstall,
+                      QStringLiteral("按钮 %1 颗 / 说了 %2 条").arg(installers).arg(canInstall));
+                // 本机这十二个 dll 是自己编的那份，仓库 dist 里是 CI 那份，哈希不同就判"可更新" ——
+                // 所以这里只要求"每一条都能认出个状态"，不许出现空状态。
+                int states = 0;
+                for (QFrame* r : page.findChildren<QFrame*>(QStringLiteral("storeRow")))
+                    for (QLabel* l : r->findChildren<QLabel*>())
+                        if (PluginStore::stateWord(PluginStore::State::Missing) == l->text()
+                            || QStringLiteral("可更新") == l->text() || QStringLiteral("已装") == l->text()
+                            || QStringLiteral("已禁用") == l->text() || QStringLiteral("装不了") == l->text())
+                            ++states;
+                check("每一行都给了一个认得出的状态词", states == rows, QStringLiteral("有状态的 %1 / 行数 %2").arg(states).arg(rows));
+                std::printf("INFO 拒收 %d 条（本仓库的 dist 现在是干净的）\n", rejected);
+            }
+            page.hide();
+            std::printf("storenet: 失败 %d 项\n", storeNetBad);
+            std::fflush(stdout);
+            app.quit();
+        });
+    }
+
     QObject::connect(&win, &SearchWindow::hotkeyChanged, &win, applyHotkeyChange);
 
     const int rc = app.exec();
@@ -2464,5 +2748,7 @@ int main(int argc, char* argv[])
         return capGeoBad;
     if (args.contains("--capflash"))
         return capFlashBad;
+    if (args.contains("--storenet"))
+        return storeNetBad;
     return rc;
 }

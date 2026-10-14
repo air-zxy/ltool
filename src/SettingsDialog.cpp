@@ -156,13 +156,13 @@ QWidget#cfgBody { background: transparent; }
 QWidget#rowsHost { background: transparent; }
 /* 列表分组表头（软件页）：不属于 #row 的盒子，只要一行小字 + 上方的呼吸 */
 QLabel#catHead { color: #7d8698; font-weight: 600; font-size: 9pt; padding: 6px 2px 0 2px; }
-QWidget#row {
+QWidget#row, QWidget#storeBox, QWidget#storeRow {
     background: #1f2025;
     border: 1px solid #2c2d34;
     border-radius: 8px;
 }
-QWidget#row:hover { background: #24252b; border-color: #3a3c45; }
-QWidget#row QLabel { background: transparent; }
+QWidget#row:hover, QWidget#storeBox:hover, QWidget#storeRow:hover { background: #24252b; border-color: #3a3c45; }
+QWidget#row QLabel, QWidget#storeBox QLabel, QWidget#storeRow QLabel { background: transparent; }
 
 QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
 QScrollBar::handle:vertical { background: #33353d; border-radius: 4px; min-height: 24px; }

@@ -4,6 +4,7 @@
 #include "DevEnv.h"
 #include "CaptureHistory.h"
 #include "Utils.h"
+#include "PluginStore.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -165,6 +166,12 @@ ConfigPage::ConfigPage(QWidget* parent)
     }
     m_proxy->setClearButtonEnabled(true);
     generalLay->addRow("下载代理：", m_proxy);
+    m_storeUrl = new QLineEdit(general);
+    m_storeUrl->setPlaceholderText(PluginStore::defaultIndexUrl());
+    m_storeUrl->setToolTip("插件商店要拉的那份 index.json。留空 = 用内置那条（ltool_plugin 仓库 main 上的 dist/index.json）。\n"
+                            "要指到自己的测试源就填那里的地址；代理沿用上面那一行，清单和 dll 都走它。");
+    m_storeUrl->setClearButtonEnabled(true);
+    generalLay->addRow("插件清单地址：", m_storeUrl);
     m_engine = new QComboBox(general);
     m_engine->addItem("百度", "baidu");
     m_engine->addItem("Google", "google");
@@ -355,6 +362,7 @@ void ConfigPage::load()
     m_hotkey->setKeySequence(QKeySequence(cfg.value("general/hotkey", "Alt+Space").toString()));
     m_installPath->setText(cfg.value("install/path", "D:\\software").toString());
     m_proxy->setText(cfg.value("net/proxy").toString());
+    m_storeUrl->setText(cfg.value("store/indexUrl").toString());
     const QString engine = cfg.value("web/engine", "baidu").toString();
     const int idx = m_engine->findData(engine);
     m_engine->setCurrentIndex(idx < 0 ? 0 : idx);
@@ -397,6 +405,7 @@ void ConfigPage::onSave()
     cfg.setValue("general/hotkey", newHk);
     cfg.setValue("install/path", m_installPath->text().trimmed());
     cfg.setValue("net/proxy", m_proxy->text().trimmed());
+    cfg.setValue("store/indexUrl", m_storeUrl->text().trimmed());
     if (newHk != oldHk)
         emit hotkeyChanged(newHk);
 

@@ -122,6 +122,8 @@ JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** �
 - 契约只有一份：`src/ltool-plugin.h`（现在 API 3）—— `apiVersion / id / name / desc / keywords / createPage / feedText / actions / invoke / save / load`。
 - 两类插件：**卡片型**（工具页一张卡，可开可递文本）和**动作型**（截图、录屏、右键那几件：入口留在主程序，按下之后 `PluginHost::invoke(动作名)` 转发）。
 - 只装不卸：Qt 插件 unload 之后里面活着的控件就是悬空指针；要禁用就把 dll 改名，下次启动生效。
+- 工具页下面就是**插件商店**那一栏：点「刷新清单」拉远端那份 `dist/index.json`（地址在配置页可改，代理沿用下载那一行），
+  每条插件画一行说清"能装 / 可更新 / 已装 / 已禁用 / 装不了"，装是先下 `.part`、按清单里的 SHA256 验过才改名进去。
 - `Api` 和主程序不等就拒装，并在界面上说清是哪一侧旧；元数据不齐也是点名说清楚，不默默少一张卡。
 - 加一个插件：`plugins/<id>/` 放 `plugin.json` + 源码 + 一层壳（照 `plugins/network/networkplugin.cpp` 抄），
   再在 `CMakeLists.txt` 里 `ltool_add_tool(id IdPlugin 源文件…)` 加一行。卡片墙、搜索直达、商店全自动认它。
@@ -136,6 +138,7 @@ JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** �
 | --- | --- |
 | `--smoke` | 无界面一遍过：索引、目录、插件都在 |
 | `--plugintest` | 十二个插件逐个验 + 卡片墙张数与几何 + 动作路由（136 条） |
+| `--storetest` | 插件商店离线那半条链：解析清单、比本地、验哈希改名（36 条，不联网） |
 | `--archivetest extract\|make\|probe\|progress` | 压缩包读写、进度与取消 |
 | `--capgeo` / `--capflash [次]` | 截图那条几何链 / F1 浮层开合 |
 | `--recq` / `--recordui [秒]` | 录屏那两档真进了编码器 / F2 整条链 |

@@ -101,6 +101,7 @@ qt_add_library(ltoolcore SHARED
     src/ClipboardStore.cpp
     src/ToolsPage.cpp
     src/PluginHost.cpp
+    src/PluginStore.cpp
     src/Firewall.cpp
     src/InfoRow.cpp
     src/UninstallPage.cpp
