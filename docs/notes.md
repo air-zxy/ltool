@@ -101,6 +101,16 @@ installer\ltool-<版本>-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 
 ### GitHub Actions：推标签就出安装包、发 Release（`.github/workflows/build.yml`）
 
+- **CI 里从 `vcpkg list` 取版本号：按列取，别拿正则抠数字。** 插件仓库那条 CI 第一次红就红在这：
+  `grep -oE '[0-9][0-9.]*'` 对整行找数字，第一列 `qtbase:x64-windows` 里的 **64** 先命中，
+  `head -1` 取走它，于是把一次正常装好的 6.10.2 判成"版本不对"。正解是
+  `vcpkg list | tr -d '' | awk '/^qtbase:/{print $2; exit}'`（再把 `#3` 那种端口修订号从 `#` 截掉）。
+  `tr -d ''` 不是装饰：vcpkg.exe 在 git-bash 下输出的是 Windows 行尾，带着它比较永远不等。
+- **"取不到那一行"和"版本不对"要分两条报错**：前者是上一步的装依赖没真装上，后者是钉的 commit 和本机树不一致，
+  混成一句话下次就得重新查一遍。
+- **本地能把这一段单独验掉**：把那个 step 的脚本体导出成 .sh，`PLUGINS_VCPKG=D:/vcpkg QT_MUST_BE=6.10.2 bash …`
+  跑三种情况（对上 / 对不上 / 根本没有 vcpkg），比推上去等一小时快得多，也才知道它真的会红。
+
 一条 job（`windows-2022`）从头到尾就是本机那条链的翻版：**装依赖 → 编 Release → 跑无界面回归 → ISCC 打包 → 传 artifact →（只有标签推的 run）发 GitHub Release**。
 
 - **触发**：推 `v*` 标签 = 打包并发布；推 `main` 或手动 `workflow_dispatch` = 只打包不发（所以"这版能不能出包"随时可以验，不必先承诺发版）。
