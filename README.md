@@ -15,7 +15,7 @@ C++20 / Qt 6 / vcpkg + CMake，只跑 Windows。界面本体都是 DLL 插件，
 | 开发环境初始化 | `init java` 这类命令检测组件，缺的按 Enter 用 winget 装。 |
 | 管理 PATH | `path add <目录>` 改用户 PATH，写完广播 WM_SETTINGCHANGE。 |
 | 注册表整理 | `reg` 体检卸载残留 / 失效启动项 / MuiCache，删之前自动备份 .reg。 |
-| 配置页面 | 左侧菜单 + 右侧内容：语言、软件、网站、定时任务、清理、网络都在这一扇里。 |
+| 设置窗 | 左侧菜单只有四行：网站 / 插件商店 / 配置 / 关于。语言并进「配置」那一页的一节，软件、下载器、定时任务是商店里的卡片。 |
 | F1 截图 | 全屏框选、悬停吸附到窗口、标注、置顶、图上划词取字（`plugins/capture`）。 |
 | F2 录屏 | 录整块屏幕或某一个窗口，出普通 mp4，画质和画面两档可选（`plugins/record`）。 |
 | 修复 | 检测 .NET / VC++ / DirectX / UCRT，未装的一键 winget 安装。 |
@@ -30,7 +30,7 @@ C++20 / Qt 6 / vcpkg + CMake，只跑 Windows。界面本体都是 DLL 插件，
 
 每一项的实测数字、无界面判据（`--capgeo` / `--recq` / `--diskui` 那些）和踩过的坑，
 整段挪到了文末的 **功能细节与实测** —— 门口这一张只说"是什么"。
-界面背后是十二个 DLL 插件共用一份 `ltoolcore.dll`，见「工具插件」那一节。
+界面背后是十五个 DLL 插件共用一份 `ltoolcore.dll`，见「工具插件」那一节。
 
 ## 构建
 
@@ -110,8 +110,10 @@ powershell -File build\verify\deliver.ps1        # 构建 → 打包 → 停旧�
 
 ## 插件
 
-十二个自带插件：DLL 修复 / 广告弹窗 / 磁盘清理 / 网络 / 注册表分析 / 开机启动分析 / Windows 用户名 /
-JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** —— 第三方插件走同一条路，主程序里没有"内置工具"特判。
+十五个自带插件：DLL 修复 / 广告弹窗 / 磁盘清理 / 网络 / 注册表分析 / 开机启动分析 / Windows 用户名 /
+JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** / **软件** / **下载器** / **定时任务** ——
+第三方插件走同一条路，主程序里没有"内置工具"特判。后三张是 2026-10-15 从设置页菜单里搬进来的：
+菜单只剩 网站 / 插件商店 / 配置 / 关于 四行，语言并进「配置」那一节。
 
 | 位置 | 是什么 |
 | --- | --- |
@@ -120,14 +122,14 @@ JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** �
 | `ltool-plugins\ltool-<id>.dll` | 一个工具一个：本体 + 一层 `LToolPlugin` 壳 + 嵌在 dll 里的 `plugin.json` |
 
 - 契约只有一份：`src/ltool-plugin.h`（现在 API 3）—— `apiVersion / id / name / desc / keywords / createPage / feedText / actions / invoke / save / load`。
-- 两类插件：**卡片型**（工具页一张卡，可开可递文本）和**动作型**（截图、录屏、右键那几件：入口留在主程序，按下之后 `PluginHost::invoke(动作名)` 转发）。
+- 两类插件：**卡片型**（插件商店一张卡，可开可递文本）和**动作型**（截图、录屏、右键那几件：入口留在主程序，按下之后 `PluginHost::invoke(动作名)` 转发）。
 - 只装不卸：Qt 插件 unload 之后里面活着的控件就是悬空指针；要禁用就把 dll 改名，下次启动生效。
-- 工具页下面就是**插件商店**那一栏：点「刷新清单」拉远端那份 `dist/index.json`（地址在配置页可改，代理沿用下载那一行），
+- 商店那一栏就在卡片墙下面：点「刷新清单」拉远端那份 `dist/index.json`（地址在配置页可改，代理沿用下载那一行），
   每条插件画一行说清"能装 / 可更新 / 已装 / 已禁用 / 装不了"，装是先下 `.part`、按清单里的 SHA256 验过才改名进去。
 - `Api` 和主程序不等就拒装，并在界面上说清是哪一侧旧；元数据不齐也是点名说清楚，不默默少一张卡。
 - 加一个插件：`plugins/<id>/` 放 `plugin.json` + 源码 + 一层壳（照 `plugins/network/networkplugin.cpp` 抄），
   再在 `CMakeLists.txt` 里 `ltool_add_tool(id IdPlugin 源文件…)` 加一行。卡片墙、搜索直达、商店全自动认它。
-- 第三方仓库：[mateo-ki/ltool_plugin](https://github.com/mateo-ki/ltool_plugin) —— 那十二个自带插件的源码 + 独立编 dll 的
+- 第三方仓库：[mateo-ki/ltool_plugin](https://github.com/mateo-ki/ltool_plugin) —— 自带插件的源码 + 独立编 dll 的
   SDK 快照；SDK 由主仓库 `tools/make_sdk.py` 生成，`dist/index.json` 由它的 `tools/make_index.py` 生成。
   那边的 CI 定义在本仓库 `plugin-ci/`（`build.yml` + `ci/annotate-fail.sh`），改完拷进插件仓库的
   `.github/workflows/` 与 `ci/` 再提交 —— 两处都留一份，是为了这条流水线有一处可追溯的来源。
@@ -137,8 +139,9 @@ JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** �
 | 旗标 | 验什么 |
 | --- | --- |
 | `--smoke` | 无界面一遍过：索引、目录、插件都在 |
-| `--plugintest` | 十二个插件逐个验 + 卡片墙张数与几何 + 动作路由（136 条） |
-| `--storetest` | 插件商店离线那半条链：解析清单、比本地、验哈希改名（36 条，不联网） |
+| `--plugintest` | 十五个插件逐个验 + 卡片墙张数与几何 + 动作路由（160 条） |
+| `--storetest` | 插件商店离线那半条链：解析清单、比本地、验哈希改名、清单外那几个（40 条，不联网） |
+| `--storenet` | 真拉一次清单并离屏点「刷新清单」，量"画出来的行数 = 清单条数 + 清单外那几个"（5 条，**要联网，不进 CI**） |
 | `--archivetest extract\|make\|probe\|progress` | 压缩包读写、进度与取消 |
 | `--capgeo` / `--capflash [次]` | 截图那条几何链 / F1 浮层开合 |
 | `--recq` / `--recordui [秒]` | 录屏那两档真进了编码器 / F2 整条链 |

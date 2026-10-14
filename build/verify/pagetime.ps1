@@ -16,7 +16,7 @@ function Mark($tag) {
 
 Get-Process ltool -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force }
 Start-Sleep -Milliseconds 700
-$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '1', '1') -PassThru
+$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '1', '1', 'software') -PassThru
 Start-Sleep -Seconds 8
 Mark 'open'
 $cond = New-Object System.Windows.Automation.PropertyCondition(

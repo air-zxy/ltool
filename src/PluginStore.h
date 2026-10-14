@@ -38,6 +38,7 @@ enum class State {
     Disabled,       // 装过、被改名成 <file>.off
     ApiMismatch,    // 清单里的 Api 和这台机器的宿主对不上，拒装
     Blocked,        // 条目本身不能用（文件名/path 穿越/哈希不对/不是 https），界面要说清是哪一条
+    LocalOnly,      // 本机装着、清单里却没有这一条：能禁用，但谈不上"更新"
 };
 
 // 商店那一面显示一行用的东西：远端条目 + 本地比出来的状态 + 给人看的那句话
@@ -55,6 +56,9 @@ QVector<Entry> parseIndex(const QByteArray& json, QStringList* problems);
 // --storetest 就是靠传临时目录把它指到自己的沙盒里。
 State compare(const Entry& e, QString* note, const QString& dir = QString());
 QVector<Row> rows(const QVector<Entry>& entries, const QString& dir = QString());
+// 本机装了、清单里却没列的那些插件也得上那一栏 —— 不然它们在卡片墙上看得见、
+// 在这上面却连"禁用"都按不到（清单没这条，按钮也就没处生成）。
+QVector<Row> localOnly(const QVector<Entry>& listed, const QString& dir = QString());
 
 QString stateWord(State s);            // 界面上那一个词：能装/可更新/已装/已禁用/装不了
 

@@ -2,6 +2,7 @@
 
 #include <QFile>
 #include <QNetworkAccessManager>
+#include "core-api.h"
 #include <QObject>
 #include <QString>
 #include <QVector>
@@ -33,7 +34,7 @@ struct DownloadTask {
 };
 
 // 下载器：类 Motrix 那种一个文件多段并行的下载，断点续传靠 Range
-class DownloadManager : public QObject {
+class LTOOL_CORE_API DownloadManager : public QObject {
     Q_OBJECT
 public:
     static DownloadManager& instance();

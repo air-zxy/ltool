@@ -38,7 +38,7 @@ function Shot($pid_, $file) {
 $exe = 'D:\project\cpp\ltool\build\Release\ltool.exe'
 Get-Process ltool -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force }
 Start-Sleep -Milliseconds 600
-$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '1', '1') -PassThru
+$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '1', '1', 'software') -PassThru
 Start-Sleep -Seconds 6
 
 $cond = New-Object System.Windows.Automation.PropertyCondition(

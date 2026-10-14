@@ -87,11 +87,11 @@ ToolsPage::ToolsPage(QWidget* parent)
     auto* head = new QHBoxLayout;
     head->setSpacing(8);
     m_back = new QToolButton(this);
-    m_back->setText(QStringLiteral("‹ 返回工具"));
+    m_back->setText(QStringLiteral("‹ 返回商店"));
     m_back->setAutoRaise(true);
     m_back->setCursor(Qt::PointingHandCursor);
     m_back->setVisible(false);
-    m_heading = new QLabel(QStringLiteral("工具"), this);
+    m_heading = new QLabel(QStringLiteral("插件商店"), this);
     m_heading->setObjectName(QStringLiteral("pageTitle"));
     head->addWidget(m_back);
     head->addWidget(m_heading);
@@ -105,7 +105,7 @@ ToolsPage::ToolsPage(QWidget* parent)
     connect(m_back, &QToolButton::clicked, this, [this] {
         m_stack->setCurrentIndex(0);
         m_back->setVisible(false);
-        m_heading->setText(QStringLiteral("工具"));
+        m_heading->setText(QStringLiteral("插件商店"));
     });
 }
 
@@ -126,14 +126,14 @@ QWidget* ToolsPage::buildGrid()
             bad << QStringLiteral("%1：%2").arg(QFileInfo(m.file).fileName(), m.error);
     }
 
-    QString tip = QStringLiteral("点一张卡片进去。这些工具是 `<exe 目录>\\ltool-plugins\\` 里的 dll，"
+    QString tip = QStringLiteral("点一张卡片进去。这些插件就是 `<exe 目录>\\ltool-plugins\\` 里的 dll，"
                                  "卡片只读元数据，点开才真加载；在搜索框里直接搜名字也能打开。");
     if (good == 0)
         tip = bad.isEmpty()
-                  ? QStringLiteral("工具目录 %1 里一个插件都没有 —— 这个安装是坏的（重装一次），"
+                  ? QStringLiteral("插件目录 %1 里一个插件都没有 —— 这个安装是坏的（重装一次），"
                                     "或者你把那些 dll 挪走了。")
                         .arg(PluginHost::pluginsDir())
-                  : QStringLiteral("工具目录 %1 里没有能用的插件：%2")
+                  : QStringLiteral("插件目录 %1 里没有能用的插件：%2")
                         .arg(PluginHost::pluginsDir(), bad.join(QStringLiteral("；")));
     else if (!bad.isEmpty())
         tip = QStringLiteral("%1 · 另有 %2 个文件没通过检查：%3")
@@ -170,7 +170,7 @@ void ToolsPage::rebuildGrid()
     old->deleteLater();
     m_stack->insertWidget(0, buildGrid());
     m_back->setVisible(false);
-    m_heading->setText(QStringLiteral("工具"));
+    m_heading->setText(QStringLiteral("插件商店"));
 }
 
 QWidget* ToolsPage::buildStore()
@@ -211,7 +211,10 @@ QWidget* ToolsPage::buildStore()
         // 拿缓存的**清单**重新比一次本地目录，不是把上一屏那几个字抄回来：
         // 刚装完/刚禁用完走到这一步，状态得跟着目录里的文件动。
         m_storeStatus->setText(m_lastStatus);
-        showStoreRows(PluginStore::rows(m_lastEntries), m_lastProblems);
+        auto rs = PluginStore::rows(m_lastEntries);
+        for (const PluginStore::Row& r : PluginStore::localOnly(m_lastEntries))
+            rs.append(r);
+        showStoreRows(rs, m_lastProblems);
     }
     return box;
 }
@@ -254,8 +257,8 @@ void ToolsPage::showStoreRows(const QVector<PluginStore::Row>& rows, const QStri
                 installEntry(e, btn, state);
             });
             lay->addWidget(btn);
-        } else if (r.state == S::Installed || r.state == S::Disabled) {
-            const bool on = r.state == S::Installed;
+        } else if (r.state == S::Installed || r.state == S::Disabled || r.state == S::LocalOnly) {
+            const bool on = r.state != S::Disabled;   // 清单外那条也能禁，禁掉就是改名 .off
             auto* btn = new QPushButton(on ? QStringLiteral("禁用") : QStringLiteral("启用"), row);
             btn->setCursor(Qt::PointingHandCursor);
             connect(btn, &QPushButton::clicked, this, [this, file, on, state, note] {
@@ -317,20 +320,26 @@ void ToolsPage::refreshStore()
         }
         QStringList problems;
         const auto entries = PluginStore::parseIndex(body, &problems);
-        const auto rs = PluginStore::rows(entries);
+        // 清单里有的 + 本机装着但清单里没的：两张名单合起来画，一条都不落
+        auto rs = PluginStore::rows(entries);
+        const auto extra = PluginStore::localOnly(entries);
+        for (const PluginStore::Row& r : extra)
+            rs.append(r);
         int canInstall = 0;
         for (const PluginStore::Row& r : rs) {
             if (r.state == PluginStore::State::Missing || r.state == PluginStore::State::Update)
                 ++canInstall;
         }
-        m_storeStatus->setText(QStringLiteral("清单 %1 条（地址 %2）· 能装或可更新 %3 · 拒收 %4 —— "
+        m_storeStatus->setText(QStringLiteral("清单 %1 条（地址 %2）· 能装或可更新 %3 · 拒收 %4 · 本机另有 %5 个不在清单里 —— "
                                               "装好的下次启动才进卡片墙，禁用的也是")
-                                   .arg(entries.size()).arg(url).arg(canInstall).arg(problems.size()));
+                                   .arg(entries.size()).arg(url).arg(canInstall)
+                                   .arg(problems.size()).arg(extra.size()));
         showStoreRows(rs, problems);
         m_haveStore = true;
         m_lastStatus = m_storeStatus->text();
         m_lastEntries = entries;
         m_lastProblems = problems;
+        m_lastExtra = extra.size();
         Utils::log(QStringLiteral("store: 清单 %1 条，能装 %2，拒收 %3")
                        .arg(entries.size()).arg(canInstall).arg(problems.size()));
     });
@@ -400,7 +409,7 @@ bool ToolsPage::showTool(const QString& id, const QString& text)
     QString err;
     QWidget* w = PluginHost::page(id, this, &err);
     if (!w) {
-        m_heading->setText(QStringLiteral("工具"));
+        m_heading->setText(QStringLiteral("插件商店"));
         Utils::log(QStringLiteral("plugin: 打不开 %1：%2").arg(id, err));
         return false;
     }
@@ -411,6 +420,6 @@ bool ToolsPage::showTool(const QString& id, const QString& text)
     m_stack->setCurrentWidget(w);
     m_back->setVisible(true);
     const PluginHost::Meta* md = PluginHost::meta(id);
-    m_heading->setText(QStringLiteral("工具 · %1").arg(md ? md->name : id));
+    m_heading->setText(QStringLiteral("插件商店 · %1").arg(md ? md->name : id));
     return true;
 }

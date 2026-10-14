@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core-api.h"
 #include <QObject>
 #include <QStringList>
 #include <QVector>
@@ -20,7 +21,7 @@ struct ScheduledTask {
 };
 
 // 定时器跑在 GUI 线程上（30 秒一次 tick），真正执行丢给 QtConcurrent
-class TaskScheduler : public QObject {
+class LTOOL_CORE_API TaskScheduler : public QObject {
     Q_OBJECT
 public:
     static TaskScheduler& instance();

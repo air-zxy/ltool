@@ -60,7 +60,7 @@ Start-Sleep -Milliseconds 700
 & cmd.exe /c 'reg delete "HKCU\Software\Classes\Directory\shell\ltool" /f >nul 2>&1'
 Reg-Check '初始（应为 0）'
 
-$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '6') -PassThru
+$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '2') -PassThru
 Start-Sleep -Seconds 5
 $dlg = Find-Dlg $p.Id
 if (-not $dlg) { Write-Output 'no SettingsDialog'; exit 1 }

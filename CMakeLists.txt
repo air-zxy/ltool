@@ -86,12 +86,9 @@ qt_add_library(ltoolcore SHARED
     src/WebShortcuts.cpp
     src/DevEnv.cpp
     src/DownloadManager.cpp
-    src/DownloadsPage.cpp
     src/TaskScheduler.cpp
     src/LanguagePage.cpp
-    src/SoftwarePage.cpp
     src/WebsitesPage.cpp
-    src/TasksPage.cpp
     src/CaptureHistory.cpp
     src/InstallLogDialog.cpp
     src/SilentInstallLog.cpp
@@ -104,7 +101,6 @@ qt_add_library(ltoolcore SHARED
     src/PluginStore.cpp
     src/Firewall.cpp
     src/InfoRow.cpp
-    src/UninstallPage.cpp
     src/ShellMenu.cpp
     src/FileOps.cpp
     src/Archives.cpp
@@ -287,12 +283,23 @@ ltool_add_tool(capture CapturePlugin     plugins/capture/CaptureOverlay.cpp plug
                                            plugins/capture/captureplugin.cpp
                                            plugins/capture/captureselftest.cpp)
 
+# 这三张原来是设置窗菜单里的行（软件 / 下载器 / 定时任务）。菜单收成四行之后它们是普通插件：
+# 卡片在插件商店那一面，装了才出现、改名 .off 就没了 —— 和别的插件同一条路，没有特判。
+# 调度和下载的实现（TaskScheduler / DownloadManager）留在 core：主程序起来就要用，
+# 搬走的只是那张页。
+ltool_add_tool(software SoftwarePlugin   plugins/software/SoftwarePage.cpp plugins/software/UninstallPage.cpp
+                                         plugins/software/softwareplugin.cpp)
+ltool_add_tool(downloads DownloadsPlugin plugins/downloads/DownloadsPage.cpp
+                                         plugins/downloads/downloadsplugin.cpp)
+ltool_add_tool(tasks TasksPlugin         plugins/tasks/TasksPage.cpp
+                                         plugins/tasks/tasksplugin.cpp)
+
 # 交付闭环是 `cmake --build --target ltool`（只编主程序那一棵）。插件目标只依赖 core，
 # 不在 ltool 的依赖图上 —— 不点名挂上去，改完页面不重编，ISCC 照旧把**上一个 dll**
 # 打进安装包，装出来的还是旧的（构建那一段照样报绿）。
 add_dependencies(ltool ltool-repair ltool-ads ltool-disk ltool-network ltool-registry
                         ltool-startup ltool-user ltool-json ltool-base64 ltool-shell ltool-record
-                        ltool-capture)
+                        ltool-capture ltool-software ltool-downloads ltool-tasks)
 
 # ---- Qt 运行库部署：把 exe 所需的 Qt DLL / platform 插件复制到输出目录，
 #      避免 "no Qt platform plugin could be initialized" ----

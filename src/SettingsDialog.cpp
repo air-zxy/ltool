@@ -1,12 +1,7 @@
 #include "SettingsDialog.h"
 
 #include "ConfigPage.h"
-#include "DownloadsPage.h"
-#include "LanguagePage.h"
 #include "SilentInstallLog.h"
-#include "SoftwarePage.h"
-#include "UninstallPage.h"
-#include "TasksPage.h"
 #include "AboutPage.h"
 #include "ToolsPage.h"
 #include "WebsitesPage.h"
@@ -187,11 +182,11 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     m_menu->setUniformItemSizes(true);
 
     struct MenuDef { const char* name; QColor color; };
+    // 只有四行。语言并进「配置」那一页里的一节，软件 / 下载器 / 定时任务搬成了插件商店里的卡片 ——
+    // 颜色沿用它们原来那一行的，一眼还认得出来。
     const MenuDef defs[] = {
-        {"语言", QColor(63, 106, 224)},   {"软件", QColor(46, 160, 88)},
-        {"网站", QColor(31, 141, 160)},   {"下载器", QColor(13, 165, 170)},
-        {"定时任务", QColor(214, 128, 15)},
-        {"工具", QColor(120, 130, 150)},
+        {"网站", QColor(31, 141, 160)},
+        {"插件商店", QColor(120, 130, 150)},
         {"配置", QColor(150, 150, 160)},
         {"关于", QColor(90, 100, 120)},
     };
@@ -202,7 +197,7 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     }
 
     m_stack = new QStackedWidget(this);
-    for (int i = 0; i < 8; ++i)
+    for (int i = 0; i < 4; ++i)
         m_stack->addWidget(new QWidget(m_stack)); // 占位，选中时懒加载
 
     auto* lay = new QHBoxLayout(this);
@@ -263,7 +258,7 @@ void SettingsDialog::refreshBusy()
 
 void SettingsDialog::ensurePage(int index)
 {
-    if (index < 0 || index >= 8)
+    if (index < 0 || index >= 4)
         return;
     if (m_built[index]) {
         m_stack->setCurrentIndex(index);
@@ -272,38 +267,19 @@ void SettingsDialog::ensurePage(int index)
     m_built[index] = true;
     QWidget* page = nullptr;
     switch (index) {
-    case 0: page = new LanguagePage(this); break;
-    case 1: {
-        // 「软件」菜单现在是两个 tab：推荐软件（原来那份可一键安装的清单）
-        // + 软件卸载（本机已装程序，调用它们自己的卸载程序）
-        auto* hub = new QWidget(this);
-        auto* hubLay = new QVBoxLayout(hub);
-        hubLay->setContentsMargins(0, 0, 0, 0);
-        hubLay->setSpacing(0);
-        auto* tabs = new QTabWidget(hub);
-        tabs->addTab(new SoftwarePage(tabs), QStringLiteral("推荐软件"));
-        tabs->addTab(new UninstallPage(tabs), QStringLiteral("软件列表"));
-        hubLay->addWidget(tabs);
-        page = hub;
-        break;
-    }
-    case 2: page = new WebsitesPage(this); break;
-    case 3: page = new DownloadsPage(this); break;
-    case 4: page = new TasksPage(this); break;
-    case 5:
+    case 0: page = new WebsitesPage(this); break;
+    case 1:
         m_toolsPage = new ToolsPage(this);
         page = m_toolsPage;
         break;
-    case 6: {
+    case 2: {
         auto* configPage = new ConfigPage(this);
-        connect(configPage, &ConfigPage::rescanRequested,
-                this, &SettingsDialog::rescanRequested);
-        connect(configPage, &ConfigPage::hotkeyChanged,
-                this, &SettingsDialog::hotkeyChanged);
+        connect(configPage, &ConfigPage::rescanRequested, this, &SettingsDialog::rescanRequested);
+        connect(configPage, &ConfigPage::hotkeyChanged, this, &SettingsDialog::hotkeyChanged);
         page = configPage;
         break;
     }
-    case 7: page = new AboutPage(this); break;
+    case 3: page = new AboutPage(this); break;
     }
     QWidget* old = m_stack->widget(index);
     m_stack->removeWidget(old);
@@ -316,8 +292,8 @@ void SettingsDialog::ensurePage(int index)
 // 返回 false = 那个 id 没加载起来（ToolsPage 里已经写了一条带原因的日志）。
 bool SettingsDialog::showTool(const QString& id, const QString& text)
 {
-    ensurePage(5);             // 「工具」那一行
-    m_menu->setCurrentRow(5);
+    ensurePage(1);             // 「插件商店」那一行
+    m_menu->setCurrentRow(1);
     return m_toolsPage && m_toolsPage->showTool(id, text);
 }
 
@@ -336,11 +312,13 @@ void SettingsDialog::showEvent(QShowEvent* e)
 void SettingsDialog::openAt(int menuRow, int tab, const QString& toolId)
 {
     m_menu->setCurrentRow(qBound(0, menuRow, m_menu->count() - 1));
-    if (tab >= 0) {
-        QWidget* page = m_stack->widget(qBound(0, menuRow, m_stack->count() - 1));
-        if (auto* tabs = page ? page->findChild<QTabWidget*>() : nullptr)
-            tabs->setCurrentIndex(qBound(0, tab, tabs->count() - 1));
-    }
+    // 顺序是"先展开卡、再挑 tab"：软件那两张页搬进插件之后，那个 QTabWidget 在卡片里面，
+    // 反过来写就永远挑不到。
     if (!toolId.isEmpty() && m_toolsPage)
         m_toolsPage->showTool(toolId);
+    if (tab >= 0) {
+        QWidget* host = m_stack->widget(qBound(0, menuRow, m_stack->count() - 1));
+        if (auto* tabs = host ? host->findChild<QTabWidget*>() : nullptr)
+            tabs->setCurrentIndex(qBound(0, tab, tabs->count() - 1));
+    }
 }

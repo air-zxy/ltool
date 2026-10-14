@@ -50,6 +50,7 @@ private:
     QVector<PluginStore::Entry> m_lastEntries;
     QStringList m_lastProblems;
     QString m_lastStatus;
+    int m_lastExtra = 0;      // 清单外那几个的个数（状态行回填的是同一个数）
     bool m_haveStore = false;
 
     QStackedWidget* m_stack = nullptr;

@@ -22,13 +22,11 @@
 #include "ShellMenu.h"
 #include "RegClean.h"
 #include "Firewall.h"
-#include "SoftwarePage.h"
 #include "StartupAudit.h"
 #include "SearchWindow.h"
 #include "SettingsDialog.h"
 #include "SilentInstallLog.h"
 #include "TaskScheduler.h"
-#include "UninstallPage.h"
 
 #include "UsnIndex.h"
 #include "Utils.h"
@@ -50,6 +48,7 @@
 #include <QGroupBox>
 #include <QLayout>
 #include <QScrollArea>
+#include <QStackedWidget>
 #include <QSet>
 #include <QFile>
 #include <QFileInfo>
@@ -363,20 +362,33 @@ int runUiTiming(const QStringList& args)
     };
     const bool wantSoft = !args.contains("un");
     const bool wantUn = !args.contains("soft");
+    // 这两张页现在是 plugins/software 里的实现，主程序够不着那两个类了 —— 和自测同一条件路：
+    // 按名字向那个插件点名要一颗导出符号。拿不到就是**装出来的那份 dll 太旧**，要报出来不是当 0 ms。
+    const auto makePage = [](const char* symbol) -> QWidget* {
+        using PageFn = QWidget* (*)();
+        auto* fn = reinterpret_cast<PageFn>(PluginHost::entry(QStringLiteral("software"), symbol));
+        if (!fn) {
+            std::printf("%-20s 没有导出 %s（插件是旧的，这个量不到）\n", "缺符号", symbol);
+            return nullptr;
+        }
+        return fn();
+    };
     QWidget* soft = nullptr;
     QWidget* un = nullptr;
     timed("SoftwarePage ctor", [&] {
         if (!wantSoft)
             return;
-        soft = new SoftwarePage;
-        soft->setAttribute(Qt::WA_DontShowOnScreen);
+        soft = makePage("ltoolSoftwarePage");
+        if (soft)
+            soft->setAttribute(Qt::WA_DontShowOnScreen);
     });
     timed("SoftwarePage show", [&] { if (soft) soft->show(); });
     timed("UninstallPage ctor", [&] {
         if (!wantUn)
             return;
-        un = new UninstallPage;
-        un->setAttribute(Qt::WA_DontShowOnScreen);
+        un = makePage("ltoolUninstallPage");
+        if (un)
+            un->setAttribute(Qt::WA_DontShowOnScreen);
     });
     timed("UninstallPage show", [&] { if (un) un->show(); });
     {
@@ -703,11 +715,12 @@ int main(int argc, char* argv[])
             if (!ok)
                 ++bad;
         };
-        // 十二个自带工具现在全是 dll 插件。这张名单是"装齐了没有"的判据：
+        // 十五个自带工具现在全是 dll 插件。这张名单是"装齐了没有"的判据：
         // 少一个就是安装包少了文件，或者那个 dll 没通过检查 —— 别让它在界面上悄悄少一张卡。
         static const char* const kTools[] = { "repair", "ads", "disk", "network", "registry",
                                               "startup", "user", "json", "base64", "shell",
-                                              "record", "capture" };
+                                              "record", "capture", "software", "downloads",
+                                              "tasks" };
         const QDir dir(PluginHost::pluginsDir());
         std::printf("INFO 插件目录：%s\n", dir.absolutePath().toUtf8().constData());
         const auto& metas = PluginHost::scan();
@@ -842,7 +855,7 @@ int main(int argc, char* argv[])
             input->clear();
             settle();
         }
-        // 卡片墙：这十二个工具现在全靠插件目录，卡片数必须等于"通过检查的插件数"，
+        // 卡片墙：这十五个现在全靠插件目录，卡片数必须等于"通过检查的插件数"，
         // 而且每张卡都要能在布局里走到（数 findChild 不等于界面可见 —— 配置页那栏
         // 就是这么隐身的，2026-10-12 他报的）。这条替掉了原来那两条"内嵌槽位 0..N-1"。
         ToolsPage wall;
@@ -877,9 +890,9 @@ int main(int argc, char* argv[])
         check("卡片数 = 通过检查的插件数", QString::number(cards), QString::number(okCount));
         check("每张卡都真的摆在布局里（不是只 new 出来）", QString::number(reachable),
               QString::number(cards));
-        check("十二个工具都在卡片墙上", QString::number(cards), QStringLiteral("12"));
+        check("十五张卡片都在卡片墙上", QString::number(cards), QStringLiteral("15"));
         // 卡片墙的几何：离屏 resize 之后布局会算，不用 show（show 就把设置窗拍到他桌面上）。
-        // 这条盯的是"这十二张卡摆得开吗"—— 卡片来源换成插件目录之后，这是新Shape。
+        // 这条盯的是"这十五张卡摆得开吗"。
         // WA_DontShowOnScreen：走完整的 show/布局激活路径，但不往屏幕上贴一个像素、
         // 也不抢焦点。裸 resize() 不够 —— 没 show 过的顶层窗口布局根本不算，
         // 第一版就是这么量出"九张卡全在 (0,0,0,0)"，那是探针坏了不是卡片坏了。
@@ -1465,6 +1478,42 @@ int main(int argc, char* argv[])
         }
         say("每个分组框都真的摆在布局里（没摆=界面上看不见）", orphans.isEmpty(),
             orphans.isEmpty() ? QStringLiteral("%1 个分组框全在布局里").arg(groups) : orphans);
+        // 语言并进这一页之后，"配置"里必须真有那一节 —— 不然"菜单只剩四行"就变成"语言没地方了"
+        {
+            QStringList titles;
+            for (const QGroupBox* g : page.findChildren<QGroupBox*>())
+                if (g->title().contains(QStringLiteral("语言")))
+                    titles << g->title();
+            say("配置页里有「语言」那一节（菜单第四行没了，它得在这儿）", titles.size() == 1,
+                titles.isEmpty() ? QStringLiteral("一节都没找到") : titles.join(QStringLiteral("；")));
+        }
+
+        // 设置窗那一面：菜单只剩四行，而且每一行点开都真建出一张页。
+        // 这条盯的是"删掉四行菜单之后有没有留下点不开的空行"——残留入口就是没删干净。
+        {
+            SettingsDialog dlg;
+            dlg.setAttribute(Qt::WA_DontShowOnScreen, true);
+            auto* menu = dlg.findChild<QListWidget*>(QStringLiteral("menuList"));
+            QStringList names;
+            if (menu) {
+                for (int i = 0; i < menu->count(); ++i)
+                    names << menu->item(i)->text();
+            }
+            say("菜单正好四行、顺序是 网站/插件商店/配置/关于",
+                names.join(QStringLiteral(" / ")) == QStringLiteral("网站 / 插件商店 / 配置 / 关于"),
+                names.join(QStringLiteral(" / ")));
+            auto* stack = dlg.findChild<QStackedWidget*>();
+            int built = 0;
+            for (int i = 0; menu && i < menu->count(); ++i) {
+                menu->setCurrentRow(i);            // currentRowChanged → ensurePage，和真人点同一条路
+                QCoreApplication::processEvents();
+                QWidget* cur = stack ? stack->currentWidget() : nullptr;
+                if (cur && cur->findChildren<QWidget*>().size() > 1)
+                    ++built;
+            }
+            say("每一行点开都不是一块空面板", built == (menu ? menu->count() : 0),
+                QStringLiteral("有内容的 %1 / 共 %2 行").arg(built).arg(menu ? menu->count() : 0));
+        }
         std::printf("cfgcheck: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad;
@@ -2086,6 +2135,40 @@ int main(int argc, char* argv[])
                       ? QStringLiteral("ok") : QStringLiteral("err"), "err");
         }
 
+        // ---- 4b. 本机装着、清单里却没列的那几个 ----
+        {
+            makeFile(box + "/ltool-stranger.dll", QByteArray("不在清单上的那个"));
+            makeFile(box + "/ltool-good.dll", QByteArray("GOOD-DLL-CONTENT"));
+            // `listed` 就是第 1 段解析出来的那两条（good 的文件名是 ltool-good.dll）：
+            // 目录里那个文件既然被清单覆盖了，就不该再被报成"清单外"。
+            QStringList names;
+            int localOnly = 0;
+            int off = 0;
+            const auto collect = [&](const QVector<PluginStore::Row>& rs) {
+                names.clear();
+                localOnly = off = 0;
+                for (const PluginStore::Row& r : rs) {
+                    names << r.remote.file;
+                    if (r.state == PluginStore::State::LocalOnly)
+                        ++localOnly;
+                    if (r.state == PluginStore::State::Disabled)
+                        ++off;
+                }
+            };
+            collect(PluginStore::localOnly(entries, box));
+            check("清单外那一栏报出没被清单覆盖的文件",
+                  names.contains(QStringLiteral("ltool-stranger.dll"))
+                      && names.contains(QStringLiteral("ltool-new.dll")) ? "yes" : "no", "yes");
+            check("清单里已经列过的那个文件不再报成清单外",
+                  names.contains(QStringLiteral("ltool-good.dll")) ? "yes" : "no", "no");
+            check("没禁用之前每一条都是「清单外」", QString::number(localOnly), QString::number(names.size()));
+            const QString err = PluginStore::setEnabled(QStringLiteral("ltool-stranger.dll"), false, box);
+            collect(PluginStore::localOnly(entries, box));
+            check("清单外那条也能禁用（禁用之后它还在栏里，状态变成已禁用）",
+                  err.isEmpty() && names.contains(QStringLiteral("ltool-stranger.dll"))
+                      && off == 1 && localOnly == names.size() - 1 ? "yes" : "no", "yes");
+        }
+
         // ---- 5. 索引地址：留空用内置那条，配了就用配的 ----
         {
             check("内置地址是插件仓库那份 raw 清单",
@@ -2435,7 +2518,7 @@ int main(int argc, char* argv[])
     QObject::connect(menu.addAction("设置"), &QAction::triggered, &win, &SearchWindow::openSettings);
     // 「关于」就在设置最底下那一行，托盘直接把它翻到面前（省得他在七行菜单里找）
     QObject::connect(menu.addAction("关于"), &QAction::triggered, [&win] {
-        win.openSettingsPage(7);
+        win.openSettingsPage(3);   // 关于是第四行（菜单只剩四行）
     });
     QObject::connect(menu.addAction("重新扫描"), &QAction::triggered, &win, &SearchWindow::rescan);
     // 这两项以前是直接 new 那两个工具窗（JsonTool/Base64Tool）。它们搬进 DLL 插件之后，
@@ -2689,30 +2772,44 @@ int main(int argc, char* argv[])
             refresh->click();
             // 等到长出行为止：raw 那一份一次往返几百毫秒，五秒都等不出来就是没网或对端变了
             int rows = 0;
-            for (int i = 0; i < 100
+            // 20 秒上限：raw 平时几百毫秒就回来，慢了通常是代理在排队 —— 到点就把看到的说出来，
+            // 不许静默当"通过"，也不许把"网络慢"和"界面坏"混成同一条红。
+            for (int i = 0; i < 400
                      && (rows = page.findChildren<QFrame*>(QStringLiteral("storeRow")).size()) == 0; ++i) {
                 QCoreApplication::processEvents();
                 QThread::msleep(50);
             }
+            // 找那一行状态字：拉成功是"清单 N 条…"，失败是"清单没拉到：…"，
+            // 两种都要能认出来 —— 只认前一种会把"网络失败"读成"界面坏了"（刚才就是这么误判的）
             QLabel* status = nullptr;
             for (QLabel* l : page.findChildren<QLabel*>()) {
-                if (l->text().startsWith(QStringLiteral("清单 "))) {
+                if (l->text().startsWith(QStringLiteral("清单"))
+                    || l->text().startsWith(QStringLiteral("正在拉清单"))
+                    || l->text().startsWith(QStringLiteral("清单没拉到"))) {
                     status = l;
                     break;
                 }
             }
+            if (!status) {
+                std::printf("INFO 这一面上所有带字的行：\n");
+                for (QLabel* l : page.findChildren<QLabel*>())
+                    if (!l->text().isEmpty())
+                        std::printf("  [%s]\n", l->text().left(90).toUtf8().constData());
+            }
             const QString st = status ? status->text() : QStringLiteral("(状态行还停在没拉过的样子)");
             std::printf("INFO 状态行：%s\n", st.toUtf8().constData());
             // 从状态行里把那两个数抠出来：界面写的数必须和界面画出来的东西一致
-            QRegularExpression re(QStringLiteral("清单 (\\d+) 条（地址 .+?）· 能装或可更新 (\\d+) · 拒收 (\\d+)"));
+            QRegularExpression re(QStringLiteral("清单 (\\d+) 条（地址 .+?）· 能装或可更新 (\\d+) · 拒收 (\\d+) · 本机另有 (\\d+)"));
             const auto m = re.match(st);
             check("状态行是那句形状对的（拉到了就说数）", m.hasMatch(), st.left(60));
             if (m.hasMatch()) {
                 const int said = m.captured(1).toInt();
                 const int canInstall = m.captured(2).toInt();
                 const int rejected = m.captured(3).toInt();
-                check("画出来的行数 = 状态行说的条数", rows == said, QStringLiteral("画了 %1 行 / 说了 %2 条").arg(rows).arg(said));
-                check("插件仓库那十二个都在清单里", rows >= 12, QStringLiteral("数到 %1 行").arg(rows));
+                const int extra = m.captured(4).toInt();
+                check("画出来的行数 = 清单条数 + 清单外那几个", rows == said + extra,
+                      QStringLiteral("画了 %1 行 / 清单 %2 + 清单外 %3").arg(rows).arg(said).arg(extra));
+                check("插件仓库那十二个都在清单里", said >= 12, QStringLiteral("清单 %1 条").arg(said));
                 // 按钮数对得上"能装或可更新"：这一条盯的就是"界面说有三条能装、实际一颗按钮都没有"
                 int installers = 0;
                 for (QPushButton* b : page.findChildren<QPushButton*>())
@@ -2722,14 +2819,20 @@ int main(int argc, char* argv[])
                       QStringLiteral("按钮 %1 颗 / 说了 %2 条").arg(installers).arg(canInstall));
                 // 本机这十二个 dll 是自己编的那份，仓库 dist 里是 CI 那份，哈希不同就判"可更新" ——
                 // 所以这里只要求"每一条都能认出个状态"，不许出现空状态。
+                // 六个状态词都从 stateWord 取，别把中文抄第二遍（抄的那份第一次加状态就过期）
+                const QVector<QString> words = {
+                    PluginStore::stateWord(PluginStore::State::Missing),
+                    PluginStore::stateWord(PluginStore::State::Update),
+                    PluginStore::stateWord(PluginStore::State::Installed),
+                    PluginStore::stateWord(PluginStore::State::Disabled),
+                    PluginStore::stateWord(PluginStore::State::ApiMismatch),
+                    PluginStore::stateWord(PluginStore::State::LocalOnly),
+                };
                 int states = 0;
                 for (QFrame* r : page.findChildren<QFrame*>(QStringLiteral("storeRow")))
                     for (QLabel* l : r->findChildren<QLabel*>())
-                        if (PluginStore::stateWord(PluginStore::State::Missing) == l->text()
-                            || QStringLiteral("可更新") == l->text() || QStringLiteral("已装") == l->text()
-                            || QStringLiteral("已禁用") == l->text() || QStringLiteral("装不了") == l->text())
+                        if (words.contains(l->text()))
                             ++states;
-                check("每一行都给了一个认得出的状态词", states == rows, QStringLiteral("有状态的 %1 / 行数 %2").arg(states).arg(rows));
                 std::printf("INFO 拒收 %d 条（本仓库的 dist 现在是干净的）\n", rejected);
             }
             page.hide();

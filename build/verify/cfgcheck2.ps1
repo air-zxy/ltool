@@ -7,7 +7,7 @@ $log = New-Object System.Collections.Generic.List[string]
 
 Get-Process ltool -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force }
 Start-Sleep -Milliseconds 800
-$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '6') -PassThru
+$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '2') -PassThru
 Start-Sleep -Seconds 5
 $c = New-Object System.Windows.Automation.PropertyCondition($Auto::ProcessIdProperty, $p.Id)
 $dlg = $null

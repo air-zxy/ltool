@@ -68,7 +68,7 @@ function Dump-Buttons($dlg, $tag) {
 
 Get-Process ltool -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force }
 Start-Sleep -Milliseconds 700
-$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '1', '1') -PassThru
+$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '1', '1', 'software') -PassThru
 $script:procId = $p.Id
 Start-Sleep -Seconds 7
 $dlg = Find-Dlg $p.Id

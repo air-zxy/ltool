@@ -36,7 +36,7 @@ $emb = $args[2]
 
 Get-Process ltool -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force }
 Start-Sleep -Milliseconds 800
-$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', ('5:0:' + $emb)) -PassThru
+$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '1', '0', $emb) -PassThru
 Start-Sleep -Seconds 5
 
 $root = [System.Windows.Automation.AutomationElement]::RootElement

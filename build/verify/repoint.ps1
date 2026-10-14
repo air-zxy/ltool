@@ -11,7 +11,7 @@ Start-Sleep -Milliseconds 700
 & cmd.exe /c 'reg delete "HKCU\Software\Classes\Directory\shell\ltool" /f >nul 2>&1'
 Write-Output ('清空后行数 = ' + @(& cmd.exe /c 'reg query "HKCU\Software\Classes\*\shell\ltool" /s 2>nul' | Where-Object { $_ -like 'HKEY_*' }).Count)
 
-$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '6') -PassThru
+$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '2') -PassThru
 Start-Sleep -Seconds 5
 $cond = New-Object System.Windows.Automation.PropertyCondition(
   [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $p.Id)

@@ -8,7 +8,7 @@ $q = $args[0]
 $png = $args[1]
 Get-Process ltool -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force }
 Start-Sleep -Milliseconds 600
-$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '1', '1') -PassThru
+$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '1', '1', 'software') -PassThru
 Start-Sleep -Seconds 7
 $cond = New-Object System.Windows.Automation.PropertyCondition(
   [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $p.Id)

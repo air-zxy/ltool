@@ -8,7 +8,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QCryptographicHash>
+#include <QDir>
 #include <QSettings>
+#include <QSet>
 #include <QUrl>
 #include <algorithm>
 
@@ -37,6 +39,7 @@ QString stateWord(PluginStore::State s)
     case S::Installed: return QStringLiteral("已装");
     case S::Disabled: return QStringLiteral("已禁用");
     case S::ApiMismatch: return QStringLiteral("装不了");
+    case S::LocalOnly: return QStringLiteral("清单外");
     case S::Blocked: return QStringLiteral("条目不能用");
     }
     return QStringLiteral("条目不能用");
@@ -166,6 +169,51 @@ QVector<Row> rows(const QVector<Entry>& entries, const QString& dir)
         Row r;
         r.remote = e;
         r.state = compare(e, &r.note, dir);
+        out.append(r);
+    }
+    return out;
+}
+
+QVector<Row> localOnly(const QVector<Entry>& listed, const QString& dir)
+{
+    // 判"在不在清单里"按**文件名**，不按 id：清单给的就是文件名，而目录里那个文件名是唯一的事实。
+    QSet<QString> listed_files;
+    for (const Entry& e : listed)
+        listed_files.insert(e.file.toLower());
+    const QString d = local(dir);
+    QVector<Row> out;
+    const QStringList files = QDir(d).entryList({ QStringLiteral("*.dll"), QStringLiteral("*.dll.off") },
+                                                QDir::Files | QDir::Hidden);
+    for (const QString& f : files) {
+        const bool off = f.endsWith(QStringLiteral(".off"));
+        const QString base = off ? f.left(f.size() - 4) : f;
+        if (listed_files.contains(base.toLower()))
+            continue;
+        Row r;
+        r.remote.file = base;
+        // id 就是文件名去掉 "ltool-" 前缀；认得出来就顺便把名字/描述/颜色从宿主扫过的那份元数据里拿
+        QString id = base;
+        if (id.startsWith(QStringLiteral("ltool-")))
+            id = id.mid(6);
+        id.chop(4);   // .dll
+        r.remote.id = id;
+        if (const PluginHost::Meta* m = PluginHost::meta(id)) {
+            r.remote.name = m->name;
+            r.remote.desc = m->desc;
+            r.remote.color = QStringLiteral("%1,%2,%3").arg(m->color.red())
+                                                           .arg(m->color.green()).arg(m->color.blue());
+            r.remote.keywords = m->keywords;
+            r.remote.actions = m->actions;
+            r.remote.api = m->api;
+        } else {
+            r.remote.name = base;     // 目录里那个文件宿主还没认出来，就直说文件名
+            r.remote.api = LTOOL_PLUGIN_API_VERSION;
+        }
+        r.remote.bytes = QFileInfo(d + QLatin1Char('/') + f).size();
+        r.state = off ? State::Disabled : State::LocalOnly;
+        r.note = off ? QStringLiteral("%1 被改名成 .off，清单里也没有这一条").arg(base)
+                     : QStringLiteral("本机装着 %1（%2 B），清单里没有这一条 —— 能禁用，谈不上更新")
+                           .arg(base).arg(r.remote.bytes);
         out.append(r);
     }
     return out;

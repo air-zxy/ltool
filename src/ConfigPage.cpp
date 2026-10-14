@@ -3,6 +3,7 @@
 #include "ClipboardStore.h"
 #include "DevEnv.h"
 #include "CaptureHistory.h"
+#include "LanguagePage.h"
 #include "Utils.h"
 #include "PluginStore.h"
 
@@ -330,6 +331,13 @@ ConfigPage::ConfigPage(QWidget* parent)
     clipClear->setToolTip("删除所有记录和已保存的图片文件");
     clipLay->addRow(clipClear);
 
+    // 「语言」原来自己占菜单一行，现在并进这一页。不是把那些控件照抄一份（那会变成两份内存状态、
+    // 两个保存路径），是把那张页整个搬进这个分组框：入口只剩「配置」这一个。
+    auto* langBox = new QGroupBox("语言与翻译", this);
+    auto* langLay = new QVBoxLayout(langBox);
+    langLay->setContentsMargins(8, 8, 8, 8);
+    langLay->addWidget(new LanguagePage(langBox));
+
     auto* save = new QPushButton("保存", this);
     save->setDefault(true);
     save->setObjectName("primary");
@@ -337,6 +345,8 @@ ConfigPage::ConfigPage(QWidget* parent)
     btnLay->addStretch(1);
     btnLay->addWidget(save);
     lay->addWidget(general);
+    lay->addWidget(langBox);
+    lay->addWidget(langBox);
     lay->addWidget(shell);
     lay->addWidget(ime);
     lay->addWidget(index);

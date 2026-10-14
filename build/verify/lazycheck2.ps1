@@ -66,7 +66,7 @@ Add-Type -AssemblyName System.Drawing
 $exe = 'D:\project\cpp\ltool\build\Release\ltool.exe'
 Get-Process ltool -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force }
 Start-Sleep -Milliseconds 700
-$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '1', '1') -PassThru
+$p = Start-Process -FilePath $exe -ArgumentList @('--settingspage', '1', '1', 'software') -PassThru
 Start-Sleep -Seconds 8
 $main = [PopProbe]::Biggest([uint32]$p.Id)
 $r = New-Object PopProbe+RECT
