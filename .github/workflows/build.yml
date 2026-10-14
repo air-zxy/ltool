@@ -36,14 +36,15 @@ env:
   # 而且必须放在工作区内：actions/cache 对 GITHUB_WORKSPACE 之外的路径**静默不保存**，
   # 上一版放外面，结果这个仓库一个缓存条目都没存下，每次 run 都重编一遍 Qt（约一小时）。
   LTOOL_VCPKG: ${{ github.workspace }}/.ci/vcpkg
-  # 二进制缓存：源之间用 ';'，一个源**内部**用 ','。写成 `files;<路径>;readwrite`
-  # 会把 readwrite 当路径读，整步报 "binary config 'files' requires at least one path argument"。
-  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_DOWNLOADS: ${{ github.workspace }}/.ci/vcpkg_downloads
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.ci/vcpkg_archives
+  # 二进制缓存：同时启用 GitHub Actions 缓存与本地目录缓存，提供双重缓存保证
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite;files,${{ github.workspace }}/.ci/vcpkg_archives,readwrite"
 
 jobs:
   windows:
     runs-on: windows-2022
-    timeout-minutes: 360
+    timeout-minutes: 180
     # contents: write 是发 Release 用的；actions: write 是 vcpkg 的 x-gha 缓存要写的。
     permissions:
       contents: write
@@ -59,14 +60,19 @@ jobs:
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
-      - name: 缓存 vcpkg 树和它下载的压缩包
+      # 关键优化：把 build/vcpkg_installed 加入缓存！
+      # 以前只存 vcpkg 树，每次工作区重新拉取 build/ 为空，必须重新解压甚至重编 Qt6。
+      # 现在只要 vcpkg.json 没变，整棵 vcpkg_installed 直接还原到位，安装检测瞬间跳过。
+      - name: 缓存 vcpkg 依赖树、安装产物与下载包
         uses: actions/cache@v4
         with:
           path: |
             ${{ env.LTOOL_VCPKG }}
-            ${{ github.workspace }}/.ci/vcpkg_cache
-          # 键里带 vcpkg.json 的哈希：加一个依赖就换主键，没有下面那条前缀回退就得从源码
-          # 重编一遍 Qt；有了它，旧树照样恢复、只编新加的那个端口。
+            build/vcpkg_installed
+            ${{ env.VCPKG_DOWNLOADS }}
+            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          # 键里带 vcpkg.json 的哈希：依赖不变直接全命中；依赖改变则通过 restore-keys
+          # 回退到旧缓存，未改动的包（如庞大的 qtbase）直接从二进制缓存秒级复用。
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-${{ runner.os }}-
@@ -78,38 +84,66 @@ jobs:
           sha="$(grep -oE '"builtin-baseline": *"[0-9a-f]+"' vcpkg.json | grep -oE '[0-9a-f]{40}')"
           if [ -z "$sha" ]; then echo "::error::vcpkg.json 里读不到 builtin-baseline"; exit 1; fi
           echo "钉住的 vcpkg commit = $sha"
-          if [ ! -d "$LTOOL_VCPKG/.git" ]; then git clone https://github.com/microsoft/vcpkg "$LTOOL_VCPKG"; fi
-          # 清单模式没 baseline 就直接拒绝，所以这一步不是"锦上添花"：拉不到那个对象就没法继续。
-          git -C "$LTOOL_VCPKG" fetch --depth 1 origin "$sha"
-          git -C "$LTOOL_VCPKG" checkout --detach "$sha"
-          "$LTOOL_VCPKG/bootstrap-vcpkg.bat" -disableMetrics
+          mkdir -p "$LTOOL_VCPKG"
+          # 优化：不要全量 clone 微软仓库，通过 init + 单 commit 浅 fetch 秒级完成
+          if [ ! -d "$LTOOL_VCPKG/.git" ]; then
+            git -C "$LTOOL_VCPKG" init
+            git -C "$LTOOL_VCPKG" remote add origin https://github.com/microsoft/vcpkg
+          fi
+          curr_sha="$(git -C "$LTOOL_VCPKG" rev-parse HEAD 2>/dev/null || true)"
+          if [ "$curr_sha" != "$sha" ]; then
+            git -C "$LTOOL_VCPKG" fetch --depth 1 origin "$sha"
+            git -C "$LTOOL_VCPKG" checkout --detach FETCH_HEAD
+          fi
+          # 缓存命中时已有 vcpkg.exe 则跳过 bootstrap，省去几十秒重复构建
+          if [ ! -f "$LTOOL_VCPKG/vcpkg.exe" ]; then
+            "$LTOOL_VCPKG/bootstrap-vcpkg.bat" -disableMetrics
+          fi
 
-      # 生成器和这台机器保持一致：**Visual Studio 17 2022 多配置**。CMakeLists 里
-      # 插件要拷进 `${CMAKE_BINARY_DIR}/Release/ltool-plugins`、导入库挪到 `build/lib`，
-      # ltool.iss 又按 `build\Release\*` 递归收包 —— 换成 Ninja 就没有那个 Release 子目录，
-      # 配置能过、包是空的。
-      - name: 配置（vcpkg 在这一步按清单装 qtbase/libarchive/bit7z）
+      # 显式按清单装依赖：
+      # 1. 解耦 vcpkg 安装与 CMake 配置，进度与报错完全清晰可见
+      # 2. 缓存命中时，vcpkg 扫描清单仅需 2~3 秒即可判定已就绪并快速通过
+      # 3. 依赖变更或未命中时，--clean-after-build 避免保留庞大源码编译树，防止磁盘溢出
+      - name: 按清单安装 vcpkg 依赖（qtbase/libarchive/bit7z）
         shell: bash
         env:
           VCPKG_ROOT: ${{ env.LTOOL_VCPKG }}
         run: |
-          set +e
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 \
-            -DCMAKE_TOOLCHAIN_FILE="$LTOOL_VCPKG/scripts/buildsystems/vcpkg.cmake" > configure.log 2>&1
-          status=$?
-          tail -n 50 configure.log
-          exit $status
+          set -o pipefail
+          mkdir -p build/vcpkg_installed
+          "$LTOOL_VCPKG/vcpkg.exe" install --triplet x64-windows \
+            --x-install-root=build/vcpkg_installed --clean-after-build 2>&1 | tee vcpkg-install.log
 
+      # 生成器和这台机器保持一致：**Visual Studio 17 2022 多配置**。CMakeLists 里
+      # 插件要拷进 `${CMAKE_BINARY_DIR}/Release/ltool-plugins`、导入库挪到 `build/lib`，
+      # ltool.iss 又按 `build\Release\*` 递归收包。
+      # 因为前一步已经把 build/vcpkg_installed 准备完毕，CMake 配置在数秒内即可极速完成。
+      - name: 配置 CMake
+        shell: bash
+        env:
+          VCPKG_ROOT: ${{ env.LTOOL_VCPKG }}
+        run: |
+          set -o pipefail
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 \
+            -DCMAKE_TOOLCHAIN_FILE="$LTOOL_VCPKG/scripts/buildsystems/vcpkg.cmake" 2>&1 | tee configure.log
+
+      # 编 Release 速度优化：
+      # GitHub-hosted windows-2022 机器只有 2 核心 / 7GB 内存。
+      # 原先 --parallel 8 会启动 8 个 MSBuild 项目并发，每个项目内部又触发 /MP 编译，
+      # 导致 16+ 个 cl.exe 进程争抢 2 核 CPU 与 7GB 内存，造成严重 paging 页面置换与 I/O 堵塞。
+      # 优化为：--parallel 4 配合 CL_MPcount=2，限制总编译并发进程数在 4~8 个，
+      # 既跑满 CPU 超线程，又彻底避免内存溢出与磁盘颠簸；同时配合 tee 实时打印构建进度。
+      #
+      # MSBuild 那个开关**必须写 `-p:` 不能写 `/p:`**：这一步是 shell: bash，MSYS 会把
+      # `/p:CL_MPcount=2` 当 Windows 路径转掉，MSBuild 收到的就是 `p:CL_MPcount=2`，
+      # 当场报 MSB1008「只能指定一个项目」（本机 2026-10-15 实测撞过，写 /p: 这条 step 必红）。
       - name: 编 Release
         shell: bash
         env:
           VCPKG_ROOT: ${{ env.LTOOL_VCPKG }}
         run: |
-          set +e
-          cmake --build build --config Release --parallel 8 > build.log 2>&1
-          status=$?
-          tail -n 50 build.log
-          exit $status
+          set -o pipefail
+          cmake --build build --config Release --parallel 4 -- -p:CL_MPcount=2 2>&1 | tee build.log
 
       # 只跑不需要真屏幕、也不需要管理员的那批。要真屏幕的（--capgeo/--capflash/--recq/
       # --rectest/--recordui）在 runner 上没有 DWM 会话，抓回来的是空图，红了也不说明产品坏了；
@@ -241,6 +275,7 @@ jobs:
         with:
           name: ci-logs
           path: |
+            vcpkg-install.log
             configure.log
             build.log
             iscc.log

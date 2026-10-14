@@ -118,9 +118,13 @@ installer\ltool-<版本>-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 - **触发**：推 `v*` 标签 = 打包并发布；推 `main` 或手动 `workflow_dispatch` = 只打包不发（所以"这版能不能出包"随时可以验，不必先承诺发版）。
 - **预发和稳定就靠标签本身分**：`v0.8.1-beta.1` 建的 Release 自动带 `--prerelease`，`v0.8.1` 是稳定版。界面「检查更新」打的是 `/releases/latest`，而 **GitHub 的 `latest` 实测会跳过 draft 和 pre-release**（拿 `microsoft/PowerToys` 对的：列表里最新是 `v0.102.2862.0 pre=True`，`latest` 回的是 `v0.101.2362.0`）—— 所以预发不会推给走稳定通道的人，客户端一行代码都不用改。配套的两条硬规则：`compareVersions` 认后缀且**同数字时带后缀的那个更旧**（`0.8.1-beta.1 < 0.8.1`，装预发的人因此看得见正式版可升；以前整串按 `.` 拆段，`1-beta` 读成 1、尾巴 `.1` 还多一位，预发被当成比稳定新）；`project(VERSION ...)` 只吃纯数字段，所以 CMake 把 `0.8.1` 交给 `project`、把完整的 `0.8.1-beta.1` 交给 `LTOOL_VERSION` 宏（界面显示哪个由宏说了算）。
 - **标签必须和包里的版本号对上**：`v<尾巴>` 不等于 `ltool.iss` 里的 `MyAppVersion` 就当场失败，杜绝"发出去的安装包写着上一个号"。
-- **依赖用清单模式**（和本机一样）：仓库根有 `vcpkg.json`，配 CMake 时 vcpkg 自己按 `builtin-baseline` 装 `qtbase`/`libarchive`/`bit7z`；那棵 vcpkg 树先 `fetch` 到 **baseline 那个 commit**（`--depth 1` 只 clone 分支 tip 会找不到 baseline，那样清单模式直接拒绝）。baseline 从 `vcpkg.json` 里 `grep` 出来，**不在 yml 里抄第二份**，免得两处漂移。
-- **缓存放进工作区里**（`.ci/vcpkg`）：`actions/cache` 对 `GITHUB_WORKSPACE` 之外的路径**静默不保存**，放外面等于每次重编 Qt（约一小时）。二进制缓存走 `VCPKG_BINARY_SOURCES=clear;x-gha,readwrite`，需要 `actions: write`。
+- **依赖用清单模式**（和本机一样）：仓库根有 `vcpkg.json`，装 `qtbase`/`libarchive`/`bit7z`；那棵 vcpkg 树先 `fetch` 到 **baseline 那个 commit**（`--depth 1` 只 clone 分支 tip 会找不到 baseline，那样清单模式直接拒绝）。baseline 从 `vcpkg.json` 里 `grep` 出来，**不在 yml 里抄第二份**，免得两处漂移。
+- **装依赖和配 CMake 是两步**（2026-10-15 拆开，为了"慢在哪一眼看得见"）：`vcpkg install --x-install-root=build/vcpkg_installed --clean-after-build` 单独一步，日志就是 `vcpkg-install.log`；配 CMake 那一步因此只对着已经摆好的树，几秒过。vcpkg 树本身改成 `git init` + `git fetch --depth 1 origin <baseline>`（原来那份全量 clone 要拉 300MB+），缓存里已经有 `vcpkg.exe` 就跳过 bootstrap。`--clean-after-build` 清的是几十 GB 的**源码/中间树**，不是 `build/vcpkg_installed`，所以它和下面那条缓存不打架。
+- **缓存四样，全在工作区里**（`.ci/vcpkg`、`build/vcpkg_installed`、`.ci/vcpkg_downloads`、`.ci/vcpkg_archives`）：`actions/cache` 对 `GITHUB_WORKSPACE` 之外的路径**静默不保存**，放外面等于每次重编 Qt（约一小时）；只缓存 vcpkg 树而**不缓存安装产物**也一样白干 —— 干净检出后 `build/` 是空的，那棵装了 qtbase 的树还得重解甚至重编。键带 `vcpkg.json` 的哈希，`restore-keys` 回退到旧键，加一个依赖时没动的 qtbase 从二进制缓存里秒级复用。二进制缓存双份：`VCPKG_BINARY_SOURCES=clear;x-gha,readwrite;files,<工作区目录>,readwrite`（云端那份要 `actions: write`；本地文件那份跟着缓存一起存，x-gha 挂了还有它）。
+- **`timeout-minutes` 从 360 降到 180**：360 那份余量是把"冷缓存 + 从源码重编 qtbase"当成每天要跑的常态。真红了这一步会写明超时，而缓存命中后的长度差着一个量级 —— 首跑（#73）拿到实际各 step 的秒数之前，180 只是预算，不是量出来的数。
 - **生成器是 Visual Studio 17 2022，不是 Ninja**：CMakeLists 把插件拷进 `${CMAKE_BINARY_DIR}/Release/ltool-plugins`、`ltool.iss` 按 `build\Release\*` 收包 —— 换成 Ninja 就没有那个 `Release` 子目录，配置能过、包是空的。也因此**不用** `ilammy/msvc-dev-cmd`（它会把 `VCPKG_ROOT` 指到 VS 自带那份 vcpkg，后面静默换掉缓存好的树）。
+- **编 Release 的并发压到 `--parallel 4` + `-p:CL_MPcount=2`**：`windows-2022` 只有 2 核 / 7GB，原来 `--parallel 8` 乘上 CMakeLists 里那条全局 `/MP`，同时能起来十几个 `cl.exe` 和好几个 `link.exe` 抢那点 CPU 和内存 —— 抢出来的不是快，是换页和 I/O 堵塞。总并发压在 4~8 之间。
+- **MSBuild 那个开关只能写 `-p:`，不能写 `/p:`**：这一步是 `shell: bash`，MSYS 会把 `/p:CL_MPcount=2` 当 Windows 路径处理掉，MSBuild 收到的是 `p:CL_MPcount=2`，当场 `MSB1008 只能指定一个项目`（本机 2026-10-15 实测撞的，和 `/DFINAL` 那条同一个坑）。同理，`tee` 之前都要 `set -o pipefail`，否则最后那段管道把退出码洗成 0，编坏了也不会红。
 - **自测跑在 offscreen 平台插件上**：runner 上能不能拿到窗口站不作保证，而这条判据要的是"控件建得出来、布局算得对、点了有反应"。`windeployqt` 不带 `qoffscreen.dll`，所以那一步从 vcpkg 树里**借一颗**进 `build/Release/platforms`；`ltool.iss` 的 `Excludes` 点名排除它，**安装包收不到这颗测试专用的插件**（本机验过：装完 `platforms\` 里只有 `qwindows.dll`）。
 - **每个旗标都必须有输出，空输出算失败**：这套自测里 `--smoke` 曾以"0 字节 + 退出码 0"的形状哑过（命令行被单实例守卫转交给已常驻的实例），CI 这边直接把它判成红。CI 跑的是 `--smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --diskbranch --archivetest`；**跳过的点名写进日志**：`--capgeo --capflash --recq --rectest --recordui`（要真屏幕/DWM 会话）、`--mfttest --searchtime`（要管理员开 USN），别让"CI 绿"看着像"这些也过了"。
 - **发出去的包走 `-DFINAL`**（本机同一棵树实测：normal 22.51MiB / 6.8 秒，FINAL 21.79MiB / 10.3 秒 —— 省 0.72MB 多花 3.5 秒；本机的 `deliver.ps1` 不带它，因为每轮闭环少 3.5 秒是天天摸得到的）。开关用**短横不用斜杠**：那一步是 bash，MSYS 会把 `/DFINAL` 当路径转换掉，ISCC 于是报 `You may not specify more than one script filename`（本机实测撞过）。
@@ -329,8 +333,12 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
   而 `WINDOWS_EXPORT_ALL_SYMBOLS` 只导函数不导数据 —— QObject 子类的 metaobject 是数据，跨模块 `new` 它就得显式导出。
 - **商店只有一面列表**（2026-10-15：原本"卡片墙 + 下面一栏清单"是两页并排，他要求合成一面）。
   `ToolsPage::shopRows()` 是这一面唯一的数据入口：没拉清单 → `PluginStore::localRows()`（只报目录里有什么，不猜仓库），
-  拉过清单 → `rows(entries)` 后面接 `localOnly(entries)`。一张卡可以有**两颗**按钮：
-  「可更新」那种同时要「更新」和「禁用」—— 装了的东西不能因为版本旧就禁不掉。
+  拉过清单 → `rows(entries)` 后面接 `localOnly(entries)`。一张卡可以有**三颗**按钮（「更新」+「禁用」+「卸载」——
+  装了的东西不能因为版本旧就禁不掉、卸不掉），
+  它们排在**卡片最底下一行**（2026-10-15：以前和状态词挤同一行，状态那句长一点就把按钮挤得看不见）：
+  `ShopCard` 的正文列是 名字 → 说明 → 状态 → stretch → 按钮排，`addButton()` 只管往那颗前置 stretch 后面追加。
+  大小一律写成 **MB**（`PluginStore::humanSize()`，两位小数）：卡片上任何一行都不许留"N B"那种裸字节，
+  包括下载中途按钮上那行字（总大小不知道时报的就是已下到的 MB）。
   `localOnly` 现在服务的就是 software / downloads / tasks 这三张（`dist/` 还没收它们，#78 做完就没了）。
 - **拉插件那三级顺序只在 `PluginStore::fetch` 里写一遍**（清单和 dll 两段都用它）：镜像前缀 + 原件走**直连**，
   然后原件走配置里那条代理（留空 = 系统代理），最后原件直连；每条候选原地试两次。
@@ -426,9 +434,9 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 | `--pathcfg` | 9 条：配置页那两行「存放目录」真的管用（沙箱 `APPDATA`）。 |
 | `--appdirs` | 12 条：应用目录那条过滤（PE 子系统、助手名、版本号/运行时目录、同目录已有主程序）。 |
 | `--capgeo` | 7 条：缩放不是 100% 时截不全全屏那条几何链（真屏 + 一张自造的 DPR=1.5 画布，100% 的机器上照样能抓到这个错）。 |
-| `--cfgcheck` | 离屏建一次配置页，数每一行在不在、那两颗按钮是不是**各只有一颗**、每个分组框能不能从布局走到。 |
+| `--cfgcheck` | 11 条：离屏建一次配置页，数每一行在不在、那两颗按钮是不是**各只有一颗**、每个分组框能不能从布局走到；另数设置窗菜单那四行（顺序、每行点开有内容、**只有「插件商店」那颗换成了画出来的袋子**），并把四颗图标拼成一条 PNG 存到 `%TEMP%\ltool-cfgshots\menu-icons.png` 供肉眼复核。 |
 | `--storetest` | 57 条：插件商店离线那半条链 —— 清单解析（收两条、拒三条，拒的每条说一句）、`localRows`（目录里 `*.dll` 算已装、`*.dll.off` 算已禁用、旁边的 `*.bin` 不算）、和本地目录比（能装/已装/可更新/装不了）、`.part` 验哈希再改名（哈希或字节数不符就删掉半成品）、`<file>`↔`<file>.off` 改名禁用/恢复、索引地址留空回内置。**一次都不联网**。 |
-| `--storenet` | 14 条：真拉一次 `dist/index.json` 并离屏点「刷新清单」，**逐张卡**核对「那句状态词 ↔ 那颗按钮」——没装的只给「装」、装了的只给「禁用/启用」、可更新的两颗都要，再对状态行里的卡片数 / 能装数 / 拒收数 / 清单外数。**要联网，没网就是红，所以不进 CI**。 |
+| `--storenet` | 17 条：真拉一次 `dist/index.json` 并离屏点「刷新清单」，**逐张卡**核对「那句状态词 ↔ 那颗按钮」——没装的只给「装」、装了的只给「禁用/启用」、可更新的两颗都要，再对状态行里的卡片数 / 能装数 / 拒收数 / 清单外数；三条新的盯这次改版：卡片上不许留裸字节数、本机装着的那几张都得写出 MB、**每颗按钮都在卡片最底下一行**（离屏量几何）。**要联网，没网就是红，所以不进 CI**。 |
 | `--pintool` | 19 条几何断言：置顶窗那两个「收起」开关（离屏，一次都不 `show()`）。 |
 | `--capflash` | `--capflash [次]`：把 F1 浮层真开一次（每下不到半秒）再走和 Esc 一样的取消路径，量「在不在、铺没铺满、压没压在最上」。 |
 

@@ -37,6 +37,14 @@ QString local(const QString& dir)
 
 namespace PluginStore {
 
+// 商店里的大小一律说 MB：小于 1MB 的也写成 0.28 MB，别在卡片上留一串几位数的字节。
+QString humanSize(qint64 bytes)
+{
+    if (bytes <= 0)
+        return QStringLiteral("大小不明");
+    return QStringLiteral("%1 MB").arg(double(bytes) / 1048576.0, 0, 'f', 2);
+}
+
 QString stateWord(PluginStore::State s)
 {
     using S = PluginStore::State;
@@ -308,22 +316,24 @@ State compare(const Entry& e, QString* note, const QString& dir)
         const QString got = sha256Of(live);
         if (got.compare(e.sha256, Qt::CaseInsensitive) == 0) {
             if (note)
-                *note = QStringLiteral("已装，哈希就是清单里那个");
+                *note = QStringLiteral("已装，哈希就是清单里那个 · %1")
+                            .arg(humanSize(QFileInfo(live).size()));
             return State::Installed;
         }
         if (note)
-            *note = QStringLiteral("本机 %1… ≠ 清单 %2…（%3 B）")
+            *note = QStringLiteral("本机 %1… ≠ 清单 %2…（%3）")
                         .arg(got.left(8), e.sha256.left(8))
-                        .arg(QFileInfo(live).size());
+                        .arg(humanSize(QFileInfo(live).size()));
         return State::Update;
     }
     if (QFileInfo::exists(live + QStringLiteral(".off"))) {
         if (note)
-            *note = QStringLiteral("%1 被改名成 .off，下次启动不会加载它").arg(e.file);
+            *note = QStringLiteral("%1 被改名成 .off（%2），下次启动不会加载它")
+                        .arg(e.file, humanSize(QFileInfo(live + QStringLiteral(".off")).size()));
         return State::Disabled;
     }
     if (note)
-        *note = QStringLiteral("%1 没装（清单 %2 B）").arg(e.file).arg(e.bytes);
+        *note = QStringLiteral("%1 没装（清单 %2）").arg(e.file).arg(humanSize(e.bytes));
     return State::Missing;
 }
 
@@ -372,8 +382,9 @@ QVector<Row> localRows(const QString& dir)
         }
         r.remote.bytes = QFileInfo(d + QLatin1Char('/') + f).size();
         r.state = off ? State::Disabled : State::Installed;
-        r.note = off ? QStringLiteral("%1 被改名成 .off，下次启动不会加载它").arg(base)
-                     : QStringLiteral("%1 · %2 B").arg(base).arg(r.remote.bytes);
+        r.note = off ? QStringLiteral("%1 被改名成 .off（%2），下次启动不会加载它")
+                        .arg(base, humanSize(r.remote.bytes))
+                     : QStringLiteral("%1 · %2").arg(base, humanSize(r.remote.bytes));
         out.append(r);
     }
     return out;
@@ -392,9 +403,10 @@ QVector<Row> localOnly(const QVector<Entry>& listed, const QString& dir)
         Row copy = r;
         copy.state = r.state == State::Disabled ? State::Disabled : State::LocalOnly;
         copy.note = r.state == State::Disabled
-                        ? QStringLiteral("%1 被改名成 .off，清单里也没有这一条").arg(r.remote.file)
-                        : QStringLiteral("清单里没有这一条（本机 %1 B）—— 能禁用，谈不上更新")
-                              .arg(r.remote.bytes);
+                        ? QStringLiteral("%1 被改名成 .off（%2），清单里也没有这一条")
+                              .arg(r.remote.file, humanSize(r.remote.bytes))
+                        : QStringLiteral("清单里没有这一条（本机 %1）—— 能禁用，谈不上更新")
+                              .arg(humanSize(r.remote.bytes));
         out.append(copy);
     }
     return out;

@@ -337,7 +337,8 @@ int workingSetMB()
     return int(pmc.WorkingSetSize / (1024 * 1024));
 }
 
-QIcon letterIcon(const QString& text, const QColor& color)
+// 两颗菜单图标共用的那块底：48x48、透明底、圆角色块。
+QPixmap tilePixmap(const QColor& color)
 {
     QPixmap pm(48, 48);
     pm.fill(Qt::transparent);
@@ -346,11 +347,39 @@ QIcon letterIcon(const QString& text, const QColor& color)
     QPainterPath path;
     path.addRoundedRect(2, 2, 44, 44, 12, 12);
     p.fillPath(path, color);
+    return pm;
+}
+
+QIcon letterIcon(const QString& text, const QColor& color)
+{
+    QPixmap pm = tilePixmap(color);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
     QFont f("Microsoft YaHei UI", 16);
     f.setBold(true);
     p.setFont(f);
     p.setPen(Qt::white);
     p.drawText(pm.rect(), Qt::AlignCenter, text.left(1));
+    return QIcon(pm);
+}
+
+QIcon bagIcon(const QColor& color)
+{
+    QPixmap pm = tilePixmap(color);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(Qt::white, 2.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    // 袋身：上口一条横线，两边往里收到底 —— 梯形比矩形更像"拎着的东西"
+    QPainterPath body;
+    body.moveTo(13, 21);
+    body.lineTo(35, 21);
+    body.lineTo(33, 37);
+    body.lineTo(15, 37);
+    body.closeSubpath();
+    p.drawPath(body);
+    // 提手：半圆，两端正好落在袋口那条线上（椭圆中心 y=21，所以矩形 y = 21 - h/2）
+    p.drawArc(QRectF(18.5, 13, 11, 16), 0, 180 * 16);
     return QIcon(pm);
 }
 

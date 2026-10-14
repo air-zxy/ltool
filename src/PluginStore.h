@@ -101,6 +101,7 @@ QVector<Row> localRows(const QString& dir = QString());
 QVector<Row> localOnly(const QVector<Entry>& listed, const QString& dir = QString());
 
 QString stateWord(State s);            // 界面上那一个词：能装/可更新/已装/已禁用/装不了
+QString humanSize(qint64 bytes);       // 商店里的大小一律 "0.28 MB" 这种形状
 
 QString sha256Of(const QString& path);   // 读不出来返回空串
 

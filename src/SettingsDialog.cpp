@@ -181,17 +181,19 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     m_menu->setSpacing(4);              // 条目之间留缝，背景块不再首尾相接
     m_menu->setUniformItemSizes(true);
 
-    struct MenuDef { const char* name; QColor color; };
+    struct MenuDef { const char* name; QColor color; bool bag; };
     // 只有四行。语言并进「配置」那一页里的一节，软件 / 下载器 / 定时任务搬成了插件商店里的卡片 ——
     // 颜色沿用它们原来那一行的，一眼还认得出来。
+    // 「插件商店」那一行画的是一颗袋子（其余三行是第一个字）：四个图标里它是唯一"能买东西"的那个。
     const MenuDef defs[] = {
-        {"网站", QColor(31, 141, 160)},
-        {"插件商店", QColor(120, 130, 150)},
-        {"配置", QColor(150, 150, 160)},
-        {"关于", QColor(90, 100, 120)},
+        {"网站", QColor(31, 141, 160), false},
+        {"插件商店", QColor(120, 130, 150), true},
+        {"配置", QColor(150, 150, 160), false},
+        {"关于", QColor(90, 100, 120), false},
     };
     for (const MenuDef& d : defs) {
-        auto* it = new QListWidgetItem(Utils::letterIcon(d.name, d.color), d.name);
+        const QIcon icon = d.bag ? Utils::bagIcon(d.color) : Utils::letterIcon(d.name, d.color);
+        auto* it = new QListWidgetItem(icon, d.name);
         it->setSizeHint(QSize(150, 44));   // 行高由这里定，QSS 的 padding 不再撑破邻居
         m_menu->addItem(it);
     }

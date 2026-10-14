@@ -1516,6 +1516,49 @@ int main(int argc, char* argv[])
             }
             say("每一行点开都不是一块空面板", built == (menu ? menu->count() : 0),
                 QStringLiteral("有内容的 %1 / 共 %2 行").arg(built).arg(menu ? menu->count() : 0));
+
+            // 图标这一条盯两件事：「插件商店」那颗**不再是第一个字**，其余三行**还是**。
+            // 底块颜色从图标自己身上取（取出现得最多的那个不透明色 = 那块圆角色），
+            // 这样和 Utils::letterIcon(名字, 同一块色) 比才是公道的比法 —— 不然换个色就永远不等。
+            const auto imgOf = [](const QIcon& i) { return i.pixmap(48, 48).toImage(); };
+            const auto tileColor = [](const QImage& im) {
+                QMap<QRgb, int> hist;
+                for (int y = 0; y < im.height(); ++y)
+                    for (int x = 0; x < im.width(); ++x)
+                        if (qAlpha(im.pixel(x, y)) > 200)
+                            ++hist[QRgb(im.pixel(x, y))];
+                QRgb best = 0;
+                int n = -1;
+                for (auto it = hist.constBegin(); it != hist.constEnd(); ++it)
+                    if (it.value() > n) { n = it.value(); best = it.key(); }
+                return QColor(best);
+            };
+            QStringList bagged, lettered;
+            for (int i = 0; menu && i < menu->count(); ++i) {
+                const QImage im = imgOf(menu->item(i)->icon());
+                const QImage asLetter = imgOf(Utils::letterIcon(menu->item(i)->text(), tileColor(im)));
+                (im == asLetter ? lettered : bagged) << menu->item(i)->text();
+            }
+            say("只有「插件商店」那颗换成了画出来的袋子",
+                bagged == QStringList { QStringLiteral("插件商店") },
+                QStringLiteral("换过的=%1 还是字的=%2").arg(bagged.join(QStringLiteral("、")),
+                                                           lettered.join(QStringLiteral("、"))));
+            // 改外观的东西要能看见，不能只剩一条断言：四颗图标拼成一条，铺在菜单那块深色底上存成 PNG。
+            // 数断言能证明"它不是第一个字"，证明不了"它看得出来是个袋子"。
+            {
+                const QString shots = QDir::tempPath() + QStringLiteral("/ltool-cfgshots");
+                QDir().mkpath(shots);
+                const int n = menu ? menu->count() : 0;
+                QPixmap strip(48 * n, 64);
+                strip.fill(QColor(30, 32, 38));
+                QPainter sp(&strip);
+                for (int i = 0; i < n; ++i)
+                    sp.drawPixmap(48 * i + 8, 8, menu->item(i)->icon().pixmap(40, 40));
+                sp.end();
+                const QString file = shots + QStringLiteral("/menu-icons.png");
+                say("四颗菜单图标存成了一张 PNG（肉眼复核用）", strip.save(file, "PNG"),
+                    QStringLiteral("%1 · %2x%3").arg(file).arg(strip.width()).arg(strip.height()));
+            }
         }
         std::printf("cfgcheck: 失败 %d 项\n", bad);
         std::fflush(stdout);
@@ -2164,10 +2207,11 @@ int main(int argc, char* argv[])
                       return r.note.contains(r.remote.file);
                   })
                       ? "yes" : "no", "yes");
-            check("活着的那几条还带字节数",
+            check("活着的那几条还带着大小（一律 MB，不许裸字节）",
                   std::all_of(locals.begin(), locals.end(), [](const PluginStore::Row& r) {
                       return r.state != PluginStore::State::Installed
-                             || r.note.contains(QStringLiteral(" B"));
+                             || (r.note.contains(QStringLiteral(" MB"))
+                                 && !r.note.contains(QStringLiteral(" B")));
                   })
                       ? "yes" : "no", "yes");
         }
@@ -3023,6 +3067,60 @@ int main(int argc, char* argv[])
                 check("每张卡的按钮和自己那句状态对得上（装了的不给装、没装的不给禁用/卸载）", wrong == 0,
                       wrongs.isEmpty() ? QStringLiteral("%1 张全对上").arg(nowCards)
                                        : QStringLiteral("%1 张不对：%2").arg(wrong).arg(wrongs.join(QStringLiteral("；"))));
+                // 大小一律 MB：卡片上任何一行文字都不许留"N B"这种裸字节（MB/KB 这些带单位的单位词不算）
+                int bare = 0;
+                QStringList bares;
+                for (QLabel* l : page.findChildren<QLabel*>()) {
+                    if (l->text().contains(QRegularExpression(QStringLiteral("\\d+\\sB(?![a-zA-Z])")))) {
+                        ++bare;
+                        bares << l->text().left(70);
+                    }
+                }
+                check("卡片上的大小一律写成 MB（一处裸字节都没有）", bare == 0,
+                      QStringLiteral("%1 处还写着 B%2").arg(bare)
+                          .arg(bares.isEmpty() ? QString() : QStringLiteral("：%1").arg(bares.join(QStringLiteral("；")))));
+                // 本机装着的那几张（能给禁用/卸载的）必须报得出大小
+                // 本机装着的那几张（能给禁用/启用的）必须报得出自己的大小。
+                // 注意按**按钮上的字**筛，别按 objectName：卡片上的按钮都没起名字。
+                int sized = 0, needSized = 0;
+                for (QFrame* card : page.findChildren<QFrame*>(QStringLiteral("row"))) {
+                    bool canToggle = false;
+                    for (QPushButton* b : card->findChildren<QPushButton*>())
+                        if (b->text() == QStringLiteral("禁用") || b->text() == QStringLiteral("启用"))
+                            canToggle = true;
+                    if (!canToggle)
+                        continue;
+                    ++needSized;
+                    for (QLabel* l : card->findChildren<QLabel*>())
+                        if (l->text().contains(QStringLiteral(" MB")))
+                            ++sized;
+                }
+                check("本机装着的那几张都写出了自己的大小", sized == needSized,
+                      QStringLiteral("有大小 %1 / 该有 %2（装着 %3 张）").arg(sized).arg(needSized).arg(nOnDisk));
+                // 按钮排在卡片最底下一行：顶边要在卡片里所有文字行之下，而且贴着卡片底边（留 14px 内边距）
+                int btns = 0, floating = 0;
+                QStringList floats;
+                for (QFrame* card : page.findChildren<QFrame*>(QStringLiteral("row"))) {
+                    int textBottom = 0;
+                    for (QLabel* l : card->findChildren<QLabel*>())
+                        textBottom = qMax(textBottom, l->mapTo(card, QPoint(0, 0)).y() + l->height());
+                    for (QPushButton* b : card->findChildren<QPushButton*>()) {
+                        if (!b->isVisible())
+                            continue;
+                        ++btns;
+                        const int top = b->mapTo(card, QPoint(0, 0)).y();
+                        const int bottom = top + b->height();
+                        if (top < textBottom || bottom < card->height() - 14) {
+                            ++floating;
+                            floats << QStringLiteral("「%1」顶=%2 文字底=%3 底=%4 卡高=%5")
+                                          .arg(b->text()).arg(top).arg(textBottom).arg(bottom).arg(card->height());
+                        }
+                    }
+                }
+                check("操作按钮排在卡片最底下（不和状态挤同一行）", btns > 0 && floating == 0,
+                      floats.isEmpty() ? QStringLiteral("%1 颗全在底部").arg(btns)
+                                       : QStringLiteral("%1/%2 颗不在底：%3").arg(floating).arg(btns)
+                                             .arg(floats.join(QStringLiteral("；"))));
                 int installers = 0, toggles = 0;
                 for (QPushButton* b : page.findChildren<QPushButton*>()) {
                     if (b->objectName() == QLatin1String("storeRefresh") || !b->isVisible())

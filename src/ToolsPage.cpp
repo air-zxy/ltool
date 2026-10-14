@@ -49,7 +49,7 @@ QColor colorOf(const QString& spec, const QString& id)
     return QColor(90 + int(seed % 120), 90 + int((seed / 7) % 120), 110 + int((seed / 13) % 110));
 }
 
-// 一张商店卡片：图标 + 名字 + 说明 + 底下那行「状态 / 按钮」。
+// 一张商店卡片：图标 + 名字 + 说明 + 状态，操作按钮排在卡片最底下一行。
 class ShopCard : public QFrame {
 public:
     ShopCard(const QString& title, const QString& desc, const QColor& color, QWidget* parent)
@@ -84,15 +84,18 @@ public:
         m_state = new QLabel(this);
         m_state->setObjectName(QStringLiteral("muted"));
         m_state->setWordWrap(true);
-        // 底部这些按钮是"要几颗加几颗"：装了东西的那张卡现在同时给「禁用」和「卸载」，
-        // 可更新那张还要加一颗「更新」—— 写死两颗很快就会不够用
+
+        // 底部这一排是"要几颗加几颗"：装了东西的那张卡现在同时给「禁用」和「卸载」，
+        // 可更新那张还要加一颗「更新」—— 写死两颗很快就会不够用。
+        // 它单独占卡片最底下一行（前面一颗 stretch 把按钮推到右），状态那行不再和按钮挤在一起。
         m_foot = new QHBoxLayout;
         m_foot->setSpacing(6);
-        m_foot->addWidget(m_state, 1);
-        m_foot->addStretch(0);   // 这个 stretch 是插按钮的锚点：状态词占满左边，按钮排在右
+        m_foot->addStretch(0);   // 这颗 stretch 是锚点：按钮一律排在它后面
 
         text->addWidget(name);
         text->addWidget(m_desc);
+        text->addWidget(m_state);
+        text->addStretch(1);
         text->addLayout(m_foot);
         lay->addWidget(icon, 0, Qt::AlignTop);
         lay->addLayout(text, 1);
@@ -104,7 +107,7 @@ public:
         auto* b = new QPushButton(text, this);
         b->setCursor(Qt::PointingHandCursor);
         b->setMaximumWidth(72);
-        m_foot->insertWidget(m_foot->count() - 1, b);   // 插在那个 stretch 之前
+        m_foot->addWidget(b);
         return b;
     }
     void setBodyClick(std::function<void()> fn)
@@ -426,7 +429,7 @@ void ToolsPage::installEntry(const PluginStore::Entry& e, QPushButton* btn, QLab
                        [btn](qint64 got, qint64 all) {
                            // 就地改按钮上那行字，不新插一块进度条：版面一跳就是"突然出现在上面"
                            btn->setText(all > 0 ? QStringLiteral("%1%").arg(got * 100 / all)
-                                                : QStringLiteral("%1 KB").arg(got / 1024));
+                                                : PluginStore::humanSize(got));
                        },
                        [this, e, btn, state, part, out, writeFailed](const PluginStore::Fetched& got) {
                            if (out->isOpen())
