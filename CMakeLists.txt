@@ -5,18 +5,22 @@ cmake_minimum_required(VERSION 3.24)
 # 漏一处就是"脚本装着昨天的包还报绿"。现在 CMake 从 iss 解析，解析不到直接 FATAL：
 # 宁可构建失败，也不要编出一个显示旧版本号的界面。
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/ltool.iss" _iss_text)
-string(REGEX MATCH "#define MyAppVersion \"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _iss_ver "${_iss_text}")
+string(REGEX MATCH "#define MyAppVersion \"([0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.]+)?)\"" _iss_ver "${_iss_text}")
 if(NOT CMAKE_MATCH_1)
-    message(FATAL_ERROR "ltool.iss 里没读到 #define MyAppVersion \"x.y.z\"")
+    message(FATAL_ERROR "ltool.iss 里没读到 #define MyAppVersion \"x.y.z\"（预发可以写 x.y.z-beta.N）")
 endif()
 set(LTOOL_VERSION_STRING "${CMAKE_MATCH_1}")
+# `project(VERSION ...)` 只吃纯数字段：喂 "0.8.1-beta.1" 进去 CMake 当场报
+# "Invalid number in project version"。所以数字部分给它、**完整那一串**给 LTOOL_VERSION 宏，
+# 界面显示哪个数由宏说了算（预发要让用户看得见 -beta.N）。
+string(REGEX REPLACE "^([0-9]+\\.[0-9]+\\.[0-9]+).*$" "\\1" LTOOL_VERSION_CORE "${LTOOL_VERSION_STRING}")
 # 让构建系统盯着 ltool.iss：改了版本号，下一次 cmake --build 会自己重新 configure。
 # 不写这条的话 iss 改了、宏还是上次那个数 —— 实测把 0.6.0 改成 0.7.0 之后
 # 界面仍然显示 0.6.0，"只改一处"这句话就是空的。
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/ltool.iss)
 message(STATUS "ltool 版本 ${LTOOL_VERSION_STRING}（来自 ltool.iss）")
 
-project(ltool VERSION ${LTOOL_VERSION_STRING} LANGUAGES CXX)
+project(ltool VERSION ${LTOOL_VERSION_CORE} LANGUAGES CXX)
 
 # ---- MSVC：让一个目标里的所有 .cpp 并行编译（/MP）----
 # VS 生成器默认把一个目标里的编译任务排队串行跑：本项目 53 个 TU，改一次 src/Utils.h

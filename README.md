@@ -117,13 +117,28 @@ installer\ltool-<版本>-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 (Get-FileHash D:\software\ltool\ltool.exe).Hash
 ```
 
-- 产物：`installer\ltool-<版本>-setup.exe`，**20.7 MB**；安装目录 **约 73 MB**（ICU 三个 DLL 就占 37 MB，动不了）。
+- 产物：`installer\ltool-<版本>-setup.exe`，**22.5 MB**（走 FINAL 是 21.8 MB）；安装目录 **约 73 MB**（ICU 三个 DLL 就占 37 MB，动不了）。
 - 安装行为：默认按用户装到 `%LOCALAPPDATA%\Programs\ltool`（`PrivilegesRequired=lowest`，无需管理员）；本机实际装在 `D:\software\ltool` —— 同一个 `AppId` 第二次安装会**沿用上次的目录**，所以闭环命令里不写 `/DIR` 也会覆盖到原处；全新机器要指定就加 `/DIR="D:\software\ltool"`（与 `config.ini` 里 `[install] path=D:\software` 一致）。含简体中文向导；可选任务"创建桌面快捷方式""开机自动启动"（HKCU Run，卸载时清除）。
 - `CloseApplications=yes`：安装会等正在运行的 ltool 退出，**静默安装可能卡几十秒**，不是失败。
 - 卸载不会删 `%APPDATA%\ltool` 用户数据（索引/插件/任务配置/日志保留）；卸载器 `unins000.exe /VERYSILENT`。
 - 构建时会先生成 `resources\ltool.ico`（由 `tools\genicon.cpp` 编译的小工具绘制，7 个尺寸）并嵌入 exe 资源，exe/快捷方式/安装包共用同一图标。
 - Inno 不会自动删掉"已经不在包里"的旧文件，剪依赖时要同时往 `[InstallDelete]` 里点名，否则升级完安装目录还是老的体积。
 - 打包前先跑回归（无界面，一行结论）：`build\Release\ltool.exe --archivetest extract <包> <目录>`、`--archivetest make <输入> <输出> [7z] [档位]`、`--archivetest probe <文件>`、`--archivetest progress <输入> <输出> [7z] [第几次按取消]`；整套 16 项在 `build\verify\archtest.ps1`（zip / 7z / tar.gz 解压、GBK 名字的老 zip、自产包两个方向往返、单文件 `.gz`、"是不是压缩包"的三种判定、硬解纯文本，加上进度/取消三项：7z 全程、7z 第 3 次回调按取消、zip 全程当对照；最后用 `7z -t` 验我们自产的两个包外部工具也认）。脚本和临时产物都放 `build\verify\`，`build\` 已在 `.gitignore` 内。
+
+### GitHub Actions：推标签就出安装包、发 Release（`.github/workflows/build.yml`）
+
+一条 job（`windows-2022`）从头到尾就是本机那条链的翻版：**装依赖 → 编 Release → 跑无界面回归 → ISCC 打包 → 传 artifact →（只有标签推的 run）发 GitHub Release**。
+
+- **触发**：推 `v*` 标签 = 打包并发布；推 `main` 或手动 `workflow_dispatch` = 只打包不发（所以"这版能不能出包"随时可以验，不必先承诺发版）。
+- **预发和稳定就靠标签本身分**：`v0.8.1-beta.1` 建的 Release 自动带 `--prerelease`，`v0.8.1` 是稳定版。界面「检查更新」打的是 `/releases/latest`，而 **GitHub 的 `latest` 实测会跳过 draft 和 pre-release**（拿 `microsoft/PowerToys` 对的：列表里最新是 `v0.102.2862.0 pre=True`，`latest` 回的是 `v0.101.2362.0`）—— 所以预发不会推给走稳定通道的人，客户端一行代码都不用改。配套的两条硬规则：`compareVersions` 认后缀且**同数字时带后缀的那个更旧**（`0.8.1-beta.1 < 0.8.1`，装预发的人因此看得见正式版可升；以前整串按 `.` 拆段，`1-beta` 读成 1、尾巴 `.1` 还多一位，预发被当成比稳定新）；`project(VERSION ...)` 只吃纯数字段，所以 CMake 把 `0.8.1` 交给 `project`、把完整的 `0.8.1-beta.1` 交给 `LTOOL_VERSION` 宏（界面显示哪个由宏说了算）。
+- **标签必须和包里的版本号对上**：`v<尾巴>` 不等于 `ltool.iss` 里的 `MyAppVersion` 就当场失败，杜绝"发出去的安装包写着上一个号"。
+- **依赖用清单模式**（和本机一样）：仓库根有 `vcpkg.json`，配 CMake 时 vcpkg 自己按 `builtin-baseline` 装 `qtbase`/`libarchive`/`bit7z`；那棵 vcpkg 树先 `fetch` 到 **baseline 那个 commit**（`--depth 1` 只 clone 分支 tip 会找不到 baseline，那样清单模式直接拒绝）。baseline 从 `vcpkg.json` 里 `grep` 出来，**不在 yml 里抄第二份**，免得两处漂移。
+- **缓存放进工作区里**（`.ci/vcpkg`）：`actions/cache` 对 `GITHUB_WORKSPACE` 之外的路径**静默不保存**，放外面等于每次重编 Qt（约一小时）。二进制缓存走 `VCPKG_BINARY_SOURCES=clear;x-gha,readwrite`，需要 `actions: write`。
+- **生成器是 Visual Studio 17 2022，不是 Ninja**：CMakeLists 把插件拷进 `${CMAKE_BINARY_DIR}/Release/ltool-plugins`、`ltool.iss` 按 `build\Release\*` 收包 —— 换成 Ninja 就没有那个 `Release` 子目录，配置能过、包是空的。也因此**不用** `ilammy/msvc-dev-cmd`（它会把 `VCPKG_ROOT` 指到 VS 自带那份 vcpkg，后面静默换掉缓存好的树）。
+- **自测跑在 offscreen 平台插件上**：runner 上能不能拿到窗口站不作保证，而这条判据要的是"控件建得出来、布局算得对、点了有反应"。`windeployqt` 不带 `qoffscreen.dll`，所以那一步从 vcpkg 树里**借一颗**进 `build/Release/platforms`；`ltool.iss` 的 `Excludes` 点名排除它，**安装包收不到这颗测试专用的插件**（本机验过：装完 `platforms\` 里只有 `qwindows.dll`）。
+- **每个旗标都必须有输出，空输出算失败**：这套自测里 `--smoke` 曾以"0 字节 + 退出码 0"的形状哑过（命令行被单实例守卫转交给已常驻的实例），CI 这边直接把它判成红。CI 跑的是 `--smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --diskbranch --archivetest`；**跳过的点名写进日志**：`--capgeo --capflash --recq --rectest --recordui`（要真屏幕/DWM 会话）、`--mfttest --searchtime`（要管理员开 USN），别让"CI 绿"看着像"这些也过了"。
+- **发出去的包走 `-DFINAL`**（本机同一棵树实测：normal 22.51MiB / 6.8 秒，FINAL 21.79MiB / 10.3 秒 —— 省 0.72MB 多花 3.5 秒；本机的 `deliver.ps1` 不带它，因为每轮闭环少 3.5 秒是天天摸得到的）。开关用**短横不用斜杠**：那一步是 bash，MSYS 会把 `/DFINAL` 当路径转换掉，ISCC 于是报 `You may not specify more than one script filename`（本机实测撞过）。
+- **发一版就三步**：① 改 `ltool.iss` 的 `MyAppVersion`（要预发就写 `x.y.z-beta.N`）；② 提交并推 `main`（这一步之后 workflow 文件才在默认分支上，**标签早于 workflow 推上去是不会触发的**）；③ `git tag v<和号一模一样的串>` 再 `git push origin v<那个串>`。第 ③ 步是对外的，由人按下。
 
 ## 使用
 

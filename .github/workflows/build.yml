@@ -1,0 +1,222 @@
+name: Build and Release
+
+# 推 v* 标签 → 编 Release、跑无界面回归、打安装包、发一个 GitHub Release；
+# 推 main 或手动跑 → 只做前三件事，不发布（所以这条工作流可以随时验包，不必先承诺发版）。
+#
+# 预发/稳定就靠标签本身分：v0.8.1-beta.1 建的 Release 自动标 pre-release，
+# v0.8.1 建的是稳定版。界面「检查更新」打的是 /releases/latest，GitHub 实测会跳过
+# draft 和 pre-release（拿 microsoft/PowerToys 对过：列表里最新是 v0.102.2862.0 pre=True，
+# 而 latest 回的是 v0.101.2362.0），所以预发不会推给走稳定通道的人。
+#
+# 依赖走 **清单模式**（和这台机器上一模一样）：仓库根有 vcpkg.json，配 CMake 时 vcpkg
+# 自己按 builtin-baseline 装。vcc 那边踩过的是经典模式的两道 paperwork，这儿不复现一遍：
+# 先把 vcpkg 树 checkout 到 baseline 那个 commit（--depth 1 只 clone tip 会找不到 baseline），
+# baseline 从 vcpkg.json 里读，不在本文件里抄第二份。
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  # 故意不叫 VCPKG_ROOT：ilammy/msvc-dev-cmd 会把 VCPKG_ROOT 导出成 VS 自带那份 vcpkg，
+  # 后面用到它的 step 会静默换成系统树（表现为 toolchain 路径变成 Program Files 底下）。
+  #
+  # 而且必须放在工作区内：actions/cache 对 GITHUB_WORKSPACE 之外的路径**静默不保存**，
+  # 上一版放外面，结果这个仓库一个缓存条目都没存下，每次 run 都重编一遍 Qt（约一小时）。
+  LTOOL_VCPKG: ${{ github.workspace }}/.ci/vcpkg
+  # 二进制缓存：源之间用 ';'，一个源**内部**用 ','。写成 `files;<路径>;readwrite`
+  # 会把 readwrite 当路径读，整步报 "binary config 'files' requires at least one path argument"。
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    # contents: write 是发 Release 用的；actions: write 是 vcpkg 的 x-gha 缓存要写的。
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 给 vcpkg 的 x-gha 二进制缓存导出凭据
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: 缓存 vcpkg 树和它下载的压缩包
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.LTOOL_VCPKG }}
+            ${{ github.workspace }}/.ci/vcpkg_cache
+          # 键里带 vcpkg.json 的哈希：加一个依赖就换主键，没有下面那条前缀回退就得从源码
+          # 重编一遍 Qt；有了它，旧树照样恢复、只编新加的那个端口。
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-
+
+      - name: 把 vcpkg 钉到 vcpkg.json 里的 builtin-baseline
+        shell: bash
+        run: |
+          git config --global core.longpaths true
+          sha="$(grep -oE '"builtin-baseline": *"[0-9a-f]+"' vcpkg.json | grep -oE '[0-9a-f]{40}')"
+          if [ -z "$sha" ]; then echo "::error::vcpkg.json 里读不到 builtin-baseline"; exit 1; fi
+          echo "钉住的 vcpkg commit = $sha"
+          if [ ! -d "$LTOOL_VCPKG/.git" ]; then git clone https://github.com/microsoft/vcpkg "$LTOOL_VCPKG"; fi
+          # 清单模式没 baseline 就直接拒绝，所以这一步不是"锦上添花"：拉不到那个对象就没法继续。
+          git -C "$LTOOL_VCPKG" fetch --depth 1 origin "$sha"
+          git -C "$LTOOL_VCPKG" checkout --detach "$sha"
+          "$LTOOL_VCPKG/bootstrap-vcpkg.bat" -disableMetrics
+
+      # 生成器和这台机器保持一致：**Visual Studio 17 2022 多配置**。CMakeLists 里
+      # 插件要拷进 `${CMAKE_BINARY_DIR}/Release/ltool-plugins`、导入库挪到 `build/lib`，
+      # ltool.iss 又按 `build\Release\*` 递归收包 —— 换成 Ninja 就没有那个 Release 子目录，
+      # 配置能过、包是空的。
+      - name: 配置（vcpkg 在这一步按清单装 qtbase/libarchive/bit7z）
+        shell: bash
+        env:
+          VCPKG_ROOT: ${{ env.LTOOL_VCPKG }}
+        run: |
+          set +e
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 \
+            -DCMAKE_TOOLCHAIN_FILE="$LTOOL_VCPKG/scripts/buildsystems/vcpkg.cmake" > configure.log 2>&1
+          status=$?
+          tail -n 50 configure.log
+          exit $status
+
+      - name: 编 Release
+        shell: bash
+        env:
+          VCPKG_ROOT: ${{ env.LTOOL_VCPKG }}
+        run: |
+          set +e
+          cmake --build build --config Release --parallel 8 > build.log 2>&1
+          status=$?
+          tail -n 50 build.log
+          exit $status
+
+      # 只跑不需要真屏幕、也不需要管理员的那批。要真屏幕的（--capgeo/--capflash/--recq/
+      # --rectest/--recordui）在 runner 上没有 DWM 会话，抓回来的是空图，红了也不说明产品坏了；
+      # --mfttest/--searchtime 要管理员才能开 USN 枚举。跳过的那些在这儿点名写出来，
+      # 别让"CI 绿"看起来像"这些也过了"。
+      #
+      # 自测走 offscreen 平台插件：runner 上能不能拿到窗口站不作保证，而这条判据要的只是
+      # "控件建得出来、布局算得对、点了有反应"。windeployqt 不会自动带 qoffscreen.dll（它是
+      # 给 Qt 自己的测试用的），所以从 vcpkg 树里借一颗进输出目录；ltool.iss 的 Excludes
+      # 点名排除它，**安装包永远收不到这颗测试专用的插件**。
+      - name: 借 offscreen 平台插件给自测
+        shell: bash
+        run: |
+          src=build/vcpkg_installed/x64-windows/Qt6/plugins/platforms/qoffscreen.dll
+          if [ ! -f "$src" ]; then echo "::error::$src 不在 —— vcpkg 的 qtbase 没编出 offscreen 插件"; exit 1; fi
+          cp "$src" build/Release/platforms/qoffscreen.dll
+          ls -l build/Release/platforms
+
+      - name: 无界面回归
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          cd build/Release        # VS 生成器的产物在 Release 子目录里（.iss 也按这条路径收包）
+          fail=0
+          for f in --smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --diskbranch; do
+            echo "===== $f ====="
+            out=$(./ltool.exe "$f" 2>&1) || { echo "$out"; echo "::error::$f 退出码非 0"; fail=1; continue; }
+            # 空输出必须算失败：这台机器上 --smoke 就以"0 字节 + 退出码 0"的形状哑过很久
+            # （命令行被单实例守卫转交给已常驻的实例），有输出才证明它真跑了。
+            if [ -z "$out" ]; then echo "::error::$f 一行都没输出（这就是假绿的形状）"; fail=1; continue; fi
+            echo "$out" | tail -n 14
+            if echo "$out" | grep -q "失败"; then
+              echo "$out" | grep -E "失败 [1-9][0-9]* 项" && { echo "::error::$f 报了失败"; fail=1; }
+            fi
+          done
+          echo "===== --archivetest（造一个包再解回来）====="
+          mkdir -p "$RUNNER_TEMP/ciart/src"
+          head -c 200000 /dev/urandom > "$RUNNER_TEMP/ciart/src/b.bin"
+          ./ltool.exe --archivetest make "$RUNNER_TEMP/ciart/src" "$RUNNER_TEMP/ciart/t.7z" 7z 5
+          ./ltool.exe --archivetest extract "$RUNNER_TEMP/ciart/t.7z" "$RUNNER_TEMP/ciart/out"
+          echo "INFO 跳过的：--capgeo --capflash --recq --rectest --recordui（要真屏幕）· --mfttest --searchtime（要管理员）"
+          exit $fail
+
+      - name: 装 Inno Setup
+        shell: powershell
+        run: choco install innosetup --no-progress -y
+
+      - name: 找 ISCC
+        shell: bash
+        run: |
+          for candidate in "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+                           "/c/Program Files (x64)/Inno Setup 6/ISCC.exe" \
+                           "/c/Program Files/Inno Setup 6/ISCC.exe"; do
+            if [ -f "$candidate" ]; then
+              echo "ISCC=$(cygpath -w "$candidate")" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::error::Inno Setup 装完了，可 ISCC.exe 哪个默认路径都不在"
+          exit 1
+
+      - name: 标签必须和安装包里的版本号对上
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then echo "INFO 不是标签推的，不比这条（版本号 $(grep -oE 'MyAppVersion \"[^\"]+\"' ltool.iss)）"; exit 0; fi
+          want="${GITHUB_REF_NAME#v}"
+          have="$(grep -oE '#define +MyAppVersion +"[^"]+"' ltool.iss | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [ "$want" != "$have" ]; then
+            echo "::error::标签是 v$want，而 ltool.iss 里 MyAppVersion 是 $have"
+            exit 1
+          fi
+
+      - name: 打安装包
+        shell: bash
+        run: |
+          set +e
+          # -DFINAL：发出去的包要最小体积。本机实测同一棵树 normal 22.51MiB/6.8 秒、
+          # FINAL 21.79MiB/10.3 秒 —— 省 0.72MB 多花 3.5 秒；本机的 deliver.ps1 不带它，
+          # 因为每轮闭环少 3.5 秒是天天摸得到的，发版这条线没这个约束。
+          #
+          # 开关一律用短横不用斜杠：这一步是 bash，MSYS 会把 `/DFINAL` 当路径转换掉，
+          # ISCC 于是报 "You may not specify more than one script filename"（本机实测撞过）。
+          "$ISCC" -DFINAL ltool.iss > iscc.log 2>&1
+          status=$?
+          tail -n 30 iscc.log
+          ls -l installer
+          exit $status
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ltool-windows-installer
+          path: installer/ltool-*-setup.exe
+          if-no-files-found: error
+
+      - name: 发 GitHub Release（只有标签推的 run 才发）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          extra=""
+          case "$GITHUB_REF_NAME" in
+            *-*) extra="--prerelease"; echo "INFO 标签带预发后缀，Release 标成 pre-release（/releases/latest 不会回它）" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" installer/ltool-*-setup.exe \
+            --verify-tag --title "ltool $GITHUB_REF_NAME" --generate-notes $extra
+
+      - name: 失败时把各段日志留成 artifact
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: |
+            configure.log
+            build.log
+            iscc.log

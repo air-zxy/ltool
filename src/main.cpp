@@ -968,8 +968,8 @@ int main(int argc, char* argv[])
                 ++bad;
         };
         const QString ver = AboutPage::currentVersion();
-        has(QStringLiteral("版本号长得对（x.y.z，来自 ltool.iss）: [%1]").arg(ver).toUtf8().constData(),
-            QRegularExpression(QStringLiteral("^\\d+\\.\\d+\\.\\d+$")).match(ver).hasMatch());
+        has(QStringLiteral("版本号长得对（x.y.z，预发可以带 -beta.N）: [%1]").arg(ver).toUtf8().constData(),
+            QRegularExpression(QStringLiteral("^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.]+)?$")).match(ver).hasMatch());
         check("latest 那条 API 地址", AboutPage::latestApiUrl(),
               QStringLiteral("https://api.github.com/repos/mateo-ki/ltool/releases/latest"));
         check("给人点的发布页", AboutPage::releasesPageUrl(),
@@ -987,6 +987,16 @@ int main(int argc, char* argv[])
               QStringLiteral("0.6.0"));
         check("tag 里没数字就返回空（别拿整个 tag 当版本）",
               AboutPage::versionFromTag("nightly"), QString());
+        // 预发/稳定这条通道靠的就是这三条。GitHub 的 /releases/latest 实测跳过 pre-release
+        // （拿 microsoft/PowerToys 对过：列表最新是 v0.102.2862.0 pre=True，latest 回的是
+        // v0.101.2362.0），所以稳定通道不用改代码；而装预发的人要能看见正式版可升 ——
+        // 那就是"同数字时带后缀的更旧"这一条说了算。
+        check("0.8.1-beta.1 必须小于 0.8.1（预发是奔着它去的，不是它之后）",
+              QString::number(AboutPage::compareVersions("0.8.1-beta.1", "0.8.1")), "-1");
+        check("0.8.1-beta.2 大于 0.8.1-beta.1（同数字下后缀自己排）",
+              QString::number(AboutPage::compareVersions("0.8.1-beta.2", "0.8.1-beta.1")), "1");
+        check("0.9 大于 0.8.1-beta.9（数字段先分胜负，后缀不参与）",
+              QString::number(AboutPage::compareVersions("0.9", "0.8.1-beta.9")), "1");
 
         // 资产名是服务器给的：路径分隔符、开头一个点、引号都不能带进落盘路径
         const QString evil = AboutPage::safeFileName(QStringLiteral("../evil.exe"));
