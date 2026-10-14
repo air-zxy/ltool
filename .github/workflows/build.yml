@@ -104,13 +104,18 @@ jobs:
       # 1. 解耦 vcpkg 安装与 CMake 配置，进度与报错完全清晰可见
       # 2. 缓存命中时，vcpkg 扫描清单仅需 2~3 秒即可判定已就绪并快速通过
       # 3. 依赖变更或未命中时，--clean-after-build 避免保留庞大源码编译树，防止磁盘溢出
+      #
+      # 那两棵目录**必须先 mkdir**：VCPKG_DEFAULT_BINARY_CACHE 指着不存在的目录时 vcpkg 不是"没有缓存"
+      # 而是当场拒绝干活 —— `error: Environment variable VCPKG_DEFAULT_BINARY_CACHE must be a directory`
+      # （run 38648353323 就是这么红的：缓存 miss，actions/cache 什么也没还原，那棵树自然不在）。
+      # VCPKG_DOWNLOADS 同理，顺手一起建。
       - name: 按清单安装 vcpkg 依赖（qtbase/libarchive/bit7z）
         shell: bash
         env:
           VCPKG_ROOT: ${{ env.LTOOL_VCPKG }}
         run: |
           set -o pipefail
-          mkdir -p build/vcpkg_installed
+          mkdir -p build/vcpkg_installed "$VCPKG_DEFAULT_BINARY_CACHE" "$VCPKG_DOWNLOADS"
           "$LTOOL_VCPKG/vcpkg.exe" install --triplet x64-windows \
             --x-install-root=build/vcpkg_installed --clean-after-build 2>&1 | tee vcpkg-install.log
 

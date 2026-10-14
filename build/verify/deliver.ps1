@@ -21,7 +21,9 @@ function Phase($name, $sw, $extra) {
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
 if (-not $NoBuild) {
-  $b = & cmake --build "$root\build" --config Release --target ltool 2>&1
+  # --parallel 8：本机（20 逻辑核）全量重编实测 94.0s → 38.4s；16 只再快 2 秒，8 就到平台期了。
+  # CI 那边是 2 核，压到 --parallel 4 + CL_MPcount=2，两边不是一回事，别互相抄。
+  $b = & cmake --build "$root\build" --config Release --target ltool --parallel 8 2>&1
   $buildCode = $LASTEXITCODE
   $exe = Get-Item "$root\build\Release\ltool.exe"
   $errs = @($b | Where-Object { "$PSItem" -match ': error ' }).Count
