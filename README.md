@@ -126,7 +126,9 @@ JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** �
 - 加一个插件：`plugins/<id>/` 放 `plugin.json` + 源码 + 一层壳（照 `plugins/network/networkplugin.cpp` 抄），
   再在 `CMakeLists.txt` 里 `ltool_add_tool(id IdPlugin 源文件…)` 加一行。卡片墙、搜索直达、商店全自动认它。
 - 第三方仓库：[mateo-ki/ltool_plugin](https://github.com/mateo-ki/ltool_plugin) —— 那十二个自带插件的源码 + 独立编 dll 的
-  SDK 快照；SDK 由主仓库 `tools/make_sdk.py` 生成。
+  SDK 快照；SDK 由主仓库 `tools/make_sdk.py` 生成，`dist/index.json` 由它的 `tools/make_index.py` 生成。
+  那边的 CI 定义在本仓库 `plugin-ci/`（`build.yml` + `ci/annotate-fail.sh`），改完拷进插件仓库的
+  `.github/workflows/` 与 `ci/` 再提交 —— 两处都留一份，是为了这条流水线有一处可追溯的来源。
 
 ## 常用自测旗标
 
