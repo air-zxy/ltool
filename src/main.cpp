@@ -2133,6 +2133,20 @@ int main(int argc, char* argv[])
             check("落下来之后 .part 不该留着", QFile::exists(box + "/ltool-new.dll.part") ? "yes" : "no", "no");
         }
         {
+            // 「更新」那条路：目录里**已经有**一颗旧的。Windows 上 QFile::rename 不覆盖已存在的目标，
+            // 少了"先拿掉旧的"这一步，12 颗可更新的全会撞在 rename 上（他点出来的就是这个）。
+            makeFile(box + "/ltool-upd.dll", QByteArray("本机那份旧的 dll 内容"));
+            makeFile(box + "/ltool-upd.dll.part", QByteArray("GOOD-DLL-CONTENT"));
+            Entry e = good;
+            e.file = QStringLiteral("ltool-upd.dll");
+            const QString err = PluginStore::finishDownload(box + "/ltool-upd.dll.part", e, box);
+            check("更新能盖掉目录里已存在的那颗（回报空串）", err.isEmpty() ? "ok" : err, "ok");
+            check("盖完之后目录里那颗就是清单那份", PluginStore::sha256Of(box + "/ltool-upd.dll"), goodSha);
+            check("更新也不许留 .part", QFile::exists(box + "/ltool-upd.dll.part") ? "yes" : "no", "no");
+            // 这一节后面还要数目录里有几颗插件，把这颗用完的拿掉（路径是算出来的绝对路径，不是相对）
+            QFile::remove(box + QStringLiteral("/ltool-upd.dll"));
+        }
+        {
             makeFile(box + "/ltool-badhash.dll.part", QByteArray("被人动过的内容"));
             Entry e = good;
             e.file = QStringLiteral("ltool-badhash.dll");
@@ -2486,7 +2500,8 @@ int main(int argc, char* argv[])
     // 所以带这两面旗时必须自己起循环。
     const bool inLoopSelftest = args.contains(QLatin1String("--capgeo"))
                                 || args.contains(QLatin1String("--capflash"))
-                                || args.contains(QLatin1String("--storenet"));
+                                || args.contains(QLatin1String("--storenet"))
+                                || args.contains(QLatin1String("--storemulti"));
     if (!inLoopSelftest) {
         QLocalSocket probe;
         probe.connectToServer(QString::fromWCharArray(kInstanceKey));
@@ -3141,6 +3156,113 @@ int main(int argc, char* argv[])
             }
             page.hide();
             std::printf("storenet: 失败 %d 项\n", storeNetBad);
+            std::fflush(stdout);
+            app.quit();
+        });
+    }
+
+    // --storemulti [颗数]：一次点好几颗「装/更新」，然后在下载还没落地的时候把卡片墙拆掉重排 ——
+    // 他报的"多点挤了几个插件安装软件就闪退"就是这个形状：卡片是 deleteLater 掉的，而回调连的是
+    // 页面（还活着），于是进度/完成回调再碰那颗按钮就是往已删的 QWidget 上写。
+    // 要联网，而且会往**运行目录**的 ltool-plugins 里真写 dll，所以必须拿一份临时副本去跑
+    // （build/verify/storemulti.ps1 干这件事）；和 --storenet 一样不进 CI。
+    int storeMultiBad = 0;
+    if (args.contains("--storemulti")) {
+        const int howMany = qMax(2, args.mid(args.indexOf(QStringLiteral("--storemulti")) + 1).value(0).toInt());
+        QTimer::singleShot(150, &app, [&app, &storeMultiBad, howMany] {
+            ToolsPage page;
+            page.setAttribute(Qt::WA_DontShowOnScreen, true);
+            page.resize(940, 720);
+            page.show();
+            // drain 必须把 DeferredDelete 也结算掉：processEvents() 默认**不**投递它，
+            // 那样旧卡片其实还活着，"回调打到已删控件"这条根本测不出来（第一版就是这么假绿的）。
+            const auto drain = [] {
+                for (int i = 0; i < 30; ++i) {
+                    QCoreApplication::processEvents();
+                    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                }
+            };
+            const auto check = [&storeMultiBad](const char* name, bool ok, const QString& got) {
+                std::printf("%s %s got=[%s]\n", ok ? "PASS" : "FAIL", name, got.toUtf8().constData());
+                std::fflush(stdout);
+                if (!ok)
+                    ++storeMultiBad;
+            };
+            drain();
+            const QString dir = PluginHost::pluginsDir();
+            const int dllsBefore = QDir(dir).entryList({QStringLiteral("*.dll")}, QDir::Files).size();
+            QPushButton* refresh = page.findChild<QPushButton*>(QStringLiteral("storeRefresh"));
+            if (!refresh) {
+                std::printf("FAIL 没有「刷新清单」，后面没法跑\n");
+                ++storeMultiBad;
+                app.quit();
+                return;
+            }
+            refresh->click();
+            QString st;
+            for (int i = 0; i < 400 && st.isEmpty(); ++i) {
+                QCoreApplication::processEvents();
+                QThread::msleep(50);
+                for (QLabel* l : page.findChildren<QLabel*>())
+                    if (l->text().startsWith(QStringLiteral("清单 "))) {
+                        st = l->text();
+                        break;
+                    }
+            }
+            check("清单拉到了（没有清单就没有「装」可点）", !st.isEmpty(), st.left(60));
+            if (st.isEmpty()) {
+                std::printf("storemulti: 失败 %d 项\n", storeMultiBad);
+                app.quit();
+                return;
+            }
+            drain();
+            QList<QPushButton*> installs;
+            for (QPushButton* b : page.findChildren<QPushButton*>())
+                if (b->isVisible()
+                    && (b->text() == QStringLiteral("装") || b->text() == QStringLiteral("更新")))
+                    installs << b;
+            const int clicked = qMin(howMany, installs.size());
+            for (int i = 0; i < clicked; ++i)
+                installs[i]->click();   // 一颗接一颗点，中间不歇：他那个"挤"就是这一下
+            check("至少点下去两颗（只有一颗就测不到并发）", clicked >= 2,
+                  QStringLiteral("可点 %1 / 点了 %2").arg(installs.size()).arg(clicked));
+            // 第一颗装完时产品自己就会重排卡片墙；这里不等它，立刻手动拆一次，
+            // 把"还在下的那几颗，它们的控件已经没了"这个状态摆出来。
+            page.rebuildGrid();
+            drain();
+            QStringList parts;
+            int waited = 0;
+            QString lastSig;
+            int stable = 0;
+            for (; waited < 6000; ++waited) {   // 300 秒上限（每格 50ms）
+                QCoreApplication::processEvents();
+                QThread::msleep(50);
+                if (waited % 20 != 0)
+                    continue;                   // 每秒看一次
+                parts = QDir(dir).entryList({QStringLiteral("*.part")}, QDir::Files);
+                QStringList sz;
+                for (const QString& f : parts)
+                    sz << QStringLiteral("%1=%2KB").arg(f,
+                             QString::number(QFileInfo(dir + QLatin1Char('/') + f).size() / 1024));
+                const QString sig = sz.join(QLatin1Char(' '));
+                if (!sig.isEmpty())
+                    std::printf("INFO %3ds 桌面上的 .part：%s\n", waited / 20, sig.toUtf8().constData());
+                stable = (sig == lastSig && !sig.isEmpty()) ? stable + 1 : 0;
+                lastSig = sig;
+                // 终止条件看"字节数不再动"而不是".part 消失"—— 装失败的那份就是留着不动的，
+                // 拿"消失"当条件会一路等到超时（第一版就这么把一次失败读成了"下载卡死"）。
+                if (parts.isEmpty() && waited > 80)
+                    break;
+                if (stable >= 3)
+                    break;
+            }
+            check("跑到底还活着（真闪退的话这几行都打不出来）", true,
+                  QStringLiteral("等了 %1 ms").arg(waited * 50));
+            check("目录里不留 .part（要么改成名要么删干净）", parts.isEmpty(), parts.join(QStringLiteral("；")));
+            const int dllsAfter = QDir(dir).entryList({QStringLiteral("*.dll")}, QDir::Files).size();
+            check("dll 颗数没变（更新是换文件，不是加文件）", dllsAfter == dllsBefore,
+                  QStringLiteral("点之前 %1 / 之后 %2").arg(dllsBefore).arg(dllsAfter));
+            std::printf("storemulti: 失败 %d 项\n", storeMultiBad);
             std::fflush(stdout);
             app.quit();
         });

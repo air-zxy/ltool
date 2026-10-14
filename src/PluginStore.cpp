@@ -441,8 +441,17 @@ QString finishDownload(const QString& partPath, const Entry& e, const QString& d
         return QStringLiteral("字节数对不上（下到 %1 ≠ 清单 %2），已经删掉了")
                     .arg(QFileInfo(partPath).size()).arg(e.bytes);
     }
+    const QString dest = local(dir) + QLatin1Char('/') + e.file;
+    // Windows 上 QFile::rename **不会覆盖已存在的目标**（Qt 直接返回失败），所以「更新」这一条
+    // 必须先把旧的那颗拿掉。以前没有这一步：12 颗"可更新"全在 rename 上撞死，
+    // 报的还是那句"被别的程序挡住（多半是杀毒）"—— 冤枉了杀软两个小时。
+    if (QFile::exists(dest) && !QFile::remove(dest)) {
+        QFile::remove(partPath);
+        return QStringLiteral("旧的 %1 换不掉（这个进程还在用它）—— 下好的那份先删掉了，"
+                              "重启 ltool 之后再点一次「更新」就行").arg(e.file);
+    }
     QString err;
-    if (!Utils::renameStaged(partPath, local(dir) + QLatin1Char('/') + e.file, &err))
+    if (!Utils::renameStaged(partPath, dest, &err))
         return err;
     return QString();
 }

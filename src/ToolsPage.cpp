@@ -14,6 +14,7 @@
 #include <QLabel>
 #include <QMouseEvent>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QToolButton>
@@ -407,6 +408,12 @@ void ToolsPage::installEntry(const PluginStore::Entry& e, QPushButton* btn, QLab
     const QString part = dir + QLatin1Char('/') + e.file + QStringLiteral(".part");
     auto out = std::make_shared<QFile>(part);
     auto writeFailed = std::make_shared<bool>(false);
+    // 这两颗是**卡片上的控件**，而 rebuildGrid() 会把整格换掉（装完一颗、点一次「刷新清单」都会）。
+    // 连的是 this（页面还活着），所以卡片被删之后回调照样会跑 —— 用裸指针就是往已删的 QWidget 上写：
+    // 他"连着点多几颗装"闪退的就是这条（第一颗装完拆墙，第二颗的进度回调打在没了的按钮上）。
+    QPointer<QPushButton> btnRef = btn;
+    QPointer<QLabel> stateRef = state;
+    ++m_installing;   // 有几颗在飞：最后一颗落地才重排卡片墙，见下面 done 里那句
 
     PluginStore::fetch(e.url, this,
                        [out, part, writeFailed] {
@@ -426,36 +433,57 @@ void ToolsPage::installEntry(const PluginStore::Entry& e, QPushButton* btn, QLab
                            }
                            return true;
                        },
-                       [btn](qint64 got, qint64 all) {
+                       [btnRef](qint64 got, qint64 all) {
                            // 就地改按钮上那行字，不新插一块进度条：版面一跳就是"突然出现在上面"
-                           btn->setText(all > 0 ? QStringLiteral("%1%").arg(got * 100 / all)
-                                                : PluginStore::humanSize(got));
+                           // 卡片已经被拆掉的话，这行字没地方写 —— 直接不写，下载照下。
+                           if (btnRef)
+                               btnRef->setText(all > 0 ? QStringLiteral("%1%").arg(got * 100 / all)
+                                                       : PluginStore::humanSize(got));
                        },
-                       [this, e, btn, state, part, out, writeFailed](const PluginStore::Fetched& got) {
+                       [this, e, btnRef, stateRef, part, out, writeFailed](const PluginStore::Fetched& got) {
                            if (out->isOpen())
                                out->close();
-                           btn->setEnabled(true);
+                           if (btnRef)
+                               btnRef->setEnabled(true);
                            if (!got.ok || *writeFailed) {
                                QFile::remove(part);
-                               state->setText(got.err.isEmpty()
-                                                  ? QStringLiteral("没下完：本地写不进 .part")
-                                                  : QStringLiteral("没下完：%1").arg(got.err));
-                               btn->setText(QStringLiteral("重试"));
+                               if (stateRef)
+                                   stateRef->setText(got.err.isEmpty()
+                                                         ? QStringLiteral("没下完：本地写不进 .part")
+                                                         : QStringLiteral("没下完：%1").arg(got.err));
+                               if (btnRef)
+                                   btnRef->setText(QStringLiteral("重试"));
                                Utils::log(QStringLiteral("store: 下 %1 没成：%2").arg(e.file, got.err));
+                               if (--m_installing == 0)
+                                   finishInstalls();
                                return;
                            }
                            const QString err = PluginStore::finishDownload(part, e);
                            if (!err.isEmpty()) {
-                               state->setText(err);
-                               btn->setText(QStringLiteral("重试"));
+                               if (stateRef)
+                                   stateRef->setText(err);
+                               if (btnRef)
+                                   btnRef->setText(QStringLiteral("重试"));
                                Utils::log(QStringLiteral("store: 装 %1 没成：%2").arg(e.file, err));
+                               if (--m_installing == 0)
+                                   finishInstalls();
                                return;
                            }
                            Utils::log(QStringLiteral("store: 装好 %1（%2 拿到，哈希对过，%3 B）")
                                           .arg(e.file, got.via).arg(e.bytes));
-                           PluginHost::reload();
-                           rebuildGrid();
+                           if (stateRef)
+                               stateRef->setText(QStringLiteral("已装好 · 下次启动进卡片墙"));
+                           if (--m_installing == 0)
+                               finishInstalls();
                        });
+}
+
+// 一批安装全落地之后只做一次：重扫插件目录 + 重排卡片墙。
+// 一颗装完就 rebuildGrid() 是那次闪退的另一半 —— 它把还在下载的那几张卡的控件删了。
+void ToolsPage::finishInstalls()
+{
+    PluginHost::reload();
+    rebuildGrid();
 }
 
 bool ToolsPage::showTool(const QString& id, const QString& text)

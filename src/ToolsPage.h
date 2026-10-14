@@ -36,12 +36,14 @@ public:
 private:
     QVector<PluginStore::Row> shopRows() const;   // 这一面卡片的数据，唯一一条路
     QWidget* buildGrid();
+    void finishInstalls();   // 一批安装都落地之后只做一次的 重扫 + 重排
     QWidget* makeCard(const PluginStore::Row& r);
     QString reinstallHint(const PluginStore::Row& r) const;   // 「卸了还能装回来吗」那句实话
     void installEntry(const PluginStore::Entry& e, QPushButton* btn, QLabel* state);
 
     QLabel* m_storeStatus = nullptr;
     bool m_storeBusy = false;
+    int m_installing = 0;    // 在飞的 dll 颗数；归零才 rebuildGrid（一颗装完就拆墙 = 把还在下的卡片控件删掉）
     // 存的是**清单本身**而不是画出来的那屏卡：rebuildGrid 整格换掉之后拿它重新比一次本地目录，
     // 刚装完/刚禁用完，状态就跟着目录里的文件动。
     QVector<PluginStore::Entry> m_lastEntries;
