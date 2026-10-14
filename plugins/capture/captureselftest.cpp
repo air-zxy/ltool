@@ -23,6 +23,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QColor>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFile>

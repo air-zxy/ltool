@@ -21,6 +21,14 @@ on:
       - main
   workflow_dispatch:
 
+# 同一个 ref 上只留最新那一次：连推几次 main，后面那次把前面还在跑的**取消掉**。
+# 一台 windows-2022 runner 一次只能跑一个作业，而清单模式装依赖 + 编 qtbase 是小时级的 ——
+# 不顶掉的话，四个旧提交会把队排队把最新那个压到最后面（2026-10-15 实测同时在跑 5 个）。
+# 按 ref 分组，所以推标签发版不会被同分支的另一条顶掉（不同 tag 是不同的 group）。
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # 故意不叫 VCPKG_ROOT：ilammy/msvc-dev-cmd 会把 VCPKG_ROOT 导出成 VS 自带那份 vcpkg，
   # 后面用到它的 step 会静默换成系统树（表现为 toolchain 路径变成 Program Files 底下）。
@@ -191,10 +199,25 @@ jobs:
           ls -l installer
           exit $status
 
+      # 插件 SDK：插件仓库（mateo-ki/ltool_plugin）独立编 dll 要的那一份 —— core 公开的头 +
+      # ltoolcore.lib（导入库）+ cmake/ltool-plugin.cmake。头清单不是手抄的：
+      # tools/make_sdk.py 从 plugins/ 里真实 include 的那些求**传递闭包**，多一个少一个跟着源码走。
+      - name: 打插件 SDK
+        shell: bash
+        run: |
+          set -e
+          python tools/make_sdk.py sdk-out --zip
+          # 导入库是编 core 时才产出的（build/lib，被特意挪出 Release 树免得进安装包）：
+          # 少了它这份 SDK 就是废的，所以这里硬验
+          test -f sdk-out/lib/ltoolcore.lib || { echo "::error::sdk 里没有 ltoolcore.lib"; exit 1; }
+          ls -l installer/ltool-sdk-*.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: ltool-windows-installer
-          path: installer/ltool-*-setup.exe
+          path: |
+            installer/ltool-*-setup.exe
+            installer/ltool-sdk-*.zip
           if-no-files-found: error
 
       - name: 发 GitHub Release（只有标签推的 run 才发）
@@ -208,6 +231,7 @@ jobs:
             *-*) extra="--prerelease"; echo "INFO 标签带预发后缀，Release 标成 pre-release（/releases/latest 不会回它）" ;;
           esac
           gh release create "$GITHUB_REF_NAME" installer/ltool-*-setup.exe \
+            installer/ltool-sdk-*.zip \
             --verify-tag --title "ltool $GITHUB_REF_NAME" --generate-notes $extra
 
       - name: 失败时把各段日志留成 artifact

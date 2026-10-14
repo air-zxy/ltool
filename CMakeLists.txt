@@ -239,22 +239,20 @@ ltool_target_setup(ltool)
 #
 # 每个插件的三件套：<id>plugin.cpp（实现 LToolPlugin 的那层壳）、页面本体（从 src 搬过来的）、
 # plugin.json（Id/Name/Desc/Keywords/Api/Color，宿主只读元数据就能画卡片，不用实例化）。
+#
+# "怎么把一个插件编成 dll"这件事只有 cmake/ltool-plugin.cmake 那一份实现：
+# 插件仓库（https://github.com/mateo-ki/ltool_plugin）include 的是**同一个文件**（SDK 快照里那份），
+# 差别只在 core 从哪来 —— 这儿链的是同树里的 ltoolcore target，那边链导入库。
+include(cmake/ltool-plugin.cmake)
+set(LTOOL_CORE_TARGET ltoolcore)
+set(LTOOL_PLUGIN_OUT ${CMAKE_BINARY_DIR}/plugin-build)
+set(LTOOL_DEPLOY_DIR ${CMAKE_BINARY_DIR}/Release/ltool-plugins)
+
 function(ltool_add_tool id cls)
-    set(tgt ltool-${id})
-    qt_add_plugin(${tgt} CLASS_NAME ${cls})
-    target_sources(${tgt} PRIVATE ${ARGN} plugins/${id}/plugin.json)
-    set_target_properties(${tgt} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/plugin-build
-        LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/plugin-build)
-    add_custom_command(TARGET ${tgt} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/Release/ltool-plugins
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:${tgt}>
-                ${CMAKE_BINARY_DIR}/Release/ltool-plugins/$<TARGET_FILE_NAME:${tgt}>
-        COMMENT "${tgt}: 拷进 Release/ltool-plugins")
-    # 链 core：工具页要用 Utils/InfoRow/DiskScan 那一份共享实现，不是复制一份
-    target_link_libraries(${tgt} PRIVATE ltoolcore)
-    ltool_target_setup(${tgt})
+    ltool_add_plugin(${id} ${cls} ${ARGN} plugins/${id}/plugin.json)
+    # 主仓库这一侧还带上 PCH、LibArchive/bit7z 的包含目录与 cppwinrt 头（插件仓库那份由
+    # ltool_add_plugin 的 SDK 分支自己补）—— 这一段不复制到第二处去。
+    ltool_target_setup(ltool-${id})
 endfunction()
 
 ltool_add_tool(repair RepairPlugin      plugins/repair/RepairPage.cpp plugins/repair/repairplugin.cpp)

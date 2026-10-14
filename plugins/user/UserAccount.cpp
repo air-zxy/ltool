@@ -133,7 +133,8 @@ QString fullNameScript(const QString& machine, const QString& name, const QStrin
     // 显示名 = SAM 里那个 FullName。登录界面、开始菜单头像、锁屏上显示的都是它。
     // 不动账户名，更不动用户目录。
     // ADSI 那串路径是**拼**出来的："WinNT://" + '机' + '/' + '号' + ',user'。
-    // 整串塞进双引号里再套一层单引号，单引号就成了名字的一部分（WinNT://ZQL/'loukas' 找不到对象）
+    // 整串塞进双引号里再套一层单引号，单引号就成了名字的一部分
+    //（例：WinNT://<机器名>/'<账户名>' 这么拼出来找不到对象 —— 这里刻意不写真机名真账号）
     return QStringLiteral(
                "$ErrorActionPreference='Stop'\n"
                "try {\n"
