@@ -175,7 +175,7 @@ bool feed(const QString& id, const QString& text)
     return p && p->feedText(text);
 }
 
-void* selftestEntry(const QString& id)
+void* entry(const QString& id, const char* symbol)
 {
     if (!plugin(id))       // 先真加载，符号只在已装载的 dll 上找得到
         return nullptr;
@@ -191,7 +191,7 @@ void* selftestEntry(const QString& id)
         lib = new QLibrary(m->file);
         libs.insert(id, lib);
     }
-    return lib->resolve("ltoolPluginSelftest");
+    return lib->resolve(symbol);
 }
 
 } // namespace PluginHost

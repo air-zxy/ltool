@@ -283,13 +283,13 @@ int runFwProbe(const QStringList& args)
 // 跑某个插件自带的判据（插件里导出 extern "C" int ltoolPluginSelftest()）。
 // 页面代码搬进 DLL 之后主程序链接不到它内部的测试函数，只能这样点名要。
 // 找不到符号**必须算失败**，不能当通过 —— 否则"插件没加载起来"会伪装成"测试全绿"。
-int runPluginSelftest(const QString& id)
+int runPluginSelftest(const QString& id, const char* symbol = "ltoolPluginSelftest")
 {
     using Fn = int (*)();
-    const auto fn = reinterpret_cast<Fn>(PluginHost::selftestEntry(id));
+    const auto fn = reinterpret_cast<Fn>(PluginHost::entry(id, symbol));
     if (!fn) {
-        std::printf("FAIL %s：没有可用的判据入口（插件没加载起来，或没导出 ltoolPluginSelftest）\n",
-                    id.toUtf8().constData());
+        std::printf("FAIL %s：没有可用的判据入口（插件没加载起来，或没导出 %s）\n",
+                    id.toUtf8().constData(), symbol);
         std::printf("%s: 失败 1 项\n", id.toUtf8().constData());
         return 1;
     }
@@ -582,9 +582,14 @@ int runDiskTiming()
     std::fflush(stdout);
     t.start();
     const DiskScan::Tree tree = DiskScan::run("C:/", 1 << 20);
-    const qint64 fast = t.elapsed();
-    std::printf("  新: %lld ms  目录节点=%d 合计=%.2f GB\n", fast, int(tree.name.size()),
-                tree.total / 1073741824.0);
+    const qint64 fastCold = t.elapsed();
+    // 三段分开报，不然"太慢了"只能靠猜：扫盘 / 合并+建树 / 排序剪枝
+    const DiskScan::Timing tm = DiskScan::lastTiming();
+    std::printf("  新（第一趟，目录项多半是冷的）: %lld ms  目录节点=%d 合计=%.2f GB\n",
+                fastCold, int(tree.name.size()), tree.total / 1073741824.0);
+    std::printf("      分段：扫盘 %lld ms、合并建树 %lld ms、排序剪枝 %lld ms"
+                "（%d 个任务 / %d 线程，扫过 %lld 个目录 / %lld 个文件）\n",
+                tm.walkMs, tm.mergeMs, tm.sortMs, tm.jobs, tm.threads, tm.dirsSeen, tm.files);
     for (int i = tree.firstKid[0]; i < tree.firstKid[0] + tree.kidCount[0] && i < tree.kids.size(); ++i) {
         const int k = tree.kids[i];
         std::printf("      %-28s %8.2f GB\n", tree.name[k].toUtf8().constData(),
@@ -594,13 +599,26 @@ int runDiskTiming()
     }
     std::fflush(stdout);
 
+    // A/B 必须两趟都跑在**同一种缓存状态**上：先前后面旧，旧的那趟吃的是新那趟焐热的缓存，
+    // 于是量出"新比旧慢 0.7x"这个假结论（本机实测过：同一棵树 32 秒 / 13.9 秒，差别全在冷缓存）。
+    // 所以现在是 冷新 → 冷旧 → 热旧 → 热新，两两同状态才比。
     t.restart();
-    const qint64 bytes = DiskScan::legacyWalk("C:/");
-    const qint64 slow = t.elapsed();
-    std::printf("  旧: %lld ms  合计=%.2f GB\n", slow, bytes / 1073741824.0);
-    std::fflush(stdout);
-    if (slow > 0 && fast > 0)
-        std::printf("  提速 %.1fx\n", double(slow) / double(fast));
+    const qint64 slowCold = DiskScan::legacyWalk("C:/");
+    const qint64 slowColdMs = t.elapsed();
+    std::printf("  旧（冷）: %lld ms\n", slowColdMs);
+    t.restart();
+    const qint64 slowWarm = DiskScan::legacyWalk("C:/");
+    const qint64 slowWarmMs = t.elapsed();
+    t.restart();
+    const DiskScan::Tree warm2 = DiskScan::run("C:/", 1 << 20);
+    const qint64 fastWarm = t.elapsed();
+    std::printf("  同一棵树两趟同缓存比：冷 %lld(新) / %lld(旧) ms，热 %lld(新) / %lld(旧) ms"
+                "  → 热态提速 %.1fx\n",
+                fastCold, slowColdMs, fastWarm, slowWarmMs,
+                slowWarmMs > 0 ? double(slowWarmMs) / double(fastWarm) : 0.0);
+    std::printf("  合计对不对得上：新 %.2f GB、旧 %.2f GB、热的再扫一遍 %.2f GB\n",
+                tree.total / 1073741824.0, slowWarm / 1073741824.0,
+                warm2.total / 1073741824.0);
     std::fflush(stdout);
     return 0;
 }
@@ -689,6 +707,12 @@ int main(int argc, char* argv[])
     const bool mftTest = args.contains("--mfttest");
     const bool searchTime = args.contains("--searchtime");
 
+    // --smoke 必须在单实例探针**之前**派发。它原先排在后面，于是本机已有一个在跑的
+    // 实例时，探针连上去把请求转交、当场 return 0 —— 输出 0 字节 + 退出码 0，
+    // 看起来像"自检通过"，其实一行都没跑（2026-10-14 撞见：交付闭环里这条是哑的）。
+    if (smoke)
+        return runSmokeTest();
+
     if (mftTest) {
         // 需要管理员权限：诊断 FSCTL_ENUM_USN_DATA 各组合行为
         for (const QString& drive : {"C:/", "D:/"}) {
@@ -725,6 +749,7 @@ int main(int argc, char* argv[])
 
     if (args.contains("--disktime"))
         return runDiskTiming();
+
 
     // --rowmenu：磁盘页两栏列表的右键（只有界面在用，且真按一下就会拉起资源管理器，
     // 所以判据放在插件里 DiskPage.cpp，这里只负责点名跑它）。
@@ -1085,6 +1110,88 @@ int main(int argc, char* argv[])
         std::printf("%s 检查更新跑完并给出了一句实话\n", done ? "PASS" : "FAIL");
         std::printf("updatecheck: 失败 %d 项\n", done ? 0 : 1);
         return done ? 0 : 1;
+    }
+
+    // --diskbranch：验"边扫边报的一级分支大小"和最后树上的是不是一回事。
+    // 这条必须能红：如果拆出去的孩子没算进父分支（或者算了两遍），
+    // 完成时报出来的数就和定稿树对不上 —— 那界面上先给用户看的数字是假的。
+    if (args.contains("--diskbranch")) {
+        int bad = 0;
+        QVector<QPair<QString, qint64>> last;
+        qint64 firstHitMs = 0;
+        QElapsedTimer wall;
+        wall.start();
+        const DiskScan::Tree tree = DiskScan::run("C:/", 1 << 20, [&](const DiskScan::Progress& p) {
+            if (!p.doneBranches.isEmpty() && firstHitMs == 0)
+                firstHitMs = wall.elapsed();
+            last = p.doneBranches;
+        });
+        const qint64 totalMs = wall.elapsed();
+        int rootKids = 0;
+        for (int i = tree.firstKid[0]; i < tree.firstKid[0] + tree.kidCount[0]; ++i)
+            ++rootKids;
+        const auto say = [&bad](const char* name, bool ok, const QString& got) {
+            std::printf("%s %s：%s\n", ok ? "PASS" : "FAIL", name, got.toUtf8().constData());
+            if (!ok)
+                ++bad;
+            std::fflush(stdout);
+        };
+        say("报出来的分支数 == 树上的一级目录数",
+            last.size() == rootKids, QStringLiteral("%1 / %2 个").arg(last.size()).arg(rootKids));
+        QString mismatch;
+        qint64 sum = 0;
+        for (const auto& pr : last) {
+            const int node = tree.nodeForPath(tree.rootPath + "/" + pr.first);
+            const qint64 treeBytes = node >= 0 ? tree.size[node] : -1;
+            sum += pr.second;
+            if (treeBytes != pr.second && mismatch.isEmpty())
+                mismatch = QStringLiteral("%1 报 %2 字节、树上 %3 字节")
+                               .arg(pr.first).arg(pr.second).arg(treeBytes);
+        }
+        say("每个分支报的数都和定稿树一模一样", mismatch.isEmpty(),
+            mismatch.isEmpty() ? QStringLiteral("%1 个分支全对上").arg(last.size()) : mismatch);
+        say("一级分支之和 = 全盘减去卷根直属", sum + tree.fileBytes[0] == tree.total,
+            QStringLiteral("%1 + %2 = %3").arg(sum).arg(tree.fileBytes[0]).arg(tree.total));
+        const QString when = QStringLiteral("第一个分支 %1ms 就出数（整趟 %2ms）")
+                                 .arg(firstHitMs).arg(totalMs);
+        say("边扫边出数：第一个分支在整趟结束之前就报出来了", firstHitMs > 0 && firstHitMs < totalMs,
+            when);
+        std::printf("diskbranch: 失败 %d 项\n", bad);
+        std::fflush(stdout);
+        return bad == 0 ? 0 : 1;
+    }
+
+    // --diskui：磁盘页那条链整条走一遍（点「整理」→ 途中有没有边扫边出数 →
+    // 定稿 → 换盘再换回来吃不吃缓存）。判据在插件里 DiskPage.cpp，因为它要点真按钮、
+    // 要看真行卡片，主程序链接不到那些类型。这条慢（要真扫一整盘），所以不进 --plugintest。
+    if (args.contains("--diskui"))
+        return runPluginSelftest(QStringLiteral("disk"), "ltoolPluginUiSelftest");
+
+    // --diskscale：量"多线程到底有没有用"。同一棵树按 1/2/4/8/16 线程各扫一遍
+    // （第一趟之后目录项都在系统缓存里，比的是扩展性而不是冷缓存）。
+    // 加这条是因为"磁盘分析太慢"要先分清：是活儿本来就这么多（那就得换 MFT 那条路），
+    // 还是线程没吃满（那就调线程数/拆任务）。
+    if (args.contains("--diskscale")) {
+        static const int kCounts[] = { 1, 2, 4, 8, 16 };
+        qint64 base = 0;
+        for (int c : kCounts) {
+            qputenv("LTOOL_DISKTHREADS", QByteArray::number(c));
+            QElapsedTimer t;
+            t.start();
+            const DiskScan::Tree tree = DiskScan::run("C:/", 1 << 20);
+            const qint64 ms = t.elapsed();
+            const DiskScan::Timing tm = DiskScan::lastTiming();
+            if (!base)
+                base = ms;
+            std::printf("  %2d 线程: %lld ms（扫盘 %lld、建树 %lld）%lld 目录 / %lld 文件 / %.2f GB"
+                        "  相对第一趟 %.2fx\n",
+                        c, ms, tm.walkMs, tm.mergeMs, tm.dirsSeen, tm.files,
+                        tree.total / 1073741824.0, double(base) / double(ms));
+            std::fflush(stdout);
+        }
+        qputenv("LTOOL_DISKTHREADS", QByteArray());
+        std::printf("diskscale: 失败 0 项\n");
+        return 0;
     }
 
     if (args.contains("--regscan"))
@@ -2455,7 +2562,7 @@ int main(int argc, char* argv[])
         const RecRun low = recordCardRun(3, 640, 400, 0, 0.060, 2500, true);
         const RecRun high = recordCardRun(4, 640, 400, 0, 0.400, 2500, true);
         std::printf("INFO 噪声画面：流畅 %lld 字节，超清 %lld 字节\n", low.bytes, high.bytes);
-        std::printf("INFO 两档比值 %1.f%\n", 100.0 * double(high.bytes) / double(low.bytes));
+        std::printf("INFO 两档比值 %.0f%%\n", 100.0 * double(high.bytes) / double(low.bytes));
         // 这台机器的 MF 编码器把 MF_MT_AVG_BITRATE 当**上限**用（实测：内容不够复杂时
         // 它不会硬凑到目标码率）。所以"档位进去了"的判据不是"文件大一倍"，而是
         // "低那一档贴着它自己的上限"—— 差 15% 以内说明那个数真的交给了编码器。
@@ -3089,7 +3196,14 @@ int main(int argc, char* argv[])
     }
 
     // 单实例：第二个实例唤醒已运行的窗口后退出
-    {
+    //
+    // 但有两条判据必须**在事件循环里**跑（要等真屏幕抓一张图），派发点天生在这道守卫之后。
+    // 守卫先把它们转交给已运行的实例、当场 return 0，于是自测变成"0 字节输出 + 退出码 0"
+    // —— 看着像通过，其实一行都没跑（2026-10-14 撞见 --smoke 也是这个形状，已提到守卫之前）。
+    // 所以带这两面旗时必须自己起循环。
+    const bool inLoopSelftest = args.contains(QLatin1String("--capgeo"))
+                                || args.contains(QLatin1String("--capflash"));
+    if (!inLoopSelftest) {
         QLocalSocket probe;
         probe.connectToServer(QString::fromWCharArray(kInstanceKey));
         if (probe.waitForConnected(300)) {
@@ -3099,9 +3213,6 @@ int main(int argc, char* argv[])
             return 0;
         }
     }
-
-    if (smoke)
-        return runSmokeTest();
 
     SearchWindow win;
 

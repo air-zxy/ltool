@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPair>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -30,10 +31,17 @@ struct Tree {
 };
 
 // 扫描进度：字节、已见目录数、正在扫的分支。回调在扫描线程里触发，别碰界面。
+//
+// doneBranches 是**已经整体扫完的一级分支**（名字 + 子树字节）和总数 ——
+// 加它是因为"整盘 14 秒"没法再压（实测 16 线程只比 4 线程快 1%），那界面就不能
+// 让人干等到最后一秒才有数字：小分支几秒内就该出现在列表里。
+// 注意"完成"的定义是"这个分支再没有任务在飞"，所以这里的数字是定稿值，不是下界。
 struct Progress {
     qint64 bytes = 0;
     qint64 dirs = 0;
     QString current;
+    QVector<QPair<QString, qint64>> doneBranches;
+    int branches = 0;
 };
 
 // 遍历卷根下面所有目录。minBytes 以下的兄弟目录不列出（根层永远保留）。
@@ -52,6 +60,19 @@ QVector<CleanTarget> cleanTargets();
 // 给"C盘清理"用：可清理位置先出结果，不用等整棵 C 盘扫完。
 QVector<qint64> sizesFor(const QStringList& paths,
                          const std::function<void(const Progress&)>& progress = {});
+
+// 上一次 run() 各段花了多少毫秒。<analysis> 报"磁盘分析太慢"时先跑 `--disktime`
+// 看这三个数，别凭直觉改：扫盘 / 合并片段 / 排孩子表，三段是三种完全不同的修法。
+struct Timing {
+    qint64 files = 0;
+    qint64 dirsSeen = 0;
+    qint64 walkMs = 0;
+    qint64 mergeMs = 0;
+    qint64 sortMs = 0;
+    int jobs = 0;         // 拆出来的任务数（预算用完就靠单个线程自己扫剩下的）
+    int threads = 0;
+};
+Timing lastTiming();
 
 // 旧算法（QDirIterator + QFileInfo::size），只给 --disktime 做 A/B 基线用
 qint64 legacyWalk(const QString& rootPath);

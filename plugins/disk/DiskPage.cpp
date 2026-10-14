@@ -21,6 +21,8 @@
 #include <QStackedWidget>
 #include <QTabBar>
 #include <QTemporaryDir>
+#include <QElapsedTimer>
+#include <QThread>
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
@@ -561,11 +563,13 @@ DiskPage::DiskPage(QWidget* parent)
     auto* driveLabel = new QLabel("磁盘", this);
     driveLabel->setObjectName("muted");
     m_drive = new QComboBox(this);
+    m_drive->setAccessibleName("driveBox");
     m_drive->setMinimumWidth(230);
     m_drive->setToolTip("选择要分析哪个盘的使用情况；「可清理位置」是系统和用户目录的缓存，"
                         "与这里选的盘无关");
     m_analyzeBtn = new QPushButton("整理", this);
     m_analyzeBtn->setObjectName("primary");
+    m_analyzeBtn->setAccessibleName("analyzeBtn");
     m_analyzeBtn->setToolTip("扫描常见可清理位置的占用，并分析所选磁盘各目录占用");
     m_cleanBtn = new QPushButton("清理选中项", this);
     m_cleanBtn->setEnabled(false);   // 扫出结果前不给清理，避免空列表也去清空回收站
@@ -605,9 +609,11 @@ DiskPage::DiskPage(QWidget* parent)
     m_upBtn->setToolTip("返回上一级目录（已在根目录时不可用）");
     m_analysisPath = new QLabel("未开始分析", anaPage);
     m_analysisPath->setObjectName("muted");
+    m_analysisPath->setAccessibleName("analysisPath");
     m_analysisPath->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_analysisStatus = new QLabel(anaPage);
     m_analysisStatus->setObjectName("muted");
+    m_analysisStatus->setAccessibleName("analysisStatus");
     m_analysisStatus->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     dirHead->addWidget(m_upBtn);
     dirHead->addWidget(m_analysisPath, 1);
@@ -627,6 +633,7 @@ DiskPage::DiskPage(QWidget* parent)
     listScroll->setFrameShape(QFrame::NoFrame);
     auto* listHost = new QWidget(listScroll);
     listHost->setObjectName("rowsHost");
+    listHost->setAccessibleName("analysisRows");
     m_analysisLay = new QVBoxLayout(listHost);
     m_analysisLay->setContentsMargins(0, 0, 0, 0);
     m_analysisLay->setSpacing(6);
@@ -658,20 +665,19 @@ DiskPage::DiskPage(QWidget* parent)
             return;
         m_root = next;
         updateSummary();
-        // 换盘等于换分析对象：旧树和旧排行都是上一个盘的，留着最容易被当成结论
-        m_tree.reset();
-        m_node = -1;
-        m_cleanPhase = 0;
-        m_map->clearData();
-        for (QWidget* w : m_analysisRows)
-            delete w;
-        m_analysisRows.clear();
-        m_upBtn->setEnabled(false);
-        m_cleanTotal->setText("点「整理」开始");
-        m_analysisPath->setText(QString("已切到 %1，点「整理」重新扫描（扫描是重 I/O，不自动开）")
-                                    .arg(m_root.left(2).toUpper()));
-        m_analysisStatus->setText(QString());
-        m_status->setText(QString("已切到 %1：占用分析会扫这个盘；可清理位置仍是系统/用户目录，不受影响。")
+        // 换盘 = 换分析对象：先看有没有扫过的缓存（扫过就直接摆出来，不再等十几秒），
+        // 没有就把界面清空等「整理」。旧树属于上一个盘，留着最容易被当成结论。
+        if (!m_task)
+            showCached(next);
+        if (!m_tree) {
+            m_cleanPhase = 0;
+            m_cleanTotal->setText("点「整理」开始");
+            m_analysisPath->setText(QString("已切到 %1，点「整理」重新扫描（扫描是重 I/O，不自动开）")
+                                        .arg(m_root.left(2).toUpper()));
+            m_analysisStatus->setText(QString());
+        }
+        m_status->setText(QString("已切到 %1：占用分析用这个盘的缓存（没有就点「整理」）；"
+                                  "可清理位置仍是系统/用户目录，不受换盘影响。")
                               .arg(m_root.left(2).toUpper()));
     });
 
@@ -712,6 +718,11 @@ void DiskPage::startAll()
     if (m_timer->isActive())
         return;   // 目录树还在扫，别重复起线程
     m_task = std::make_shared<Task>();
+    // 「整理」就是明确要求重扫：把这个盘的缓存拿掉，扫完再放回去。
+    // 留着的话 tick() 收尾时那个 `if (m_tree)` 一短路，界面会一直显示旧数 —— 看着像"扫好了"
+    m_byDrive.remove(m_root);
+    m_scannedAt.remove(m_root);
+    m_tree.reset();
     m_cleanPhase = 0;
     m_analyzeBtn->setEnabled(false);
     m_drive->setEnabled(false);   // 扫描中途换盘会让树上的数字和界面说的盘对不上
@@ -745,6 +756,8 @@ void DiskPage::startAll()
                 task->dirs.store(p.dirs, std::memory_order_relaxed);
                 const std::lock_guard<std::mutex> g(task->m);
                 task->current = p.current;
+                task->branches = p.doneBranches;
+                task->branchTotal = p.branches;
             }));
         task->tree = tree;
         task->done.store(true, std::memory_order_release);
@@ -769,15 +782,22 @@ void DiskPage::tick()
         const qint64 bytes = m_task->bytes.load(std::memory_order_relaxed);
         const qint64 dirs = m_task->dirs.load(std::memory_order_relaxed);
         QString cur;
+        int doneBranches = 0;
+        int totalBranches = 0;
         {
             const std::lock_guard<std::mutex> g(m_task->m);
             cur = m_task->current;
+            doneBranches = m_task->branches.size();
+            totalBranches = m_task->branchTotal;
         }
-        const QString text = QString("已统计 %1 / %2 个目录%3")
+        const QString text = QString("已统计 %1 / %2 个目录 · 一级分支已扫完 %3 / %4%5")
                                  .arg(human(bytes))
                                  .arg(dirs)
+                                 .arg(doneBranches)
+                                 .arg(totalBranches)
                                  .arg(cur.isEmpty() ? QString() : QString(" · 正在 %1").arg(cur));
         m_analysisStatus->setText(text);
+        renderBranches();       // 已经定稿的一级分支先摆出来（整盘要十几秒，别干等）
         if (m_cleanPhase < 2)
             m_status->setText(text);
         return;
@@ -785,6 +805,10 @@ void DiskPage::tick()
     m_timer->stop();
     m_tree = m_task->tree;
     m_task.reset();
+    if (m_tree && !m_tree->isEmpty()) {
+        m_byDrive.insert(m_root, m_tree);          // 换回这个盘就不用再扫一遍
+        m_scannedAt.insert(m_root, QDateTime::currentDateTime());
+    }
     m_analyzeBtn->setEnabled(true);
     m_drive->setEnabled(true);
     if (!m_tree || m_tree->isEmpty()) {
@@ -798,6 +822,64 @@ void DiskPage::tick()
     renderAnalysis();
     m_cleanPhase = 2;          // 先定阶段，最后这次渲染才不带"数字可能还会变"
     renderCleanFromTree();     // 用整棵树的数据定稿（比快速通道口径一致）
+}
+
+// 扫描途中把"已经整体扫完的一级分支"先摆出来。这些是定稿值 —— DiskScan 只在
+// 那个分支名下再没有任务在飞时才报（见 Counters::finishJob），所以先看到的数
+// 不会因为后面又扫出东西而变大。整盘要十几秒，小分支几百毫秒就出得来。
+void DiskPage::renderBranches()
+{
+    if (!m_task || m_tree)
+        return;
+    QVector<QPair<QString, qint64>> done;
+    {
+        const std::lock_guard<std::mutex> g(m_task->m);
+        done = m_task->branches;
+    }
+    if (done.size() == m_analysisRows.size())
+        return;                       // 一条没多，别重画（每 250ms 一次，重画也浪费）
+    std::sort(done.begin(), done.end(),
+              [](const QPair<QString, qint64>& a, const QPair<QString, qint64>& b) {
+                  return a.second > b.second;
+              });
+    for (QWidget* w : m_analysisRows)
+        delete w;
+    m_analysisRows.clear();
+    qint64 maxSz = 1;
+    for (const auto& pr : done)
+        maxSz = qMax(maxSz, pr.second);
+    for (const auto& pr : done) {
+        // 树还没建完，点不动（下钻要查表）—— 所以不传 onClick，光标也不变手型
+        auto* row = new RowCard(pr.first, m_root + pr.first, false, nullptr, this);
+        row->setValues(pr.second, qreal(pr.second) / maxSz, pr.second == maxSz);
+        m_analysisLay->insertWidget(m_analysisLay->count() - 1, row);
+        m_analysisRows.append(row);
+    }
+}
+
+// 这个盘扫过就直接用缓存：换回来看一眼不该再等十几秒。强制重扫是「整理」那颗按钮。
+void DiskPage::showCached(const QString& root)
+{
+    m_tree = m_byDrive.value(root);
+    if (!m_tree || m_tree->isEmpty()) {
+        m_tree.reset();
+        m_node = -1;
+        m_cleanPhase = 0;
+        m_map->clearData();
+        for (QWidget* w : m_analysisRows)
+            delete w;
+        m_analysisRows.clear();
+        m_upBtn->setEnabled(false);
+        return;
+    }
+    m_node = m_tree->root;
+    m_cleanPhase = 2;              // 缓存里就带着整棵树，可清理位置的数直接查它
+    m_upBtn->setEnabled(false);
+    renderAnalysis();
+    renderCleanFromTree();
+    m_analysisPath->setText(QString("%1 · 上次扫描 %2（点「整理」重扫）")
+                                .arg(m_tree->pathOf(m_tree->root),
+                                     m_scannedAt.value(root).toString("MM-dd hh:mm:ss")));
 }
 
 void DiskPage::showNode(int node)
@@ -847,6 +929,8 @@ void DiskPage::renderAnalysis()
         status += QString("（列表只显示前 %1，矩形图里全都有）").arg(shown);
     if (m_node == t.root && t.pruned > 0)
         status += QString("，另有 %1 个小于 1 MB 的目录未列出").arg(t.pruned);
+    if (m_node == t.root && m_scannedAt.contains(m_root))
+        status += QString(" · 上次扫描 %1").arg(m_scannedAt.value(m_root).toString("hh:mm:ss"));
     m_analysisStatus->setText(status);
 }
 
@@ -982,5 +1066,126 @@ int diskRowMenuSelftest()
         if (l->text() == dir)
             ++labels;
     check("下面那行路径就是这一行自己的子控件（右键会冒上来）", labels == 1 ? "yes" : "no", "yes");
+    return bad;
+}
+
+
+// --diskui：磁盘页那条「点整理 → 边扫边出数 → 定稿 → 换盘回来不重扫」的界面链条。
+// 全程不 show 这一页（不往用户桌面上放东西），控件用 click()/setCurrentIndex() 驱动。
+// 它慢（要真扫一整盘），所以是独立入口，不跟着 --plugintest 跑。
+namespace {
+
+QString bool2s(const void* p)
+{
+    return p ? QStringLiteral("yes") : QStringLiteral("no");
+}
+
+// 占用分析那一栏的行卡片数。"row" 这个 objectName 顶部汇总卡也叫这个名字，
+// 而且两张卡都直接挂在这一页下 —— 所以按 parentWidget 是不是 rowsHost 来分。
+QWidget* analysisHost(QWidget* root)
+{
+    const auto all = root->findChildren<QWidget*>(QString(), Qt::FindChildrenRecursively);
+    for (QWidget* w : all)
+        if (w->accessibleName() == QLatin1String("analysisRows"))
+            return w;
+    return nullptr;
+}
+
+int rowCountOf(DiskPage* p)
+{
+    QWidget* host = analysisHost(p);
+    if (!host)
+        return -1;
+    int n = 0;
+    const auto kids = p->findChildren<QWidget*>(QStringLiteral("row"));
+    for (QWidget* w : kids)
+        if (w->parentWidget() == static_cast<QWidget*>(host))
+            ++n;
+    return n;
+}
+
+QWidget* findByAcc(QWidget* root, const char* accName)
+{
+    const auto all = root->findChildren<QWidget*>(QString(), Qt::FindChildrenRecursively);
+    for (QWidget* w : all)
+        if (w->accessibleName() == QString::fromLatin1(accName))
+            return w;
+    return nullptr;
+}
+
+} // namespace
+
+int diskUiSelftest()
+{
+    int bad = 0;
+    const auto say = [&bad](const char* name, bool ok, const QString& got) {
+        std::printf("%s %s：%s\n", ok ? "PASS" : "FAIL", name, got.toUtf8().constData());
+        if (!ok)
+            ++bad;
+        std::fflush(stdout);
+    };
+
+    DiskPage page;
+    auto* btn = qobject_cast<QPushButton*>(findByAcc(&page, "analyzeBtn"));
+    auto* status = qobject_cast<QLabel*>(findByAcc(&page, "analysisStatus"));
+    auto* path = qobject_cast<QLabel*>(findByAcc(&page, "analysisPath"));
+    auto* drive = qobject_cast<QComboBox*>(findByAcc(&page, "driveBox"));
+    say("按钮、两条状态、盘符下拉都找得到", btn && status && path && drive,
+        QStringLiteral("btn=%1 status=%2 path=%3 drive=%4")
+            .arg(bool2s(btn), bool2s(status), bool2s(path), bool2s(drive)));
+    if (!btn || !status || !path || !drive)
+        return bad ? bad : 1;
+
+    const int before = rowCountOf(&page);
+    btn->click();                       // 就是用户点那颗「整理」
+    QElapsedTimer t;
+    t.start();
+    // 第一段：等到"至少一个一级分支定稿"。整盘十几秒，这一段通常几百毫秒就到。
+    bool sawBranch = false;
+    while (t.elapsed() < 30000 && !sawBranch) {
+        QCoreApplication::processEvents();
+        QThread::msleep(30);
+        const QString s = status->text();
+        sawBranch = s.contains(QString::fromUtf8("一级分支已扫完"))
+                    && !s.contains(QString::fromUtf8("已扫完 0 /"));
+    }
+    const qint64 firstMs = t.elapsed();
+    say("扫描途中状态行报了「已扫完 N 个一级分支」", sawBranch,
+        QStringLiteral("%1ms · %2").arg(firstMs).arg(status->text()));
+    const int duringRows = rowCountOf(&page);
+    say("途中列表已经摆了行卡片（不是空白干等）", duringRows > 0,
+        QStringLiteral("%1 行（点之前 %2 行）").arg(duringRows).arg(before));
+
+    // 第二段：等它定稿（上限 180 秒，够冷缓存扫完整盘）
+    bool doneScan = false;
+    while (t.elapsed() < 180000 && !doneScan) {
+        QCoreApplication::processEvents();
+        QThread::msleep(30);
+        doneScan = path->text().contains(QString::fromUtf8("上次扫描"))
+                   || status->text().contains(QString::fromUtf8("本层"));
+    }
+    say("扫完定稿（状态换成树上的数、并且写下这次扫描的时间）", doneScan,
+        QStringLiteral("%1ms · %2 / %3").arg(t.elapsed()).arg(path->text(), status->text()));
+    const int afterRows = rowCountOf(&page);
+    say("定稿后列表有东西", afterRows > 0, QStringLiteral("%1 行").arg(afterRows));
+
+    // 第三段：换盘再换回来 —— 该直接用缓存，不该重扫，也不该把行弄丢
+    if (drive->count() < 2) {
+        std::printf("INFO 这台机器只列出一个盘，换盘那条没法测\n");
+    } else {
+        const int keep = drive->currentIndex();
+        const int other = keep + 1 < drive->count() ? keep + 1 : keep - 1;
+        drive->setCurrentIndex(other);
+        QCoreApplication::processEvents();
+        say("换到没扫过的盘：列表让位，不拿上一个盘的数当结论", rowCountOf(&page) == 0,
+            QStringLiteral("%1 行").arg(rowCountOf(&page)));
+        drive->setCurrentIndex(keep);
+        QCoreApplication::processEvents();
+        const int back = rowCountOf(&page);
+        say("换回来直接用缓存就把行摆出来了（没重扫）", back > 0,
+            QStringLiteral("%1 行 · %2").arg(back).arg(path->text()));
+    }
+    std::printf("diskui: 失败 %d 项\n", bad);
+    std::fflush(stdout);
     return bad;
 }

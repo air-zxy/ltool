@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QDateTime>
+#include <QHash>
 #include <QPair>
 #include <QVector>
 #include <QWidget>
@@ -55,6 +57,10 @@ private:
         std::atomic<qint64> dirs{0};
         std::mutex m;
         QString current;                 // 正在扫的分支
+        // 已经整体扫完的一级分支（DiskScan 报的定稿值）：整盘要 14~19 秒，
+        // 但小分支几百毫秒就出得来，界面先摆这些，别让人干等到最后一秒才有数字
+        QVector<QPair<QString, qint64>> branches;
+        int branchTotal = 0;
         std::atomic<bool> cleanDone{false};
         QVector<qint64> cleanSizes;      // 与 cleanItems() 同序，cleanDone=true 后才可读
         std::atomic<bool> done{false};
@@ -67,6 +73,8 @@ private:
     void renderCleanFromTree();   // 可清理位置的大小直接查目录树，不再单独扫一遍
     void renderClean(const QVector<qint64>& sizes);   // 快速通道的结果（还没整棵树时先填上）
     void renderAnalysis();
+    void renderBranches();    // 扫描途中：把已扫完的一级分支先列出来
+    void showCached(const QString& root);   // 这个盘扫过就别再扫第二遍
 
     QLabel* m_cleanTotal = nullptr;
     QLabel* m_usedTitle = nullptr;
@@ -91,6 +99,10 @@ private:
 
     std::shared_ptr<Task> m_task;
     std::shared_ptr<DiskScan::Tree> m_tree;
+    // 扫过的盘留在内存里（这个页是一次 DLL 插件页，创建后就一直活着）：
+    // 换回来看第二个盘时不该再等十几秒，「整理」才是要重扫的意思。
+    QHash<QString, std::shared_ptr<DiskScan::Tree>> m_byDrive;
+    QHash<QString, QDateTime> m_scannedAt;
     QVector<qint64> m_cleanSizes;   // 上一次量到的可清理大小，换盘符后树上查不到时用它兜底
     int m_cleanPhase = 0;    // 0=还没数, 1=快速通道已填, 2=按整棵目录树定稿
     int m_node = -1;
@@ -100,3 +112,5 @@ private:
 // 磁盘页两栏列表的右键自测（--rowmenu）：验菜单里那一项的文案、灰没灰、点开要开的是哪个目录。
 // 放在 DiskPage.cpp 里是因为行卡片（RowCard）就藏在那个文件的匿名 namespace 里。
 int diskRowMenuSelftest();
+// --diskui：慢的那条（真扫一整盘），由 disk 插件的 ltoolPluginUiSelftest 导出
+int diskUiSelftest();

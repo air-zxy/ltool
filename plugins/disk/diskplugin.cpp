@@ -33,4 +33,10 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
 {
     return diskRowMenuSelftest();
 }
+
+// 慢的那个（要真扫一整盘，几十秒）单独一个入口，只由 --diskui 点名跑
+extern "C" Q_DECL_EXPORT int ltoolPluginUiSelftest()
+{
+    return diskUiSelftest();
+}
 #include "diskplugin.moc"

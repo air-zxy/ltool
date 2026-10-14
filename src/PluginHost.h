@@ -37,8 +37,11 @@ LToolPlugin* plugin(const QString& id);
 // 页早建好缓存着，所以这里只是转手；插件没接住返回 false，调用方照常把页面打开。
 bool feed(const QString& id, const QString& text);
 
-// 插件自己带的判据（extern "C" int ltoolPluginSelftest()），没有返回 nullptr。
-// 页面代码搬进插件之后，主程序链接不到它内部的测试函数，只能这样点名要。
-void* selftestEntry(const QString& id);
+// 插件自己带的判据入口（extern "C" 导出），没有返回 nullptr。
+// 页面代码搬进插件之后主程序链接不到它内部的测试函数，只能按名字点名要。
+// 默认那个名字是快判据（跟着 --plugintest 一起跑）；慢的（要扫一整盘的）另起一个名字，
+// 免得把六套回归全拖成几十秒。
+void* entry(const QString& id, const char* symbol = "ltoolPluginSelftest");
+inline void* selftestEntry(const QString& id) { return entry(id); }
 
 } // namespace PluginHost
