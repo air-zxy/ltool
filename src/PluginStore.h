@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QByteArray>
+#include <QObject>
+#include <functional>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -48,7 +50,41 @@ struct Row {
     QString note;
 };
 
+// 「上哪儿拉」这条顺序，三级形状是硬编码的，镜像列表可以在配置里换：
+//   1. 镜像前缀 + 原件地址，**走直连**（镜像都是境内 CDN，再套一层代理只会更慢更挂）
+//   2. 原件地址，走配置里那条代理（留空 = Windows 系统代理）
+//   3. 原件地址，直连
+struct Attempt {
+    QString url;
+    bool useProxy = false;
+    QString label;    // 界面上那句"是从哪条拿到的"就靠它
+};
+
 QString defaultIndexUrl();        // 内置那条 raw 地址（免登录）
+QString mirrorList();             // 配置 store/mirrors，留空 = 内置那两条（这台机器实测过还活着）
+QVector<Attempt> attemptsFor(const QString& originUrl);
+
+// 一次拉取的收尾。ok=false 时 err 是最后那条的错误，via 是成功那条的名字，tries 是一共试了几次
+struct Fetched {
+    QByteArray body;      // 没给 onChunk 时，整份在这里
+    bool ok = false;
+    QString err;
+    QString via;
+    int tries = 0;
+};
+
+// 按上面那条顺序拉一个 URL，每条候选原地重试两次 —— 这条线路上"连上但不吐字节"是常态，
+// 2026-10-05 实测同一 URL 单发 3/8 中、最多三发 8/8 中，只发一次会把还活着的镜像判死。
+//   beforeAttempt：每次尝试之前调（流式写盘那路用它把 .part 截断重来）
+//   onChunk：收到一段字节；返回 false = 本地写不下去，换下一条
+//   onProgress：(已收, 总数)，总数可能是 0（服务器没给 Content-Length）
+//   done：一定会回调，不会静默不回
+void fetch(const QString& originUrl, QObject* parent,
+           const std::function<void()>& beforeAttempt,
+           const std::function<bool(const QByteArray&)>& onChunk,
+           const std::function<void(qint64, qint64)>& onProgress,
+           const std::function<void(const Fetched&)>& done);
+
 QString indexUrl();               // 配置里 store/indexUrl，留空就用上面那条
 
 QVector<Entry> parseIndex(const QByteArray& json, QStringList* problems);
@@ -76,5 +112,16 @@ QString finishDownload(const QString& partPath, const Entry& e, const QString& d
 // （本来就在那个状态也算做完了，note 里说清）。没有"当场卸掉"这条路 —— Qt 插件 unload
 // 之后里面活着的控件就是悬空指针，所以界面必须同时说"下次启动生效"。
 QString setEnabled(const QString& file, bool on, const QString& dir = QString());
+
+// 卸载 = 把那个文件从目录里真删掉（`<file>` 和它的 `.off` 都删）。返回：
+//   ""       已经删掉了
+//   "pending" 删不动 —— 这个 dll 本进程已经加载过，Windows 不会让删一个正在用的镜像；
+//             这种把它记进待删表，**下次启动第一件事**就是把它删掉（applyPendingRemoves）
+//   其它      失败原因（界面上原样说出来）
+// 为什么不当场 unload：Qt 插件 unload 之后里面活着的 QWidget/定时器就是悬空指针，
+// 而这张卡可能正开着。所以"当场能删的就删，删不动的说清什么时候生效"，不假装已经卸了。
+QString uninstall(const QString& file, const QString& dir = QString());
+QVector<QString> pendingRemoves();               // 表里排着的文件名
+int applyPendingRemoves(const QString& dir = QString());   // 启动时调，返回真删掉了几个
 
 } // namespace PluginStore

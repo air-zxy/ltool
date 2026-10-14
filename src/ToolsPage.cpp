@@ -13,6 +13,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QToolButton>
@@ -24,6 +25,7 @@
 #include <QUrl>
 
 #include <functional>
+#include <memory>
 
 namespace {
 
@@ -82,30 +84,29 @@ public:
         m_state = new QLabel(this);
         m_state->setObjectName(QStringLiteral("muted"));
         m_state->setWordWrap(true);
-        m_action = new QPushButton(this);
-        m_action->setCursor(Qt::PointingHandCursor);
-        m_action->setMaximumWidth(88);
-        m_secondary = new QPushButton(this);
-        m_secondary->setCursor(Qt::PointingHandCursor);
-        m_secondary->setMaximumWidth(88);
-        m_secondary->setVisible(false);
-        auto* foot = new QHBoxLayout;
-        foot->setSpacing(8);
-        foot->addWidget(m_state, 1);
-        foot->addWidget(m_secondary, 0, Qt::AlignRight);
-        foot->addWidget(m_action, 0, Qt::AlignRight);
+        // 底部这些按钮是"要几颗加几颗"：装了东西的那张卡现在同时给「禁用」和「卸载」，
+        // 可更新那张还要加一颗「更新」—— 写死两颗很快就会不够用
+        m_foot = new QHBoxLayout;
+        m_foot->setSpacing(6);
+        m_foot->addWidget(m_state, 1);
+        m_foot->addStretch(0);   // 这个 stretch 是插按钮的锚点：状态词占满左边，按钮排在右
 
         text->addWidget(name);
         text->addWidget(m_desc);
-        text->addLayout(foot);
+        text->addLayout(m_foot);
         lay->addWidget(icon, 0, Qt::AlignTop);
         lay->addLayout(text, 1);
     }
 
     QLabel* stateLabel() const { return m_state; }
-    QPushButton* actionButton() const { return m_action; }
-    // 第二颗：「可更新」那种卡要同时给「更新」和「禁用」—— 装了的东西不能因为版本旧就禁不掉
-    QPushButton* secondaryButton() const { return m_secondary; }
+    QPushButton* addButton(const QString& text)
+    {
+        auto* b = new QPushButton(text, this);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setMaximumWidth(72);
+        m_foot->insertWidget(m_foot->count() - 1, b);   // 插在那个 stretch 之前
+        return b;
+    }
     void setBodyClick(std::function<void()> fn)
     {
         m_onClick = std::move(fn);
@@ -124,27 +125,57 @@ protected:
 private:
     QLabel* m_desc = nullptr;
     QLabel* m_state = nullptr;
-    QPushButton* m_action = nullptr;
-    QPushButton* m_secondary = nullptr;
+    QHBoxLayout* m_foot = nullptr;
     std::function<void()> m_onClick;
 };
 
-// 给这张卡挂一颗「禁用」。asPrimary=false 时挂到第二颗上 ——
-// 「可更新」那张卡本来要按「更新」，但装了的东西不能因为版本旧就禁不掉。
-void addDisableButton(ToolsPage* page, ShopCard* card, const QString& file, bool asPrimary = true)
+// 装了的东西既能禁用也能卸载，所以一张卡上最多三颗按钮。enableIt=true 就是那颗「启用」
+void addToggleButton(ToolsPage* page, ShopCard* card, const QString& file, bool enableIt)
 {
-    QPushButton* btn = asPrimary ? card->actionButton() : card->secondaryButton();
-    btn->setVisible(true);
-    btn->setText(QStringLiteral("禁用"));
-    QObject::connect(btn, &QPushButton::clicked, page, [page, file, card] {
-        const QString err = PluginStore::setEnabled(file, false);
+    QPushButton* btn = card->addButton(enableIt ? QStringLiteral("启用") : QStringLiteral("禁用"));
+    QObject::connect(btn, &QPushButton::clicked, page, [page, file, card, enableIt] {
+        const QString err = PluginStore::setEnabled(file, enableIt);
         card->stateLabel()->setText(err.isEmpty()
-                                        ? QStringLiteral("已禁用 · 下次启动不再加载它")
+                                        ? QStringLiteral("已%1 · 下次启动加载它")
+                                              .arg(enableIt ? QStringLiteral("启用") : QStringLiteral("禁用"))
                                         : err);
-        Utils::log(QStringLiteral("store: 禁用 %1%2").arg(file,
-                    err.isEmpty() ? QString() : QStringLiteral(" 失败：") + err));
+        Utils::log(QStringLiteral("store: %1 %2%3")
+                       .arg(enableIt ? QStringLiteral("启用") : QStringLiteral("禁用"), file,
+                            err.isEmpty() ? QString() : QStringLiteral(" 失败：") + err));
         if (err.isEmpty())
             page->rebuildGrid();
+    });
+}
+
+// 卸载 = 真把那个文件从目录里删掉。删得掉就当场没了；这个进程已经加载过它的话 Windows 不放行，
+// PluginStore 把它记进待删表、下次启动第一件事删掉 —— 那时候这句状态就该说"下次启动生效"。
+void addUninstallButton(ToolsPage* page, ShopCard* card, const QString& name, const QString& file,
+                        const QString& again)
+{
+    QPushButton* btn = card->addButton(QStringLiteral("卸载"));
+    QObject::connect(btn, &QPushButton::clicked, page, [page, card, name, file, again] {
+        const auto answer = QMessageBox::question(
+            page, QStringLiteral("卸载插件"),
+            QStringLiteral("这会把 %1 从\n%2\n删掉（配置和数据都不动）。%3\n\n确定吗？")
+                .arg(file, PluginHost::pluginsDir(), again),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);   // 默认停在"不"
+        if (answer != QMessageBox::Yes) {
+            card->stateLabel()->setText(QStringLiteral("没动。"));
+            return;
+        }
+        const QString res = PluginStore::uninstall(file);
+        if (res == QLatin1String("pending")) {
+            card->stateLabel()->setText(QStringLiteral("已安排卸载 · 这个进程还加载着它，下次启动真删掉"));
+            page->rebuildGrid();
+            return;
+        }
+        if (!res.isEmpty()) {
+            card->stateLabel()->setText(res);
+            return;
+        }
+        Utils::log(QStringLiteral("store: 卸载 %1（%2）完成，重扫目录").arg(file, name));
+        PluginHost::reload();
+        page->rebuildGrid();
     });
 }
 
@@ -239,6 +270,16 @@ QWidget* ToolsPage::buildGrid()
     return page;
 }
 
+// "卸了之后还能不能装回来"只有拉过清单才答得上来；没拉过就别假装有把握
+QString ToolsPage::reinstallHint(const PluginStore::Row& r) const
+{
+    if (!m_haveStore)
+        return QStringLiteral("还没拉过清单，不确定仓库里有没有它 —— 删了可能要重装才回得来。");
+    if (r.state == PluginStore::State::LocalOnly)
+        return QStringLiteral("插件清单里没列它（本机独有的那几个）—— 删了要等仓库收了它才装得回来。");
+    return QStringLiteral("清单里有它，卸完还能从这一面再装回来。");
+}
+
 QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
 {
     auto* card = new ShopCard(r.remote.name, r.remote.desc, colorOf(r.remote.color, r.remote.id), this);
@@ -259,49 +300,42 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
     switch (r.state) {
     case S::Missing:
     case S::Update: {
-        card->actionButton()->setText(r.state == S::Missing ? QStringLiteral("装")
-                                                             : QStringLiteral("更新"));
-        connect(card->actionButton(), &QPushButton::clicked, this, [this, e, card] {
-            card->actionButton()->setEnabled(false);
-            installEntry(e, card->actionButton(), card->stateLabel());
+        auto* install = card->addButton(r.state == S::Missing ? QStringLiteral("装")
+                                                               : QStringLiteral("更新"));
+        connect(install, &QPushButton::clicked, this, [this, e, card, install] {
+            install->setEnabled(false);
+            installEntry(e, install, card->stateLabel());
         });
-        if (r.state == S::Update)
-            addDisableButton(this, card, file, /*asPrimary=*/false);   // 装了但哈希不同：更新 + 禁用都给
+        if (r.state == S::Update) {
+            // 本机确实装着它（只是哈希不同）：禁得掉、也卸得掉，不能只剩"更新"这一条路
+            addToggleButton(this, card, file, /*enableIt=*/false);
+            addUninstallButton(this, card, e.name, file,
+                                QStringLiteral("清单里有它，卸完还能从这一面再装回来。"));
+        }
         if (r.state == S::Missing) {
             // 还没装的那张：点正文就是按同一颗按钮。这里绝不能去 showTool —— 本机没那个 dll
-            card->setBodyClick([card] { card->actionButton()->click(); });
+            card->setBodyClick([install] { install->click(); });
         } else {
             // 「可更新」是装了但哈希不同：那张页本来就能看，正文照常打开，更新交给按钮
             card->setBodyClick(openable ? [this, id] { showTool(id); } : std::function<void()>());
         }
         break;
     }
-    case S::Disabled: {
-        card->actionButton()->setText(QStringLiteral("启用"));
-        connect(card->actionButton(), &QPushButton::clicked, this, [this, file, card] {
-            const QString err = PluginStore::setEnabled(file, true);
-            card->stateLabel()->setText(err.isEmpty()
-                                            ? QStringLiteral("已启用 · 下次启动加载它")
-                                            : err);
-            Utils::log(QStringLiteral("store: 启用 %1%2").arg(file,
-                        err.isEmpty() ? QString() : QStringLiteral(" 失败：") + err));
-            if (err.isEmpty())
-                rebuildGrid();
-        });
-        // .off 那个宿主不会去加载，所以这张卡点正文没有页可看
+    case S::Disabled:
+        // .off 那个宿主本来就不会去加载它：能启用、能卸载，点正文没有页可看
+        addToggleButton(this, card, file, /*enableIt=*/true);
+        addUninstallButton(this, card, e.name, file, reinstallHint(r));
         card->setBodyClick(std::function<void()>());
         break;
-    }
     case S::Installed:
-    case S::LocalOnly: {
-        addDisableButton(this, card, file);
+    case S::LocalOnly:
+        addToggleButton(this, card, file, /*enableIt=*/false);
+        addUninstallButton(this, card, e.name, file, reinstallHint(r));
         card->setBodyClick(openable ? [this, id] { showTool(id); } : std::function<void()>());
         break;
-    }
     case S::ApiMismatch:
     case S::Blocked:
-        // 装不了 / 条目不能用：不给按钮，为什么不行就写在状态那行里
-        card->actionButton()->setVisible(false);
+        // 本机没有能用的那个文件：一颗按钮都不给，为什么不行写在状态那行里
         card->setBodyClick(std::function<void()>());
         break;
     }
@@ -321,33 +355,22 @@ void ToolsPage::refreshStore()
     const QString url = PluginStore::indexUrl();
     m_storeStatus->setText(QStringLiteral("正在拉清单：%1").arg(url));
 
-    // 管理器挂在这页上：页（连带设置窗）销毁时 reply 一起断，回调里再用 this 已经被 Qt 摘掉
-    auto* nam = new QNetworkAccessManager(this);
-    DevEnv::applyProxy(nam);
-    QNetworkRequest req { QUrl(url) };
-    req.setTransferTimeout(20000);
-    QNetworkReply* reply = nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, nam, url] {
+    // 镜像 → 本地代理 → 直连，逐条试（那条顺序只在 PluginStore::fetch 里写一遍，两段联网共用）
+    PluginStore::fetch(url, this, {}, {}, {}, [this, url](const PluginStore::Fetched& got) {
         m_storeBusy = false;
-        const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const QByteArray body = reply->readAll();
-        reply->deleteLater();
-        nam->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
+        if (!got.ok) {
             // 拉不到就退回"只列本机装着的那些"，并把这件事说出来 —— 不能拿一张半截的列表当结论
             m_haveStore = false;
             m_lastEntries.clear();
             m_lastProblems.clear();
-            m_storeStatus->setText(QStringLiteral("清单没拉到：%1%2 —— 这一面退回本机装着的那几个，它们照常能用")
-                                       .arg(reply->errorString(),
-                                            http ? QStringLiteral("（HTTP %1）").arg(http) : QString()));
+            m_storeStatus->setText(QStringLiteral("清单没拉到：%1 —— 这一面退回本机装着的那几个，它们照常能用")
+                                       .arg(got.err));
             rebuildGrid();
-            Utils::log(QStringLiteral("store: 拉清单失败 http=%1 err=%2 url=%3").arg(http)
-                           .arg(reply->errorString(), url));
+            Utils::log(QStringLiteral("store: 拉清单失败 %1 url=%2").arg(got.err, url));
             return;
         }
         QStringList problems;
-        const auto entries = PluginStore::parseIndex(body, &problems);
+        const auto entries = PluginStore::parseIndex(got.body, &problems);
         m_haveStore = true;
         m_lastEntries = entries;
         m_lastProblems = problems;
@@ -359,16 +382,17 @@ void ToolsPage::refreshStore()
                 ++canInstall;
         }
         const int outside = PluginStore::localOnly(entries).size();
-        QString line = QStringLiteral("清单 %1 条（地址 %2）· 这一面 %3 张卡 · 能装或可更新 %4 · 拒收 %5 · 清单外 %6"
+        QString line = QStringLiteral("清单 %1 条（%2 · 走的是 %3，一共试了 %4 次）· 这一面 %5 张卡"
+                                      " · 能装或可更新 %6 · 拒收 %7 · 清单外 %8"
                                       " —— 装了的点正文是打开，没装的点正文是装")
-                          .arg(entries.size()).arg(url).arg(all.size())
+                          .arg(entries.size()).arg(url, got.via).arg(got.tries).arg(all.size())
                           .arg(canInstall).arg(problems.size()).arg(outside);
         if (!problems.isEmpty())
             line += QStringLiteral("（拒收：%1）").arg(problems.join(QStringLiteral("；")));
         m_storeStatus->setText(line);
         rebuildGrid();
-        Utils::log(QStringLiteral("store: 清单 %1 条，卡片 %2 张，能装 %3，拒收 %4，清单外 %5")
-                       .arg(entries.size()).arg(all.size()).arg(canInstall)
+        Utils::log(QStringLiteral("store: 清单 %1 条（%2 拿到），卡片 %3 张，能装 %4，拒收 %5，清单外 %6")
+                       .arg(entries.size()).arg(got.via).arg(all.size()).arg(canInstall)
                        .arg(problems.size()).arg(outside));
     });
 }
@@ -378,56 +402,57 @@ void ToolsPage::installEntry(const PluginStore::Entry& e, QPushButton* btn, QLab
     const QString dir = PluginHost::pluginsDir();
     QDir().mkpath(dir);
     const QString part = dir + QLatin1Char('/') + e.file + QStringLiteral(".part");
-    auto* out = new QFile(part);
-    if (!out->open(QIODevice::WriteOnly)) {
-        state->setText(QStringLiteral("写不下去：%1").arg(out->errorString()));
-        btn->setEnabled(true);
-        btn->setText(QStringLiteral("重试"));
-        out->deleteLater();
-        Utils::log(QStringLiteral("store: %1 的 .part 写不下去：%2").arg(e.file, out->errorString()));
-        return;
-    }
-    auto* nam = new QNetworkAccessManager(this);
-    DevEnv::applyProxy(nam);
-    QNetworkRequest req { QUrl(e.url) };
-    req.setTransferTimeout(60000);
-    QNetworkReply* reply = nam->get(req);
-    connect(reply, &QNetworkReply::downloadProgress, this, [btn](qint64 got, qint64 all) {
-        // 就地改按钮上那行字，不新插一块进度条：版面一跳就是"突然出现在上面"
-        btn->setText(all > 0 ? QStringLiteral("%1%").arg(got * 100 / all)
-                             : QStringLiteral("%1 KB").arg(got / 1024));
-    });
-    // readyRead 而不是 finished 之后一次 readAll：dll 几百 KB 到几 MB，一次读进来白占内存
-    connect(reply, &QNetworkReply::readyRead, this, [reply, out] { out->write(reply->readAll()); });
-    connect(reply, &QNetworkReply::finished, this, [this, reply, nam, out, e, btn, state, part, dir] {
-        out->close();
-        const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const QString netErr = reply->error() != QNetworkReply::NoError ? reply->errorString() : QString();
-        reply->deleteLater();
-        nam->deleteLater();
-        out->deleteLater();
-        if (!netErr.isEmpty()) {
-            QFile::remove(part);
-            state->setText(QStringLiteral("没下完：%1%2").arg(netErr,
-                         http ? QStringLiteral("（HTTP %1）").arg(http) : QString()));
-            btn->setEnabled(true);
-            btn->setText(QStringLiteral("重试"));
-            Utils::log(QStringLiteral("store: 下 %1 失败 http=%2 err=%3").arg(e.file).arg(http).arg(netErr));
-            return;
-        }
-        const QString err = PluginStore::finishDownload(part, e, dir);
-        if (!err.isEmpty()) {
-            state->setText(err);
-            btn->setEnabled(true);
-            btn->setText(QStringLiteral("重试"));
-            Utils::log(QStringLiteral("store: 装 %1 没成：%2").arg(e.file, err));
-            return;
-        }
-        Utils::log(QStringLiteral("store: 装好 %1（哈希对过，%2 B）").arg(e.file).arg(e.bytes));
-        // 落盘了就重扫整面：这张卡的按钮该变成「禁用」、正文该变回"点开那张页"
-        PluginHost::reload();
-        rebuildGrid();
-    });
+    auto out = std::make_shared<QFile>(part);
+    auto writeFailed = std::make_shared<bool>(false);
+
+    PluginStore::fetch(e.url, this,
+                       [out, part, writeFailed] {
+                           // 每次尝试之前重开一遍 .part：上一条可能只写下了一半，续着写必坏
+                           if (out->isOpen())
+                               out->close();
+                           *writeFailed = false;
+                           if (!out->open(QIODevice::WriteOnly | QIODevice::Truncate))
+                               *writeFailed = true;
+                       },
+                       [out, writeFailed](const QByteArray& chunk) {
+                           if (*writeFailed)
+                               return false;
+                           if (out->write(chunk) != chunk.size()) {
+                               *writeFailed = true;
+                               return false;
+                           }
+                           return true;
+                       },
+                       [btn](qint64 got, qint64 all) {
+                           // 就地改按钮上那行字，不新插一块进度条：版面一跳就是"突然出现在上面"
+                           btn->setText(all > 0 ? QStringLiteral("%1%").arg(got * 100 / all)
+                                                : QStringLiteral("%1 KB").arg(got / 1024));
+                       },
+                       [this, e, btn, state, part, out, writeFailed](const PluginStore::Fetched& got) {
+                           if (out->isOpen())
+                               out->close();
+                           btn->setEnabled(true);
+                           if (!got.ok || *writeFailed) {
+                               QFile::remove(part);
+                               state->setText(got.err.isEmpty()
+                                                  ? QStringLiteral("没下完：本地写不进 .part")
+                                                  : QStringLiteral("没下完：%1").arg(got.err));
+                               btn->setText(QStringLiteral("重试"));
+                               Utils::log(QStringLiteral("store: 下 %1 没成：%2").arg(e.file, got.err));
+                               return;
+                           }
+                           const QString err = PluginStore::finishDownload(part, e);
+                           if (!err.isEmpty()) {
+                               state->setText(err);
+                               btn->setText(QStringLiteral("重试"));
+                               Utils::log(QStringLiteral("store: 装 %1 没成：%2").arg(e.file, err));
+                               return;
+                           }
+                           Utils::log(QStringLiteral("store: 装好 %1（%2 拿到，哈希对过，%3 B）")
+                                          .arg(e.file, got.via).arg(e.bytes));
+                           PluginHost::reload();
+                           rebuildGrid();
+                       });
 }
 
 bool ToolsPage::showTool(const QString& id, const QString& text)

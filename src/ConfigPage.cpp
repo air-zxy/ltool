@@ -173,6 +173,14 @@ ConfigPage::ConfigPage(QWidget* parent)
                             "要指到自己的测试源就填那里的地址；代理沿用上面那一行，清单和 dll 都走它。");
     m_storeUrl->setClearButtonEnabled(true);
     generalLay->addRow("插件清单地址：", m_storeUrl);
+    m_storeMirrors = new QLineEdit(general);
+    m_storeMirrors->setPlaceholderText(PluginStore::mirrorList());
+    m_storeMirrors->setToolTip("拉插件（清单和 dll）时**先**按这里每条前缀试一遍，走直连；"
+                               "都不成才轮到我们自己的下载代理，最后才是直连原始地址。\n"
+                               "多个用逗号分隔，留空 = 内置那两条（这台机器实测过还活着：gh-proxy.com、ghfast.top）。\n"
+                               "只有清单地址是 raw.githubusercontent.com 时才会用到镜像 —— 指到自己的服务器就不套镜像。");
+    m_storeMirrors->setClearButtonEnabled(true);
+    generalLay->addRow("插件镜像前缀：", m_storeMirrors);
     m_engine = new QComboBox(general);
     m_engine->addItem("百度", "baidu");
     m_engine->addItem("Google", "google");
@@ -373,6 +381,7 @@ void ConfigPage::load()
     m_installPath->setText(cfg.value("install/path", "D:\\software").toString());
     m_proxy->setText(cfg.value("net/proxy").toString());
     m_storeUrl->setText(cfg.value("store/indexUrl").toString());
+    m_storeMirrors->setText(cfg.value("store/mirrors").toString());
     const QString engine = cfg.value("web/engine", "baidu").toString();
     const int idx = m_engine->findData(engine);
     m_engine->setCurrentIndex(idx < 0 ? 0 : idx);
@@ -416,6 +425,7 @@ void ConfigPage::onSave()
     cfg.setValue("install/path", m_installPath->text().trimmed());
     cfg.setValue("net/proxy", m_proxy->text().trimmed());
     cfg.setValue("store/indexUrl", m_storeUrl->text().trimmed());
+    cfg.setValue("store/mirrors", m_storeMirrors->text().trimmed());
     if (newHk != oldHk)
         emit hotkeyChanged(newHk);
 

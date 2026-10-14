@@ -37,6 +37,7 @@ private:
     QVector<PluginStore::Row> shopRows() const;   // 这一面卡片的数据，唯一一条路
     QWidget* buildGrid();
     QWidget* makeCard(const PluginStore::Row& r);
+    QString reinstallHint(const PluginStore::Row& r) const;   // 「卸了还能装回来吗」那句实话
     void installEntry(const PluginStore::Entry& e, QPushButton* btn, QLabel* state);
 
     QLabel* m_storeStatus = nullptr;

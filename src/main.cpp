@@ -632,6 +632,9 @@ int main(int argc, char* argv[])
     applyDarkPalette(app);
 
     Utils::ensureDirs();
+    // 卸载排着队的先落地：上一轮点过「卸载」但当时这个 dll 还加载在进程里（Windows 不放行），
+    // 此刻谁都还没加载过插件，是唯一能真把它删干净的时机。
+    PluginStore::applyPendingRemoves();
     DevEnv::ensureDefaultPlugins();
     WebShortcuts::ensureDefaultWebs();
 
@@ -2204,6 +2207,81 @@ int main(int argc, char* argv[])
                       && off == 2 && localOnly == names.size() - off ? "yes" : "no", "yes");
         }
 
+        // ---- 4c. 卸载：删得掉就当场没了，删不动的记进待删表、下次启动删 ----
+        {
+            makeFile(box + "/ltool-doomed.dll", QByteArray("要被卸的那个"));
+            makeFile(box + "/ltool-doomed.dll.off", QByteArray("它禁用的那份也该一起走"));
+            const QString res = PluginStore::uninstall(QStringLiteral("ltool-doomed.dll"), box);
+            check("卸载把 live 和 .off 一起删掉（回报空串）",
+                  res.isEmpty() && !QFile::exists(box + "/ltool-doomed.dll")
+                      && !QFile::exists(box + "/ltool-doomed.dll.off")
+                      ? QStringLiteral("yes") : QStringLiteral("no"), "yes");
+            const QString again = PluginStore::uninstall(QStringLiteral("ltool-doomed.dll"), box);
+            check("再卸一次要说「没装过」，不是假装又删了一次",
+                  again.contains(QStringLiteral("没装过")) ? QStringLiteral("yes") : QStringLiteral("no"), "yes");
+            check("卸完不该在待删表里留账", QString::number(PluginStore::pendingRemoves().size()), "0");
+
+            // 待删表这条真实路径：表里排着的文件名，下次启动由 applyPendingRemoves 落地。
+            // （"这个进程还加载着它、删不动"那个分支要真加载过的 dll 才进得去，离线进不去 ——
+            //  所以这里验的是账记上了、能删的删掉了、账也销了，不是假装验过 busy。）
+            makeFile(box + "/ltool-pending.dll", QByteArray("排队等删的"));
+            {
+                QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+                QStringList pend = cfg.value(QStringLiteral("store/pendingRemove")).toStringList();
+                pend << QStringLiteral("ltool-pending.dll");
+                cfg.setValue(QStringLiteral("store/pendingRemove"), pend);
+                cfg.sync();
+            }
+            check("待删表读得出来", QString::number(PluginStore::pendingRemoves().size()), "1");
+            const int gone = PluginStore::applyPendingRemoves(box);
+            check("下次启动那一步真把排队的删掉了",
+                  gone == 1 && !QFile::exists(box + "/ltool-pending.dll")
+                      ? QStringLiteral("yes") : QStringLiteral("no"), "yes");
+            check("删完账要销掉，不许留下一条删过的", QString::number(PluginStore::pendingRemoves().size()), "0");
+            const int again2 = PluginStore::applyPendingRemoves(box);
+            check("表是空的时候这一步不动任何东西", QString::number(again2), "0");
+        }
+
+        // ---- 4d. 「上哪儿拉」这条顺序：镜像（直连）→ 原件（代理）→ 原件（直连） ----
+        {
+            const QString raw = QStringLiteral(
+                "https://raw.githubusercontent.com/mateo-ki/ltool_plugin/main/dist/index.json");
+            const auto a = PluginStore::attemptsFor(raw);
+            QStringList shape;
+            for (const PluginStore::Attempt& at : a)
+                shape << QStringLiteral("%1:%2").arg(at.label,
+                                                     at.useProxy ? QStringLiteral("代理")
+                                                                 : QStringLiteral("直连"));
+            check("github raw 那条排出四个候选（两镜像 + 代理 + 直连）", QString::number(a.size()), "4");
+            check("顺序是镜像→代理→直连，而且镜像那两条走直连",
+                  shape.join(QStringLiteral(" | ")),
+                  QStringLiteral("镜像 gh-proxy.com:直连 | 镜像 ghfast.top:直连 | 本地代理:代理 | 直连:直连"));
+            check("每个候选都是前缀套原件（镜像不改路径，只加一层）",
+                  std::all_of(a.begin(), a.end(), [&](const PluginStore::Attempt& at) {
+                      return at.url.endsWith(raw);
+                  })
+                      ? "yes" : "no", "yes");
+            // 用户把地址指到自己的服务器时套镜像，只会拿回 404 让他以为自己的源坏了
+            const auto own = PluginStore::attemptsFor(QStringLiteral("https://example.invalid/index.json"));
+            check("不是 github raw 就只剩代理和直连两条", QString::number(own.size()), "2");
+            {
+                QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+                cfg.setValue(QStringLiteral("store/mirrors"),
+                             QStringLiteral("https://mirror-a.example,https://mirror-b.example/"));
+                cfg.sync();
+                const auto mine = PluginStore::attemptsFor(raw);
+                check("配置里换镜像就用换的那两条（少写的尾斜杠补上）",
+                      mine.size() == 4
+                          && mine[0].url == QStringLiteral("https://mirror-a.example/") + raw
+                          && mine[1].url == QStringLiteral("https://mirror-b.example/") + raw
+                              ? "yes" : QStringLiteral("no"), "yes");
+                cfg.setValue(QStringLiteral("store/mirrors"), QStringLiteral("   "));
+                cfg.sync();
+                check("清空等于回到内置那两条", PluginStore::mirrorList(),
+                      QStringLiteral("https://gh-proxy.com/,https://ghfast.top/"));
+            }
+        }
+
         // ---- 5. 索引地址：留空用内置那条，配了就用配的 ----
         {
             check("内置地址是插件仓库那份 raw 清单",
@@ -2843,7 +2921,8 @@ int main(int argc, char* argv[])
             drain();
             std::printf("INFO 状态行：%s\n", st.toUtf8().constData());
             const QRegularExpression re(QStringLiteral(
-                "清单 (\\d+) 条（地址 .+?）· 这一面 (\\d+) 张卡 · 能装或可更新 (\\d+) · 拒收 (\\d+) · 清单外 (\\d+)"));
+                "清单 (\\d+) 条（(.+?) · 走的是 (.+?)，一共试了 (\\d+) 次）· 这一面 (\\d+) 张卡"
+                " · 能装或可更新 (\\d+) · 拒收 (\\d+) · 清单外 (\\d+)"));
             const auto m = re.match(st);
             check("拉到了就在状态行把数说清（没拉到会走另一句，不当成通过）", m.hasMatch(), st.left(70));
             if (!m.hasMatch()) {
@@ -2852,10 +2931,18 @@ int main(int argc, char* argv[])
                         std::printf("  [%s]\n", l->text().left(90).toUtf8().constData());
             } else {
                 const int said = m.captured(1).toInt();
-                const int cards = m.captured(2).toInt();
-                const int canInstall = m.captured(3).toInt();
-                const int rejected = m.captured(4).toInt();
-                const int outside = m.captured(5).toInt();
+                const QString via = m.captured(3);
+                const int tries = m.captured(4).toInt();
+                const int cards = m.captured(5).toInt();
+                const int canInstall = m.captured(6).toInt();
+                const int rejected = m.captured(7).toInt();
+                const int outside = m.captured(8).toInt();
+                // 「这次是从哪条拿到的」必须说得出出口：镜像活着就是镜像，镜像挂了才算代理，都不行才是直连
+                check("回话说清了这次走的是哪条",
+                      via.startsWith(QStringLiteral("镜像 ")) || via == QStringLiteral("本地代理")
+                          || via == QStringLiteral("直连"),
+                      via);
+                check("至少试了一次", tries >= 1, QStringLiteral("试了 %1 次").arg(tries));
                 const int nowCards = page.findChildren<QFrame*>(QStringLiteral("row")).size();
                 // 只剩一面列表：卡片数就是状态行报的那个数，而且它是"清单 + 清单外"合起来
                 check("一面列表：画出的卡片数 = 状态行说的数", nowCards == cards,
@@ -2892,7 +2979,7 @@ int main(int argc, char* argv[])
                                 break;
                             }
                     }
-                    bool hasInstall = false, hasToggle = false;
+                    bool hasInstall = false, hasToggle = false, hasUninstall = false;
                     for (QPushButton* b : card->findChildren<QPushButton*>()) {
                         if (!b->isVisible())
                             continue;
@@ -2901,6 +2988,8 @@ int main(int argc, char* argv[])
                             hasInstall = true;
                         if (t == QStringLiteral("禁用") || t == QStringLiteral("启用"))
                             hasToggle = true;
+                        if (t == QStringLiteral("卸载"))
+                            hasUninstall = true;
                     }
                     if (idx < 0) {
                         ++wrong;
@@ -2910,23 +2999,28 @@ int main(int argc, char* argv[])
                     ++states;
                     const bool wantInstall = idx == 0 || idx == 1;
                     const bool wantToggle = idx >= 1 && idx != 4;   // 装了的（含可更新、清单外、已禁用）都能动
+                    // 「卸载」跟着 toggle 走：本机真有那个文件（含 .off）才谈得上删它
+                    const bool wantUninstall = wantToggle;
                     if (idx == 0)
                         ++nMissing;
                     if (wantToggle)
                         ++nOnDisk;
-                    if (hasInstall != wantInstall || hasToggle != wantToggle) {
+                    if (hasInstall != wantInstall || hasToggle != wantToggle
+                        || hasUninstall != wantUninstall) {
                         ++wrong;
-                        wrongs << QStringLiteral("「%1」那张 装=%2 禁用=%3（该给 装=%4 禁用=%5）")
+                        wrongs << QStringLiteral("「%1」那张 装=%2 禁用=%3 卸载=%4（该给 装=%5 禁用=%6 卸载=%7）")
                                       .arg(words[idx],
                                            hasInstall ? QStringLiteral("有") : QStringLiteral("没"),
                                            hasToggle ? QStringLiteral("有") : QStringLiteral("没"),
+                                           hasUninstall ? QStringLiteral("有") : QStringLiteral("没"),
                                            wantInstall ? QStringLiteral("有") : QStringLiteral("没"),
-                                           wantToggle ? QStringLiteral("有") : QStringLiteral("没"));
+                                           wantToggle ? QStringLiteral("有") : QStringLiteral("没"),
+                                           wantUninstall ? QStringLiteral("有") : QStringLiteral("没"));
                     }
                 }
                 check("每张卡的状态词都认得出", states == nowCards,
                       QStringLiteral("有状态 %1 / 卡片 %2").arg(states).arg(nowCards));
-                check("每张卡的按钮和自己那句状态对得上（装了的不给装、没装的不给禁用）", wrong == 0,
+                check("每张卡的按钮和自己那句状态对得上（装了的不给装、没装的不给禁用/卸载）", wrong == 0,
                       wrongs.isEmpty() ? QStringLiteral("%1 张全对上").arg(nowCards)
                                        : QStringLiteral("%1 张不对：%2").arg(wrong).arg(wrongs.join(QStringLiteral("；"))));
                 int installers = 0, toggles = 0;

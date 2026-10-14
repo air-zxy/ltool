@@ -1,5 +1,9 @@
 #include "PluginStore.h"
 
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+
 #include "ltool-plugin.h"
 
 #include <QFile>
@@ -9,11 +13,14 @@
 #include <QJsonObject>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QNetworkProxy>
 #include <QSettings>
 #include <QSet>
 #include <QUrl>
 #include <algorithm>
+#include <memory>
 
+#include "DevEnv.h"
 #include "PluginHost.h"
 #include "Utils.h"
 
@@ -56,6 +63,165 @@ QString indexUrl()
     QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
     const QString custom = cfg.value(QStringLiteral("store/indexUrl")).toString().trimmed();
     return custom.isEmpty() ? defaultIndexUrl() : custom;
+}
+
+namespace {
+
+// 每条候选试两次。"TCP 连上、TLS 完成、然后整 5 秒不吐字节"在这条线路上是常态不是意外。
+constexpr int kTriesPerCandidate = 2;
+
+struct Chain {
+    QVector<Attempt> attempts;
+    int idx = -1;                    // 当前这条候选（-1 = 还没开始）
+    int left = 0;                    // 这条还剩几次没试
+    int tries = 0;                   // 一共试了几次（回报用）
+    Fetched last;                    // 最后一条失败的样子，全挂就拿它回话
+    QNetworkAccessManager* nam = nullptr;
+    QObject* parent = nullptr;
+    std::function<void()> before;
+    std::function<bool(const QByteArray&)> chunk;
+    std::function<void(qint64, qint64)> progress;
+    std::function<void(const Fetched&)> done;
+};
+
+using ChainPtr = std::shared_ptr<Chain>;
+
+void step(const ChainPtr& chain);
+
+// 同一条还有额度就原地重来，额度用完才往下一条（镜像 → 代理 → 直连）走
+void advance(const ChainPtr& chain)
+{
+    if (chain->left > 0) {
+        --chain->left;
+        step(chain);
+        return;
+    }
+    ++chain->idx;
+    if (chain->idx >= chain->attempts.size()) {
+        chain->done(chain->last);
+        return;
+    }
+    chain->left = kTriesPerCandidate - 1;
+    step(chain);
+}
+
+void step(const ChainPtr& chain)
+{
+    const Attempt a = chain->attempts[chain->idx];
+    ++chain->tries;
+    if (chain->before)
+        chain->before();
+    if (chain->nam) {
+        chain->nam->deleteLater();
+        chain->nam = nullptr;
+    }
+    QObject* parent = chain->parent;
+    chain->nam = new QNetworkAccessManager(parent);
+    if (a.useProxy)
+        DevEnv::applyProxy(chain->nam);            // 留空 = 系统代理，和产品里其他地方同一条
+    else
+        chain->nam->setProxy(QNetworkProxy::NoProxy);
+    QNetworkRequest req { QUrl(a.url) };
+    req.setTransferTimeout(20000);
+    QNetworkReply* reply = chain->nam->get(req);
+    // 这两个标志活得和回调一样长，所以放堆上：捕获引用会悬空
+    auto localFail = std::make_shared<bool>(false);
+    auto gotAny = std::make_shared<bool>(false);
+    if (chain->chunk) {
+        QObject::connect(reply, &QNetworkReply::readyRead, parent, [reply, chain, localFail, gotAny] {
+            const QByteArray part = reply->readAll();
+            *gotAny = true;
+            if (part.isEmpty() || chain->chunk(part))
+                return;
+            *localFail = true;
+        });
+    }
+    if (chain->progress) {
+        QObject::connect(reply, &QNetworkReply::downloadProgress, parent,
+                         [chain](qint64 got, qint64 all) { chain->progress(got, all); });
+    }
+    QObject::connect(reply, &QNetworkReply::finished, parent, [chain, reply, a, localFail, gotAny] {
+        const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QString netErr = reply->error() != QNetworkReply::NoError ? reply->errorString() : QString();
+        Fetched one;
+        one.tries = chain->tries;
+        if (!chain->chunk)
+            one.body = reply->readAll();
+        reply->deleteLater();
+        chain->nam = nullptr;
+        if (netErr.isEmpty() && !*localFail) {
+            one.ok = true;
+            one.via = a.label;
+            chain->done(one);
+            return;
+        }
+        one.err = QStringLiteral("%1（HTTP %2%3，走的是 %4）")
+                      .arg(netErr.isEmpty() ? QStringLiteral("本地写不下去") : netErr)
+                      .arg(http)
+                      .arg(*gotAny ? QStringLiteral("，已经收到一段") : QString(), a.url);
+        Utils::log(QStringLiteral("fetch: %1 这条没成：%2").arg(a.label, one.err));
+        chain->last = one;
+        advance(chain);
+    });
+}
+
+} // namespace
+
+QString mirrorList()
+{
+    QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+    const QString custom = cfg.value(QStringLiteral("store/mirrors")).toString().trimmed();
+    if (!custom.isEmpty())
+        return custom;
+    // 这台机器上量过还活着、且和原件逐字节一致的两条（2026-09-28 拿同一文件比过四家 sha；
+    // 2026-10-11 量过带宽：gh-proxy.com 8.3MB/s、ghfast.top 2.2MB/s）。
+    // mirror.ghproxy.com 21 秒超时、raw.gitmirror.com / raw.kkgithub.com 已经解不到 DNS；
+    // cdn.jsdelivr.net 缓存约 7 天 —— 拿它装插件会一直"哈希对不上"，所以不放进来。
+    return QStringLiteral("https://gh-proxy.com/,https://ghfast.top/");
+}
+
+QVector<Attempt> attemptsFor(const QString& originUrl)
+{
+    QVector<Attempt> out;
+    const QUrl u(originUrl);
+    // 镜像只代理 github raw 那一路。用户把索引地址指到自己的服务器时还套镜像，
+    // 拿回来的是 404，他会以为自己的源坏了 —— 那种情况只留代理和直连两条腿。
+    if (u.host() == QLatin1String("raw.githubusercontent.com")) {
+        const QStringList mirrors = mirrorList().split(QLatin1Char(','), Qt::SkipEmptyParts);
+        for (const QString& raw : mirrors) {
+            QString m = raw.trimmed();
+            if (m.isEmpty())
+                continue;
+            if (!m.endsWith(QLatin1Char('/')))
+                m += QLatin1Char('/');
+            out.append({ m + originUrl, false, QStringLiteral("镜像 ") + QUrl(m).host() });
+        }
+    }
+    out.append({ originUrl, true, QStringLiteral("本地代理") });
+    out.append({ originUrl, false, QStringLiteral("直连") });
+    return out;
+}
+
+void fetch(const QString& originUrl, QObject* parent,
+           const std::function<void()>& beforeAttempt,
+           const std::function<bool(const QByteArray&)>& onChunk,
+           const std::function<void(qint64, qint64)>& onProgress,
+           const std::function<void(const Fetched&)>& done)
+{
+    auto chain = std::make_shared<Chain>();
+    chain->attempts = attemptsFor(originUrl);
+    chain->parent = parent;
+    chain->before = beforeAttempt;
+    chain->chunk = onChunk;
+    chain->progress = onProgress;
+    chain->done = done;
+    if (chain->attempts.isEmpty()) {
+        Fetched f;
+        f.err = QStringLiteral("没有可试的地址");
+        done(f);
+        return;
+    }
+    advance(chain);
 }
 
 QVector<Entry> parseIndex(const QByteArray& json, QStringList* problems)
@@ -267,6 +433,102 @@ QString finishDownload(const QString& partPath, const Entry& e, const QString& d
     if (!Utils::renameStaged(partPath, local(dir) + QLatin1Char('/') + e.file, &err))
         return err;
     return QString();
+}
+
+namespace {
+
+// 待删表就是配置里一个字符串列表。它存在的原因是"删不动"这个状态必须能跨进程活着：
+// 这一轮加载过的 dll 只有下次启动（还没加载它的时候）才真删得掉。
+QStringList pendingList()
+{
+    QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+    return cfg.value(QStringLiteral("store/pendingRemove")).toStringList();
+}
+
+void setPendingList(const QStringList& v)
+{
+    QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+    cfg.setValue(QStringLiteral("store/pendingRemove"), v);
+    cfg.sync();   // 后面新开的 QSettings 才读得到（产品里其他地方也是这个约定）
+}
+
+// 一个插件的两个文件名都清掉：活着的那个 + 被改名禁用的那个
+bool removeBoth(const QString& dir, const QString& file, bool* busy)
+{
+    bool allGone = true;
+    for (const QString& suffix : { QString(), QStringLiteral(".off") }) {
+        const QString path = dir + QLatin1Char('/') + file + suffix;
+        if (!QFileInfo::exists(path))
+            continue;
+        if (QFile::remove(path))
+            continue;
+        allGone = false;               // Windows：这个镜像正在被进程用着就是这个形状
+        if (busy)
+            *busy = true;
+    }
+    return allGone;
+}
+
+} // namespace
+
+QString uninstall(const QString& file, const QString& dir)
+{
+    const QString d = local(dir);
+    const QString live = d + QLatin1Char('/') + file;
+    if (!QFileInfo::exists(live) && !QFileInfo::exists(live + QStringLiteral(".off"))) {
+        QStringList p = pendingList();
+        if (p.removeAll(file) > 0) {          // 之前排过队、文件已经不在了：把账清掉
+            setPendingList(p);
+            return QString();
+        }
+        return QStringLiteral("%1 没装过，没东西可删").arg(file);
+    }
+    bool busy = false;
+    if (removeBoth(d, file, &busy)) {
+        QStringList p = pendingList();
+        if (p.removeAll(file) > 0)
+            setPendingList(p);
+        Utils::log(QStringLiteral("store: 卸载了 %1").arg(file));
+        return QString();
+    }
+    if (!busy)
+        return QStringLiteral("%1 删不掉，也没说是被占用 —— 看日志").arg(file);
+    QStringList p = pendingList();
+    if (!p.contains(file))
+        p << file;
+    setPendingList(p);
+    Utils::log(QStringLiteral("store: %1 这个进程还加载着，删不掉 —— 已记进待删表，下次启动删").arg(file));
+    return QStringLiteral("pending");
+}
+
+QVector<QString> pendingRemoves()
+{
+    QVector<QString> out;
+    for (const QString& f : pendingList())
+        out.append(f);
+    return out;
+}
+
+int applyPendingRemoves(const QString& dir)
+{
+    const QStringList p = pendingList();
+    if (p.isEmpty())
+        return 0;
+    const QString d = local(dir);
+    QStringList still;
+    int removed = 0;
+    for (const QString& f : p) {
+        bool busy = false;
+        if (removeBoth(d, f, &busy))
+            ++removed;
+        else if (!busy)
+            continue;               // 文件已经不在了，这条账自然销掉
+        else
+            still << f;             // 还是删不动（不太可能：这是启动最早的一段），留着下次
+    }
+    setPendingList(still);
+    Utils::log(QStringLiteral("store: 待删表里真删掉了 %1 个插件，还剩 %2 个").arg(removed).arg(still.size()));
+    return removed;
 }
 
 QString setEnabled(const QString& file, bool on, const QString& dir)
