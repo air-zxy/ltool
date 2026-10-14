@@ -136,6 +136,65 @@ bool Recorder::available(QString* why2)
     return true;
 }
 
+namespace {
+
+// 面积平均缩小（不是隔行取样）：录屏里全是文字和 1px 边框，隔行取样一缩放就闪、就出摩尔纹。
+// 每个目标像素取它对应那块源像素的平均；整数边界保证最后一块一定吃到底行/底列，
+// 不会因为整除把右下角裁掉一圈。
+void downscaleBGRA(const uint8_t* src, int sw, int sh, uint8_t* dst, int dw, int dh)
+{
+    for (int y = 0; y < dh; ++y) {
+        const int sy0 = int(qint64(y) * sh / dh);
+        int sy1 = int(qint64(y + 1) * sh / dh);
+        if (sy1 <= sy0)
+            sy1 = sy0 + 1;
+        for (int x = 0; x < dw; ++x) {
+            const int sx0 = int(qint64(x) * sw / dw);
+            int sx1 = int(qint64(x + 1) * sw / dw);
+            if (sx1 <= sx0)
+                sx1 = sx0 + 1;
+            unsigned b = 0, g = 0, r = 0, a = 0;
+            for (int yy = sy0; yy < sy1; ++yy) {
+                const uint8_t* row = src + (size_t(yy) * sw + sx0) * 4;
+                for (int xx = 0; xx < sx1 - sx0; ++xx) {
+                    b += row[xx * 4 + 0];
+                    g += row[xx * 4 + 1];
+                    r += row[xx * 4 + 2];
+                    a += row[xx * 4 + 3];
+                }
+            }
+            const unsigned n = unsigned(sy1 - sy0) * unsigned(sx1 - sx0);
+            uint8_t* o = dst + (size_t(y) * dw + x) * 4;
+            o[0] = uint8_t(b / n);
+            o[1] = uint8_t(g / n);
+            o[2] = uint8_t(r / n);
+            o[3] = uint8_t(a / n);
+        }
+    }
+}
+
+} // namespace
+
+int Recorder::bitrateKbps(double bpp, int w, int h, int fps)
+{
+    // 下限 400：再低的话小窗口录出来的东西糊得没法看；上限 60Mbps 是防手滑
+    return qBound(400, int(bpp * double(w) * double(h) * double(qMax(1, fps)) / 1000.0), 60000);
+}
+
+QSize Recorder::encodedSize(int fw, int fh, int maxWidth)
+{
+    // 先按 H.264 的规矩取偶，再等比缩到长边不超过 maxWidth（**只缩不放大**），最后再取一次偶
+    int w = fw - fw % 2;
+    int h = fh - fh % 2;
+    if (maxWidth > 0 && w > maxWidth) {
+        h = int(qint64(h) * maxWidth / w);
+        w = maxWidth;
+    }
+    w -= w % 2;
+    h -= h % 2;
+    return QSize(qMax(2, w), qMax(2, h));
+}
+
 bool Recorder::start(WId target, const Options& opt, const QString& path, QString* err,
                      bool monitorTarget)
 {
@@ -201,12 +260,14 @@ bool Recorder::start(WId target, const Options& opt, const QString& path, QStrin
         winrt::com_ptr<IMFSinkWriter> writer;
         winrt::com_ptr<ID3D11Texture2D> staging;
         std::vector<uint8_t> scratch;
+        std::vector<uint8_t> encBuf;   // 缩放后的待编码帧（没选缩小就空着）
 
         int frameErrs = 0;
         UINT baseW = 0, baseH = 0;   // 开局量到的窗口矩形（看门狗用它比，不用帧尺寸）
         const HWND hwndTarget = asMonitor ? nullptr : reinterpret_cast<HWND>(target);
         const HMONITOR monTarget = asMonitor ? reinterpret_cast<HMONITOR>(target) : nullptr;
-        UINT W = 0, H = 0;      // 喂给编码器的尺寸（偶数）
+        UINT W = 0, H = 0;      // 喂给编码器的尺寸（偶数，可能已经按比例缩过）
+        UINT SW = 0, SH = 0;    // 从纹理拷出来的尺寸（画面取偶；没选缩小就和 W/H 一样）
         UINT FW = 0, FH = 0;    // 帧的真实尺寸（可能是奇数）
         LONGLONG t0Ms = 0, lastTime100ns = 0;
         qint64 nextOkMs = 0;   // 帧率封顶：这会儿还不该要下一帧就别要
@@ -244,8 +305,14 @@ bool Recorder::start(WId target, const Options& opt, const QString& path, QStrin
                 // H.264 只收偶数宽高：录 MAA 那种奇数尺寸的窗口就是死在 SetInputMediaType
                 // （0xc00d36b4，实测 1280x800/1920x1080/2560x1440 都好，只有奇数挂）。
                 // 往下取偶数，多出来的那一像素不录 —— 但比对帧尺寸必须用原始值。
-                W = FW - FW % 2;
-                H = FH - FH % 2;
+                SW = FW - FW % 2;     // 从纹理拷进 scratch 的尺寸（就是画面大小，取偶）
+                SH = FH - FH % 2;
+                // 编码尺寸：用户选了"长边不超过 N"就在这里等比缩小，没选就等于 SW/SH
+                {
+                    const QSize enc = encodedSize(int(FW), int(FH), int(o.maxWidth));
+                    W = UINT(enc.width());
+                    H = UINT(enc.height());
+                }
                 const QString what = asMonitor ? QStringLiteral("屏幕") : QStringLiteral("窗口");
                 if (W < 16 || H < 16) {
                     fail = QStringLiteral("这个%1太小（%2x%3），没什么可录").arg(what).arg(FW).arg(FH);
@@ -317,7 +384,11 @@ bool Recorder::start(WId target, const Options& opt, const QString& path, QStrin
             }
         }
         if (fail.isEmpty()) {
-            scratch.assign(size_t(W) * H * 4, 0);
+            scratch.assign(size_t(SW) * SH * 4, 0);
+            // 选了缩小才要这个缓冲；没缩就直接把 scratch 交给编码器（少一次整帧拷贝）
+            encBuf.clear();
+            if (W != SW || H != SH)
+                encBuf.assign(size_t(W) * H * 4, 0);
             try {
                 pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
                     device, wgd::DirectXPixelFormat::B8G8R8A8UIntNormalized, 3, item.Size());
@@ -419,9 +490,9 @@ bool Recorder::start(WId target, const Options& opt, const QString& path, QStrin
                     // 录出来的就是正的。这里踩过一次：以前给的是 MF_MT_DEFAULT_STRIDE = -(W*4)，
                     // 实测那样 MF 会把整幅上下翻一遍再编（录完播放是倒的）。用"上半白/下半黑"的
                     // 合成帧单独验过编码器认哪种约定，4 组数据都只能由"正 stride + 直拷"解释。
-                    for (UINT y = 0; y < H; ++y)   // 奇数那多出来的一行/列直接不要
-                        memcpy(scratch.data() + size_t(y) * W * 4,
-                               src + size_t(y) * map.RowPitch, size_t(W) * 4);
+                    for (UINT y = 0; y < SH; ++y)   // 奇数那多出来的一行/列直接不要
+                        memcpy(scratch.data() + size_t(y) * SW * 4,
+                               src + size_t(y) * map.RowPitch, size_t(SW) * 4);
                     ctx->Unmap(staging.get(), 0);
                     copied = true;
                 } catch (winrt::hresult_error const&) {
@@ -431,13 +502,21 @@ bool Recorder::start(WId target, const Options& opt, const QString& path, QStrin
                     continue;
                 winrt::com_ptr<IMFSample> sample;
                 winrt::com_ptr<IMFMediaBuffer> buf;
+                const uint8_t* pixels = scratch.data();
+                size_t pixelBytes = scratch.size();
+                if (!encBuf.empty()) {          // 选了缩小：面积平均那一遍在这儿做
+                    downscaleBGRA(scratch.data(), int(SW), int(SH),
+                                  encBuf.data(), int(W), int(H));
+                    pixels = encBuf.data();
+                    pixelBytes = encBuf.size();
+                }
                 MFCreateSample(sample.put());
                 MFCreateAlignedMemoryBuffer(DWORD(W * H * 4), DWORD(31), buf.put());
                 BYTE* data = nullptr;
                 DWORD maxLen = 0;
                 if (FAILED(buf->Lock(&data, &maxLen, nullptr)))
                     break;
-                memcpy(data, scratch.data(), std::min<size_t>(maxLen, scratch.size()));
+                memcpy(data, pixels, std::min<size_t>(maxLen, pixelBytes));
                 buf->Unlock();
                 buf->SetCurrentLength(DWORD(W * H * 4));
                 sample->AddBuffer(buf.get());

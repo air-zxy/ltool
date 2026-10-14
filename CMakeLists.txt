@@ -10,6 +10,10 @@ if(NOT CMAKE_MATCH_1)
     message(FATAL_ERROR "ltool.iss 里没读到 #define MyAppVersion \"x.y.z\"")
 endif()
 set(LTOOL_VERSION_STRING "${CMAKE_MATCH_1}")
+# 让构建系统盯着 ltool.iss：改了版本号，下一次 cmake --build 会自己重新 configure。
+# 不写这条的话 iss 改了、宏还是上次那个数 —— 实测把 0.6.0 改成 0.7.0 之后
+# 界面仍然显示 0.6.0，"只改一处"这句话就是空的。
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/ltool.iss)
 message(STATUS "ltool 版本 ${LTOOL_VERSION_STRING}（来自 ltool.iss）")
 
 project(ltool VERSION ${LTOOL_VERSION_STRING} LANGUAGES CXX)

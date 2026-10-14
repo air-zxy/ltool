@@ -20,6 +20,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QScreen>
+#include <QComboBox>
 #include <QSettings>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -101,6 +102,43 @@ ScreenRow primaryMonitor()
     return r;
 }
 
+struct QualityPreset {
+    const char* name;
+    double bpp;          // bits per pixel per frame
+};
+// 顺序就是下拉框里的顺序（存在 config.ini 的 ui/recQuality 里是下标）
+const QualityPreset kQualities[] = {
+    { "流畅", 0.060 },
+    { "标准", 0.145 },     // 就是以前那个固定 8000kbps 在 2560x1440@15 上的等效值
+    { "高清", 0.250 },
+    { "超清", 0.400 },
+};
+const int kQualityCount = int(sizeof(kQualities) / sizeof(kQualities[0]));
+// 长边上限档位（存在 ui/recMaxWidth 里的是这个数，0 = 不缩）
+const int kWidthCaps[] = { 0, 1920, 1280, 854 };
+
+int recQualityIndex()
+{
+    const int i = QSettings(Utils::dataDir() + "/config.ini", QSettings::IniFormat)
+                      .value(QStringLiteral("ui/recQuality"), 1).toInt();
+    return qBound(0, i, kQualityCount - 1);
+}
+int recMaxWidth()
+{
+    const int w = QSettings(Utils::dataDir() + "/config.ini", QSettings::IniFormat)
+                      .value(QStringLiteral("ui/recMaxWidth"), 0).toInt();
+    for (int c : kWidthCaps)
+        if (c == w)
+            return w;
+    return 0;        // 配置里被手改成不认识的数：按"不缩"处理，别拿它去算画幅
+}
+// 码率按**编码后**的画幅算：缩到 1280 就按 1280 的量给，不然等于白花一倍的钱
+int recBitrateKbps(int quality, int w, int h, int fps)
+{
+    // 算法本体在 Recorder::bitrateKbps（测试 --recq 也调它），这里只挑档
+    return Recorder::bitrateKbps(kQualities[qBound(0, quality, kQualityCount - 1)].bpp, w, h, fps);
+}
+
 void beginRecording(WId target, const QString& title, bool monitor)
 {
     QDir().mkpath(Utils::recordingsDir());
@@ -112,8 +150,26 @@ void beginRecording(WId target, const QString& title, bool monitor)
     QSettings st(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
     Recorder::Options o;
     o.fps = qBound(5, st.value(QStringLiteral("ui/recFps"), 15).toInt(), 60);
-    o.videoBitrateKbps = qBound(1000, st.value(QStringLiteral("ui/recBitrateKbps"), 8000).toInt(),
-                                40000);
+    const int q = recQualityIndex();
+    o.maxWidth = recMaxWidth();
+    // 码率要看编码后的画幅，所以先把这一局的画幅量出来（屏幕/窗口的原始尺寸都在这儿算）
+    int capW = 0, capH = 0;
+    if (monitor) {
+        MONITORINFO mi {};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(reinterpret_cast<HMONITOR>(target), &mi)) {
+            capW = mi.rcMonitor.right - mi.rcMonitor.left;
+            capH = mi.rcMonitor.bottom - mi.rcMonitor.top;
+        }
+    } else {
+        RECT rc {};
+        if (GetWindowRect(reinterpret_cast<HWND>(target), &rc)) {
+            capW = rc.right - rc.left;
+            capH = rc.bottom - rc.top;
+        }
+    }
+    const QSize enc = Recorder::encodedSize(capW, capH, o.maxWidth);
+    o.videoBitrateKbps = recBitrateKbps(q, enc.width(), enc.height(), o.fps);
     QString err;
     if (!g_rec->start(target, o, path, &err, monitor)) {
         Utils::log(QString("record start failed: %1").arg(err));
@@ -142,9 +198,10 @@ void beginRecording(WId target, const QString& title, bool monitor)
             rh = rc.bottom - rc.top;
         }
     }
-    Utils::log(QString("record start: %1 title=%2 kind=%3 fps=%4 kbps=%5 画幅=%6x%7")
+    Utils::log(QString("record start: %1 title=%2 kind=%3 fps=%4 画质=%5 kbps=%6 采集=%7x%8 编码=%9x%10")
                    .arg(path, title, monitor ? QStringLiteral("屏幕") : QStringLiteral("窗口"))
-                   .arg(o.fps).arg(o.videoBitrateKbps).arg(rw).arg(rh));
+                   .arg(o.fps).arg(QString::fromLatin1(kQualities[q].name))
+                   .arg(o.videoBitrateKbps).arg(rw).arg(rh).arg(enc.width()).arg(enc.height()));
 }
 
 } // namespace
@@ -175,9 +232,41 @@ WindowPicker::WindowPicker(QWidget* parent)
     filter->setPlaceholderText(QStringLiteral("输入关键字过滤（输「屏」就剩整块屏幕），回车开始录，Esc 取消"));
     auto* list = new QListWidget(this);
     list->setSelectionMode(QAbstractItemView::SingleSelection);
+    // 画质 / 画面大小：录之前顺手能改的两件事，改一下就记住（config.ini），下次按 F2 还是这个。
+    // 挂在列表下面一行，上面各行的高度都不动 —— 这个窗每次 F2 都重建，排布必须稳定。
+    auto* opts = new QHBoxLayout;
+    opts->setSpacing(6);
+    auto* qCap = new QLabel(QStringLiteral("画质"), this);
+    auto* wCap = new QLabel(QStringLiteral("画面"), this);
+    auto* quality = new QComboBox(this);
+    quality->setObjectName(QStringLiteral("recQuality"));
+    for (const QualityPreset& q : kQualities)
+        quality->addItem(QString::fromUtf8(q.name));
+    quality->setToolTip(QStringLiteral("标准这一档就是以前默认的那个大小；码率按画幅和帧率算，缩小的画面不会白花空间。"));
+    quality->setCurrentIndex(recQualityIndex());
+    auto* width = new QComboBox(this);
+    width->setObjectName(QStringLiteral("recMaxWidth"));
+    width->addItem(QStringLiteral("原始（不缩）"), 0);
+    width->addItem(QStringLiteral("长边 ≤ 1920"), 1920);
+    width->addItem(QStringLiteral("长边 ≤ 1280"), 1280);
+    width->addItem(QStringLiteral("长边 ≤ 854"), 854);
+    width->setToolTip(QStringLiteral("缩的是编码画幅（面积平均，不是隔行取样）。选小一点文件能小好几倍，代价是字不那么锐。"));
+    {
+        const int want = recMaxWidth();
+        for (int i = 0; i < width->count(); ++i)
+            if (width->itemData(i).toInt() == want)
+                width->setCurrentIndex(i);
+    }
+    opts->addWidget(qCap);
+    opts->addWidget(quality);
+    opts->addSpacing(8);
+    opts->addWidget(wCap);
+    opts->addWidget(width);
+    opts->addStretch(1);
     lay->addLayout(head);
     lay->addWidget(filter);
     lay->addWidget(list, 1);
+    lay->addLayout(opts);
     list->setObjectName(QStringLiteral("list"));
     filter->setObjectName(QStringLiteral("filter"));
     setStyleSheet("QWidget{background:#26272c;border:1px solid #3a3c45;}"
@@ -187,9 +276,27 @@ WindowPicker::WindowPicker(QWidget* parent)
                   "QListWidget::item:selected{background:#3f6ae0;}"
                   "QPushButton{background:#3a3d46;color:#e8ebf2;border:none;border-radius:4px;}"
                   "QPushButton:hover{background:#e04a4a;}"
-                  "QLabel{border:none;}");
+                  "QLabel{border:none;}"
+                  "QComboBox{background:#1b1c20;color:#e8ebf2;border:1px solid #3a3c45;"
+                  "border-radius:5px;padding:3px 6px;}"
+                  "QComboBox QAbstractItemView{background:#1b1c20;color:#e8ebf2;"
+                  "border:1px solid #3a3c45;selection-background-color:#3f6ae0;}");
     connect(m_close, &QPushButton::clicked, this, &QWidget::hide);
-    resize(460, 360);
+    const auto saveOpts = [quality, width] {
+        QSettings st(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+        st.setValue(QStringLiteral("ui/recQuality"), quality->currentIndex());
+        st.setValue(QStringLiteral("ui/recMaxWidth"), width->currentData().toInt());
+        st.sync();
+        Utils::log(QStringLiteral("record opts: 画质=%1 画面=%2")
+                       .arg(quality->currentText(), width->currentText()));
+    };
+    // 用 currentIndexChanged 而不是 activated：activated 只有真人点才算，自测没法
+    // 程序化地"按一下下拉框"。回填那两次 setCurrentIndex 都发生在这两条 connect 之前
+    // （quality 在创建时就按配置摆好，width 的匹配循环也在加进布局之前），
+    // 所以初始化不会触发保存 —— 以后谁把回填挪到 connect 后面，就会每次按 F2 多写一遍配置。
+    connect(quality, &QComboBox::currentIndexChanged, quality, [saveOpts](int) { saveOpts(); });
+    connect(width, &QComboBox::currentIndexChanged, width, [saveOpts](int) { saveOpts(); });
+    resize(460, 392);
 
     const auto rebuild = [this, list, filter] {
         list->clear();

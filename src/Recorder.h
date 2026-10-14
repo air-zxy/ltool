@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QSize>
 #include <QString>
 #include <QWindow>   // WId
 
@@ -21,7 +22,17 @@ public:
     struct Options {
         int fps = 15;              // 目标帧率（窗口没重绘时不会硬凑帧）
         int videoBitrateKbps = 8000;
+        int maxWidth = 0;          // 0 = 录多大就编多大；>0 = 长边不超过这个数（等比缩，两边取偶）
     };
+
+    // 采集尺寸 → 编码尺寸：等比缩到长边 <= maxWidth，然后两边各取偶
+    // （H.264 奇数画幅会被编码器当场拒，实测 0xc00d36b4）。
+    // 单独做成函数是给 --rectest 用的：文件里的画幅必须能用同一套算法先算出来再比。
+    static QSize encodedSize(int fw, int fh, int maxWidth);
+    // 码率 = 每像素每帧的 bit 数(bpp) × 画幅 × 帧率。**按编码后的画幅算**，
+    // 所以"缩到 1280"就真的少花一半以上的空间，不会出现"画面小了码率照旧"的白花钱。
+    // 界面那四档和 --recq 的对照录复制用这一个函数（不许有两份算法）。
+    static int bitrateKbps(double bpp, int w, int h, int fps);
 
     explicit Recorder(QObject* parent = nullptr);
     ~Recorder() override;

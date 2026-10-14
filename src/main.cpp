@@ -16,6 +16,9 @@
 #include "ToolsPage.h"
 #include "PluginHost.h"
 #include "AboutPage.h"
+#include <QComboBox>
+#include <QPixmap>
+#include <QRandomGenerator>
 #include <algorithm>
 #include <QPlainTextEdit>
 #include "ltool-plugin.h"
@@ -294,6 +297,125 @@ int runPluginSelftest(const QString& id)
     std::printf("%s: 失败 %d 项\n", id.toUtf8().constData(), bad);
     std::fflush(stdout);
     return bad == 0 ? 0 : 1;
+}
+
+// --recq 用：把那张自制的卡录一小段，然后把产物读回来数一遍。
+// 判据全在返回值里，比较由调用方做 —— 这样"缩小"和"画质"两组用的是同一条录制路径，
+// 不会一边测真编码器、另一边测我手搓的期望值。
+// 卡片图案：上半白 / 下半黑 / 左沿一条黑带（朝向判据照 --rectest 那条教训：
+// 上下左右都对称的图案，翻了也量不出来）。noise=true 时中间那条带每个 tick 换一次随机块，
+// 让码率真的有事可做 —— 大片静止色块下"超清"和"流畅"能编出一样大的文件，测不出档位生效。
+struct RecRun {
+    int w = 0, h = 0;
+    qint64 frames = 0;
+    qint64 bytes = 0;
+    bool topBright = false;     // 解出来的第 0 行确实比末行亮（缩完朝向还对）
+    QString err;
+};
+
+QString sizeText(const QSize& s)
+{
+    return QStringLiteral("%1x%2").arg(s.width()).arg(s.height());
+}
+
+RecRun recordCardRun(int id, int cw, int ch, int maxWidth, double bpp, int ms, bool noise)
+{
+    RecRun out;
+    QWidget* card = new QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint);
+    card->resize(cw, ch);
+    auto* topHalf = new QLabel(card);
+    topHalf->setGeometry(0, 0, cw, ch / 2);
+    topHalf->setStyleSheet(QStringLiteral("background:#ffffff;"));
+    auto* botHalf = new QLabel(card);
+    botHalf->setGeometry(0, ch / 2, cw, ch - ch / 2);
+    botHalf->setStyleSheet(QStringLiteral("background:#000000;"));
+    auto* stripe = new QLabel(card);
+    stripe->setGeometry(0, 0, cw / 8, ch / 2);
+    stripe->setStyleSheet(QStringLiteral("background:#000000;"));
+    auto* lab = new QLabel(QStringLiteral("0"), card);
+    lab->setGeometry(cw - 96, ch - 46, 94, 44);   // 右下角每 30ms 换一个数：不重绘 WGC 一帧也不给
+    lab->setAlignment(Qt::AlignCenter);
+    lab->setStyleSheet(QStringLiteral("background:#000000;color:#e8ebf2;font-size:26px;"));
+    QLabel* blocks = nullptr;
+    if (noise) {
+        blocks = new QLabel(card);
+        blocks->setGeometry(0, ch / 3, cw, ch / 3);
+        blocks->setScaledContents(true);
+    }
+    const QRect avail = QGuiApplication::primaryScreen()->availableGeometry();
+    card->move(avail.right() - cw - 12, avail.bottom() - ch - 12);
+    card->setAttribute(Qt::WA_ShowWithoutActivating);
+    card->show();
+    QCoreApplication::processEvents();
+
+    int tick = 0;
+    QTimer anim;
+    QObject::connect(&anim, &QTimer::timeout, card, [&] {
+        lab->setText(QString::number(++tick));
+        if (blocks) {         // 逐像素随机灰噪点放大到整条带：高，编码器必须真花码率才行
+            // （以前是 24x12 的大块，放大后太平滑，两档码率编出来只差 7% —— 那条断言
+            //   测的其实是内容，不是档位）
+            QImage img(cw / 3, ch / 6, QImage::Format_RGB32);
+            for (int y = 0; y < img.height(); ++y) {
+                auto* row = reinterpret_cast<QRgb*>(img.scanLine(y));
+                for (int x = 0; x < img.width(); ++x)
+                    row[x] = QColor(QRandomGenerator::global()->bounded(256)).rgb();
+            }
+            blocks->setPixmap(QPixmap::fromImage(img));
+        }
+    });
+    anim.start(30);
+
+    const QString path = QDir::tempPath() + QStringLiteral("/ltool-recq-%1.mp4").arg(id);
+    QFile::remove(path);
+    Recorder rec;
+    Recorder::Options o;
+    o.fps = 15;
+    o.maxWidth = maxWidth;
+    const QSize enc = Recorder::encodedSize(cw, ch, maxWidth);
+    o.videoBitrateKbps = Recorder::bitrateKbps(bpp, enc.width(), enc.height(), o.fps);
+    QString err;
+    if (!rec.start(WId(card->winId()), o, path, &err)) {
+        out.err = err.isEmpty() ? QStringLiteral("没录起来") : err;
+        anim.stop();
+        card->close();
+        card->deleteLater();
+        QFile::remove(path);
+        return out;
+    }
+    const qint64 until = QDateTime::currentMSecsSinceEpoch() + ms;
+    while (QDateTime::currentMSecsSinceEpoch() < until) {
+        QCoreApplication::processEvents();
+        QThread::msleep(10);
+    }
+    rec.stop();
+    anim.stop();
+    for (int i = 0; i < 30; ++i)
+        QCoreApplication::processEvents();
+    card->close();
+    card->deleteLater();
+
+    const Recorder::Mp4Info info = Recorder::inspectMp4(path);
+    out.w = info.w;
+    out.h = info.h;
+    out.frames = info.frames;
+    out.bytes = info.bytes;
+    if (!info.ok)
+        out.err = QStringLiteral("文件读不回来：%1").arg(info.error);
+    const Recorder::LumaGrid g = Recorder::inspectLuma(path, 8);
+    if (!g.ok) {
+        if (out.err.isEmpty())
+            out.err = QStringLiteral("亮度网格解不出来：%1").arg(g.error);
+    } else {
+        double top = 0, bot = 0;
+        for (int c = 0; c < g.n; ++c) {
+            top += g.at(0, c);
+            bot += g.at(g.n - 1, c);
+        }
+        out.topBright = top > bot;
+    }
+    QFile::remove(path);
+    return out;
 }
 
 int runAdScan()
@@ -2273,6 +2395,85 @@ int main(int argc, char* argv[])
         return 0;
     }
 
+
+    // --recq：录屏那两个新选择（画面大小 / 画质）到底进没进编码器。
+    // 全部拿真编码器量：录自制卡 → 把 mp4 解回来说话。目标窗口是自己造的、
+    // 摆在屏幕右下角、不抢焦点，不碰用户桌面上任何东西。
+    if (args.contains("--recq")) {
+        int bad = 0;
+        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
+            const bool ok = got == want;
+            if (!ok)
+                ++bad;
+            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
+                        got.toUtf8().constData(), want.toUtf8().constData());
+        };
+        const auto has = [&bad](const char* name, bool ok) {
+            std::printf("%s %s\n", ok ? "PASS" : "FAIL", name);
+            if (!ok)
+                ++bad;
+        };
+        // 先量算法本身（这几条不用录）
+        check("不缩：2560x1440 原样", sizeText(Recorder::encodedSize(2560, 1440, 0)),
+              QStringLiteral("2560x1440"));
+        check("长边≤1280：等比到 1280x720", sizeText(Recorder::encodedSize(2560, 1440, 1280)),
+              QStringLiteral("1280x720"));
+        check("奇数先取偶再缩：1281x721 ≤640 → 640x360", sizeText(Recorder::encodedSize(1281, 721, 640)),
+              QStringLiteral("640x360"));
+        check("只缩不放大：1920x1080 要 ≤2560 还是 1920x1080",
+              sizeText(Recorder::encodedSize(1920, 1080, 2560)), QStringLiteral("1920x1080"));
+        check("结果永远是偶数（H.264 拒奇数画幅）",
+              sizeText(Recorder::encodedSize(999, 555, 333)), QStringLiteral("332x184"));
+        // 码率按**编码后**画幅算：同一档 bpp，缩一半面积就该给一半不到
+        const int kFull = Recorder::bitrateKbps(0.145, 2560, 1440, 15);
+        const int kHalf = Recorder::bitrateKbps(0.145, 1280, 720, 15);
+        std::printf("INFO 标准档码率：2560x1440=%d kbps，1280x720=%d kbps\n", kFull, kHalf);
+        check("标准档在 1440p15 上就是以前那个 8000", QString::number(kFull / 1000 * 1000),
+              QStringLiteral("8000"));
+        has("缩了以后码率跟着降（不然是白花一倍的钱）", kHalf * 2 < kFull * 3);
+
+        // 再拿编码器量三局：原始/标准、≤320/标准、原始/超清 vs 原始/流畅（带噪声）
+        const RecRun full = recordCardRun(1, 640, 400, 0, 0.145, 2500, false);
+        // 变量名别叫 small：Windows 的 rpcndr.h 里 `#define small char`，
+        // 写它会编成 "const RecRun char = ..."（本机实测撞过）
+        const RecRun shrunk = recordCardRun(2, 640, 400, 320, 0.145, 2500, false);
+        std::printf("INFO 三局的错：%s / %s\n", full.err.toUtf8().constData(),
+                    shrunk.err.toUtf8().constData());
+        check("不缩那局：文件画幅就是卡片取偶", QString("%1x%2").arg(full.w).arg(full.h),
+              QStringLiteral("640x400"));
+        check("选 ≤320 那局：文件画幅真的缩到了 320x200", QString("%1x%2").arg(shrunk.w).arg(shrunk.h),
+              QStringLiteral("320x200"));
+        std::printf("INFO 帧数：原始 %lld，缩小 %lld\n", full.frames, shrunk.frames);
+        has("两局都解得出帧（不是只写出一个空壳文件）",
+            full.frames > 10 && shrunk.frames > 10);
+        has("缩小那局朝向还是正的（上亮下暗）", shrunk.topBright);
+        std::printf("INFO 同内容同长度：原始 %lld 字节，缩小 %lld 字节\n", full.bytes, shrunk.bytes);
+        has("缩小那局文件真的更小", shrunk.bytes < full.bytes);
+
+        const int lowKbps = Recorder::bitrateKbps(0.060, 640, 400, 15);
+        const int highKbps = Recorder::bitrateKbps(0.400, 640, 400, 15);
+        const RecRun low = recordCardRun(3, 640, 400, 0, 0.060, 2500, true);
+        const RecRun high = recordCardRun(4, 640, 400, 0, 0.400, 2500, true);
+        std::printf("INFO 噪声画面：流畅 %lld 字节，超清 %lld 字节\n", low.bytes, high.bytes);
+        std::printf("INFO 两档比值 %1.f%\n", 100.0 * double(high.bytes) / double(low.bytes));
+        // 这台机器的 MF 编码器把 MF_MT_AVG_BITRATE 当**上限**用（实测：内容不够复杂时
+        // 它不会硬凑到目标码率）。所以"档位进去了"的判据不是"文件大一倍"，而是
+        // "低那一档贴着它自己的上限"—— 差 15% 以内说明那个数真的交给了编码器。
+        // 这台机器的 MF 编码器把 MF_MT_AVG_BITRATE 当**参考**而不是硬上限
+        // （低档目标 400kbps，实测那 2.5 秒写出 ~900kbps；高档目标 1536kbps 实测 ~1180kbps）。
+        // 所以判据不能写"贴着上限±15%"（我第一版就是这么写的，当场红），要写能站住的：
+        // 同一份内容、同一时长，档位调高之后文件必须**明显不变小**（实测两遍 +26% / +35%）。
+        std::printf("INFO 流畅 %lld 字节（目标 %d kbps）、超清 %lld 字节（目标 %d kbps）\n",
+                    low.bytes, lowKbps, high.bytes, highKbps);
+        has("换到超清这一档，同内容下文件明显变大（档位真的进了编码器）",
+            high.bytes > low.bytes * 110 / 100);
+        has("两局噪声都录成了", low.frames > 10 && high.frames > 10);
+
+        std::printf("recq: 失败 %d 项\n", bad);
+        std::fflush(stdout);
+        return bad == 0 ? 0 : 1;
+    }
+
     // --rectest [秒] [宽x高]：验一遍"只录某个窗口 → mp4 → 再读回来数帧"。
     // 目标窗口是自己造的一张每 30ms 换一个数字的卡片，不碰用户桌面上任何东西；
     // 判据不是"文件存在"，而是拿 SourceReader 把文件解回来数出 N 帧、且 N 和采集到的帧数一致。
@@ -2478,6 +2679,72 @@ int main(int argc, char* argv[])
 
         WindowPicker picker;
         auto* plist = picker.findChild<QListWidget*>(QStringLiteral("list"));
+        // 新加的两颗下拉框（画质 / 画面）。这两条盯的是"改了到不到配置"：
+        // 选择窗每次按 F2 都重建，不落盘的话用户下次按 F2 就全回默认档。
+        {
+            auto* q = picker.findChild<QComboBox*>(QStringLiteral("recQuality"));
+            auto* w = picker.findChild<QComboBox*>(QStringLiteral("recMaxWidth"));
+            QSet<const QWidget*> laid;
+            std::function<void(QLayout*)> walk = [&](QLayout* l) {
+                if (!l)
+                    return;
+                for (int i = 0; i < l->count(); ++i) {
+                    QLayoutItem* it = l->itemAt(i);
+                    if (!it)
+                        continue;
+                    if (QWidget* cw = it->widget()) {
+                        laid.insert(cw);
+                        walk(cw->layout());
+                    } else if (QLayout* sub = it->layout())
+                        walk(sub);
+                }
+            };
+            walk(picker.layout());
+            check("选择窗有画质和画面两颗下拉框",
+                  QStringLiteral("%1/%2").arg(q != nullptr ? 1 : 0).arg(w != nullptr ? 1 : 0),
+                  QStringLiteral("1/1"));
+            check("两颗下拉框都在布局里（不是只 new 出来）",
+                  QStringLiteral("%1/%2").arg(laid.contains(q) ? 1 : 0).arg(laid.contains(w) ? 1 : 0),
+                  QStringLiteral("1/1"));
+            check("四档画质 / 四种画面", QStringLiteral("%1/%2").arg(q->count()).arg(w->count()),
+                  QStringLiteral("4/4"));
+            // 初始值必须来自配置（缺省=标准 / 原始）：这是"回填和读取同源"的判据
+            QSettings st(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+            const int savedQ = st.value(QStringLiteral("ui/recQuality"), 1).toInt();
+            const int savedW = st.value(QStringLiteral("ui/recMaxWidth"), 0).toInt();
+            check("下拉框当前档 == 配置里存的档",
+                  QStringLiteral("%1/%2").arg(q->currentIndex()).arg(w->currentData().toInt()),
+                  QStringLiteral("%1/%2").arg(savedQ).arg(savedW));
+            // 程序化改档（不合成鼠标）之后必须立刻落盘
+            const int origQ = q->currentIndex(), origW = w->currentData().toInt();
+            q->setCurrentIndex(3);
+            w->setCurrentIndex(2);
+            st.sync();
+            QSettings st2(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+            check("改了画质/画面立刻写进配置",
+                  QStringLiteral("%1/%2").arg(st2.value(QStringLiteral("ui/recQuality"), -1).toInt())
+                      .arg(st2.value(QStringLiteral("ui/recMaxWidth"), -1).toInt()),
+                  QStringLiteral("3/1280"));
+            // 再建一个选择窗（模拟下一次按 F2）：必须回填成刚选的那档
+            WindowPicker again;
+            auto* q2 = again.findChild<QComboBox*>(QStringLiteral("recQuality"));
+            auto* w2 = again.findChild<QComboBox*>(QStringLiteral("recMaxWidth"));
+            check("下一次打开选择窗还是刚选那两档",
+                  QStringLiteral("%1/%2").arg(q2->currentIndex()).arg(w2->currentData().toInt()),
+                  QStringLiteral("3/1280"));
+            // 收尾：把用户原来的档还回去（这条测试跑在他的真实配置上）
+            q->setCurrentIndex(origQ);
+            w->setCurrentIndex(0);   // 先退回不缩，再按原来的值找回去
+            for (int i = 0; i < w->count(); ++i)
+                if (w->itemData(i).toInt() == origW)
+                    w->setCurrentIndex(i);
+            st2.sync();
+            QSettings st3(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+            check("跑完把用户原来的档还回去了",
+                  QStringLiteral("%1/%2").arg(st3.value(QStringLiteral("ui/recQuality"), -1).toInt())
+                      .arg(st3.value(QStringLiteral("ui/recMaxWidth"), -1).toInt()),
+                  QStringLiteral("%1/%2").arg(origQ).arg(origW));
+        }
         // 右上角那颗「✕」：这窗没标题栏，Esc / 失焦 / 再按 F2 都是"看不见的退路"，
         // 界面上得有一个落点。判据走布局可达性而不是 findChild —— 后者只能证明
         // 控件被构造过，证明不了它摆在了页面上（配置页那一栏刚在这上面栽过）。
