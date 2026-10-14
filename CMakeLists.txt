@@ -1,6 +1,18 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ltool VERSION 0.5.0 LANGUAGES CXX)
+# ---- 版本号只有一个来源：ltool.iss 里那条 #define MyAppVersion ----
+# 上一版它散在 CMakeLists / iss 的 #define 和注释 / README / 五个交付脚本里，升一次要改七处，
+# 漏一处就是"脚本装着昨天的包还报绿"。现在 CMake 从 iss 解析，解析不到直接 FATAL：
+# 宁可构建失败，也不要编出一个显示旧版本号的界面。
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/ltool.iss" _iss_text)
+string(REGEX MATCH "#define MyAppVersion \"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _iss_ver "${_iss_text}")
+if(NOT CMAKE_MATCH_1)
+    message(FATAL_ERROR "ltool.iss 里没读到 #define MyAppVersion \"x.y.z\"")
+endif()
+set(LTOOL_VERSION_STRING "${CMAKE_MATCH_1}")
+message(STATUS "ltool 版本 ${LTOOL_VERSION_STRING}（来自 ltool.iss）")
+
+project(ltool VERSION ${LTOOL_VERSION_STRING} LANGUAGES CXX)
 
 # ---- MSVC：让一个目标里的所有 .cpp 并行编译（/MP）----
 # VS 生成器默认把一个目标里的编译任务排队串行跑：本项目 53 个 TU，改一次 src/Utils.h
@@ -91,6 +103,7 @@ qt_add_library(ltoolcore SHARED
     src/RecProbe.cpp
     src/Recorder.cpp
     src/RecordUi.cpp
+    src/AboutPage.cpp
     src/ConfigPage.cpp
     src/SettingsDialog.cpp
     src/SearchWindow.cpp
@@ -101,6 +114,9 @@ set_target_properties(ltoolcore PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON
     ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/lib)
 # core-api.h 靠它决定是 dllexport 还是 dllimport（只有编 core 这一份目标定义）
 target_compile_definitions(ltoolcore PRIVATE LTOOL_CORE_BUILD)
+# 界面「关于」那一页显示的就是它（PUBLIC：exe 和插件都拿得到同一个串）。
+# AboutPage.cpp 里没定义就直接 #error，绝不让界面显示一个"忘了改的旧版本"。
+target_compile_definitions(ltoolcore PUBLIC LTOOL_VERSION="${LTOOL_VERSION_STRING}")
 
 # ---- 预编译头 ----
 # 53 个 TU 每个都要啃同一批 Qt 头（QApplication/QWidget/QtConcurrent 展开就是几万行），

@@ -437,6 +437,13 @@ void SearchWindow::openSettings()
 
 // 托盘那两项和搜索框的结果行都走这条：弹设置页 → 工具页 → 展开那个插件的页。
 // 工具全搬进 DLL 插件之后，主程序里再没有 JsonTool/Base64Tool 这两个类可以 new 了。
+void SearchWindow::openSettingsPage(int menuRow)
+{
+    openSettings();
+    if (auto* dlg = qobject_cast<SettingsDialog*>(m_settingsDlg.data()))
+        dlg->openAt(menuRow);
+}
+
 void SearchWindow::openTool(const QString& id, const QString& text)
 {
     openSettings();

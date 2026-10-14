@@ -7,6 +7,7 @@
 #include "SoftwarePage.h"
 #include "UninstallPage.h"
 #include "TasksPage.h"
+#include "AboutPage.h"
 #include "ToolsPage.h"
 #include "WebsitesPage.h"
 #include "Utils.h"
@@ -192,6 +193,7 @@ SettingsDialog::SettingsDialog(QWidget* parent)
         {"定时任务", QColor(214, 128, 15)},
         {"工具", QColor(120, 130, 150)},
         {"配置", QColor(150, 150, 160)},
+        {"关于", QColor(90, 100, 120)},
     };
     for (const MenuDef& d : defs) {
         auto* it = new QListWidgetItem(Utils::letterIcon(d.name, d.color), d.name);
@@ -200,7 +202,7 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     }
 
     m_stack = new QStackedWidget(this);
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 8; ++i)
         m_stack->addWidget(new QWidget(m_stack)); // 占位，选中时懒加载
 
     auto* lay = new QHBoxLayout(this);
@@ -261,7 +263,7 @@ void SettingsDialog::refreshBusy()
 
 void SettingsDialog::ensurePage(int index)
 {
-    if (index < 0 || index >= 7)
+    if (index < 0 || index >= 8)
         return;
     if (m_built[index]) {
         m_stack->setCurrentIndex(index);
@@ -301,6 +303,7 @@ void SettingsDialog::ensurePage(int index)
         page = configPage;
         break;
     }
+    case 7: page = new AboutPage(this); break;
     }
     QWidget* old = m_stack->widget(index);
     m_stack->removeWidget(old);

@@ -1,9 +1,9 @@
 ; ltool Inno Setup 打包脚本
 ; 编译: "D:\software\InnoSetup6\ISCC.exe" ltool.iss
-; 产物: installer\ltool-0.5.0-setup.exe（按用户安装到 %LOCALAPPDATA%\Programs\ltool，无需管理员）
+; 产物: installer\ltool-0.6.0-setup.exe（按用户安装到 %LOCALAPPDATA%\Programs\ltool，无需管理员）
 
 #define MyAppName "ltool"
-#define MyAppVersion "0.5.0"
+#define MyAppVersion "0.6.0"
 #define MyAppPublisher "ltool"
 #define MyAppExeName "ltool.exe"
 

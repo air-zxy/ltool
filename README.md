@@ -20,7 +20,8 @@ C++20 / Qt 6 / vcpkg + CMake 实现的快速启动器。
 | 修复 | 检测 .NET Runtime / VC++ 2005~2022 / VSTO / DirectX / UCRT，未安装的一键 winget 安装 |
 | 广告弹窗 | 按窗口标题/进程名扫描弹窗，可关闭窗口、结束进程、加入拦截名单；勾选自动拦截后每 60 秒自动关闭 |
 | C盘清理 | 常见可清理位置（临时/更新缓存/DX缓存/pip/npm/浏览器缓存等）扫描大小、一键清理、回收站清空；C 盘顶层目录占用分析。**两个 tab 的列表都支持右键「打开文件夹」**（右键落在整行哪都行 —— 名字、下面那行完整路径、占比条都会冒到行卡片上）：「可清理位置」开的是那个缓存/临时目录本身，「占用分析 · 本层目录」开的是那一行对应的目录；左键在占用分析里是下钻，所以开文件夹只走右键。目录已经不在了（比如清理完之后的 Temp）那一项就摆成灰的、写「这个目录已经不在了」，不会点了没反应。这条只有界面在用，且真按一下就会拉起资源管理器，所以判据在离屏自测 `ltool.exe --rowmenu`（9 条：菜单就一项、文案、灰没灰、**这项的 data 就是这一行自己的目录** —— 点开之后拿的就是它，所以这条等于验"开的是它不是别的"） |
-| Windows 用户名 | 工具页那张新卡片（第 7 张，内嵌页槽位 6）：先只读地把现状摆出来（账户名 / 机器名 / 显示名 / 本地还是微软账户 / 用户目录 / SID），然后三件事：**改显示名**（SAM 的 FullName，登录界面和锁屏上那个名字，最安全）、**改账户名**（`Rename-LocalUser`；界面上写明白 **C:\Users 那个目录不会跟着改名**、写死旧路径的程序不会自动跟上、要注销重登）、**新建用户**（账户名 + 显示名 + 密码 + 勾「赋予管理员权限」= 加进 Administrators 组，默认勾上）。三个动作都要管理员授权（弹 UAC），都要在确认框里点一次「是」，而且**跑完一律回读**：读到什么说什么，不拿「脚本跑了」当「改成了」。微软账户那条路在界面上写清楚：显示名是服务器同步的，本地改了会被覆盖，得去 account.microsoft.com。读账户走 powershell（半秒多），所以放在后台线程，页面先显示「正在读账户信息…」，不让人对着空白页猜。判据在 `--username`（30 条） |
+| Windows 用户名 | 工具页那张卡片（2026-10-13 起它是 `ltool-user.dll` 这个插件）：先只读地把现状摆出来（账户名 / 机器名 / 显示名 / 本地还是微软账户 / 用户目录 / SID），然后三件事：**改显示名**（SAM 的 FullName，登录界面和锁屏上那个名字，最安全）、**改账户名**（`Rename-LocalUser`；界面上写明白 **C:\Users 那个目录不会跟着改名**、写死旧路径的程序不会自动跟上、要注销重登）、**新建用户**（显示名 + 密码 + 勾选「加到 Administrators 组」= 提权，不勾就是标准用户）。三个动作都是**提权跑 PowerShell**（`runas`），而且**一律不自动执行**：要人在界面上按下，界面上也写清楚后果。判据搬进了插件本身（`--username` 现在跑的是插件导出的 `ltoolPluginSelftest`，27 条：`psQuote` 把单引号翻倍 / 名字合法性 / 拼出去的脚本长什么样 / 页面上三颗按钮真的摆在布局里 / 读回来的现场含真实机器名和 SID） |
+| 关于（菜单第 8 行 + 托盘「关于」） | 显示**版本号（唯一来源是 `ltool.iss` 的 `#define MyAppVersion`，CMake 解析后编进 `LTOOL_VERSION`）**、Qt 运行时版本、程序/数据目录、工具插件数（含没通过检查的个数）和日志路径；下面是**检查更新 → 下载新版 → 装并重启**三颗按钮，一件都不自动：检查只发一个到 GitHub Releases `latest` 的 GET（带 User-Agent，沿用「配置 → 下载代理」那条，留空=不用代理），失败按 404/403/连不上传区别说一句人话；下载交给内置下载器（进度看台在「下载器」那一页，这里不假装有进度）；「装并重启」会**先退出 ltool**，所以要点两下（弹窗默认停在“不”），它写一段临时 PowerShell：等我们这个 pid 退场 → 静默装回**同一个 /DIR** → 再把 ltool 拉起来，日志在 `%TEMP%\ltool-update.log`。服务器给的资产名一律过 `safeFileName`（只留 `[A-Za-z0-9._-]`、去掉开头的点），脚本里每个路径都走单引号翻倍，带单引号直接整段拒绝。无界面断言 `ltool.exe --about`（24 条，含版本比较 `1.10 > 1.9`、`../evil.exe` 变 `evil.exe`、逃逸口、四颗按钮在布局里、页面显示的版本 == 编译期那个），真联网探针 `ltool.exe --updatecheck` 点的是界面同一颗按钮 |
 | 网络 | 网卡 DNS 一键切换预设（阿里/腾讯/114/Google），UAC 提权 netsh 执行，含刷新 DNS 缓存与恢复 DHCP |
 | 文件占用 / 粉碎 | 文件与文件夹右键 ltool 子菜单：**占用分析**一个窗口两件事 —— 上面是大小 / 实际占簇 / 簇大小 / 文件系统 / 硬链接（文件夹会递归求和），下面是哪个进程正开着它（Restart Manager，可结束该进程）；**粉碎**为三轮覆写后永久删除，不进回收站 |
 | 压缩包读写 | 右键解压到当前目录 / 解压到同名文件夹、压缩为 .zip / .7z。读是 libarchive：zip / 7z / tar / gz / bz2 / xz / zstd / iso / cab / cpio，rar 只读且不完全支持；写两条分家 —— zip 用 libarchive 的 deflate，**.7z 用 7-Zip 自己的多线程编码器**（bit7z + 随包的 `7zip.dll`，见下）。**要快就用 zip**：同一个 32MB 的文件夹实测 —— 我们的 .zip 0.73 秒 / 27.1MB（比 7-Zip 自己压 zip 的 0.96 秒还快）。**.7z 那条已经不再走 libarchive**，改成直接请 7-Zip 自己的多线程编码器干活（`src/SevenZip.cpp` + vcpkg 的 `bit7z`/`7zip`，运行时加载随包带的 `7zip.dll`）：同一个文件夹 **10.1 秒 → 1.8 秒**（改前那 10.14 秒是他自己现场日志里的一行），产物 23.46MB 和 7-Zip 命令行逐字节同尺寸（它 `-mx5` 是 1.58 秒，差的三百毫秒是我们启动自己的开销）。以前追不上的原因量清楚了，就是线程数：libarchive 的 7z 写出器 LZMA1/LZMA2 恒为单线程，7-Zip 靠 `-mmt` 把 LZMA2 分块丢给多个核。试过又否掉的两条：把 zstd 塞进 7z（`threads` 唯一支持的编码器）能到 0.3 秒，但产出的包连本机 7-Zip 25.01 都报 `Method = 04F71101 / Unsupported Method`；自己包一层 .lzx（清单 + 标准 .xz 流，用 liblzma 的 `lzma_stream_encoder_mt`）实测 0.48 秒 / 25.7MB 最快，但**别人拿到 .lzx 根本不知道是什么文件**，所以删了。zip 里指定 zstd 也不行：7-Zip 会静默退回 Deflate。中文条目名按格式喂 `hdrcharset`（tar/cpio=UTF-8，zip/rar/lha=本机码页），中文路径走 `_w` 接口。默认后台静默完成 + 托盘提示，配置页可打开进度窗口（带取消）；**进度窗口跑完自己就关**（成功或取消都关，那句话交给托盘去举），只有失败才留着说原因，这时「打开位置」指向那个没改名的半成品；半成品写 `.part`，成功才改名。**吞吐实测（60MB 伪日志，`--archspeed`）**：解压 zip 857MB/s、解压 7z 343MB/s（都比 7-Zip 自己快，解压这条路还是 libarchive）；压缩 zip 118MB/s / 5.9MB；**压缩 7z（新后端）4.17 秒 / 3.6MB，同一个夹具 7-Zip 命令行要 6.30 秒 / 3.4MB —— 我们快 34%**。档位曲线（只认 7-Zip 定义的 0/1/3/5/7/9）：1 档 0.20 秒 / 4.7MB、3 档 0.53 秒 / 4.5MB、5 档 4.43 秒 / 3.6MB、7 档 7.79 秒 / 4.4MB、9 档 8.00 秒 / 4.4MB —— **7 档往上体积反而回涨**（多线程把输入切的块多了，每块各自从零开始建字典，上下文短了），所以默认停在 5 档：它既是 7-Zip 自己的默认档，也是这条曲线上"每秒换多少字节"最划算那一点。每一档都验过两件事：我们自己的读取器解得回来、`7z t` 退出码 0。试过又否掉的两条：把 zstd 塞进 7z（`threads` 唯一支持的编码器）能到 0.3 秒，但产出的包连本机 7-Zip 25.01 都报 `Method = 04F71101 / Unsupported Method`；自己包一层 .lzx（清单 + 标准 .xz 流，用 liblzma 的 `lzma_stream_encoder_mt`）实测 0.48 秒 / 25.7MB 最快，但**别人拿到 .lzx 根本不知道是什么文件**，所以删了。zip 里指定 zstd 也不行：7-Zip 会静默退回 Deflate。**右键那一次性进程干完活把托盘气泡交给常驻实例去举**（走单实例那条本地套接字，消息格式 `note\t标题\t正文`）：以前它为了"让气泡显示满 5 秒"自己多活 5 秒，实测解压一个包端到端 5.4 秒而活儿本身只有 0.2 秒；改完端到端 0.36 秒 |
@@ -69,9 +70,19 @@ powershell -File build\verify\deliver.ps1 -NoBuild     :: 跳过构建
 ```bat
 cmake --build build --config Release
 "D:\software\InnoSetup6\ISCC.exe" ltool.iss
-installer\ltool-0.5.0-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
+installer\ltool-<版本>-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 ```
 
+- **版本号只有一个来源：`ltool.iss` 里那条 `#define MyAppVersion`**。CMake 在 `project()` 之前
+  用它解析出 `LTOOL_VERSION_STRING`，再编成 `LTOOL_VERSION` 宏传给 core ——
+  安装包文件名、卸载表里的 `DisplayVersion`、界面「关于」那一页显示的版本，是同一个数。
+  读不到就 `message(FATAL_ERROR)`，宏没传进来就 `#error`：**宁可构建失败，也不要编出一个
+  显示旧版本号的界面**（0.5.0 之前它散在 iss 的 #define 和注释、CMakeLists、README、
+  五个交付脚本里共七处，升一次全要手动改）。现在升版本只动那一条。
+- **`deliver.ps1` 装完按 SHA256 逐个点名比**：`ltool.exe`、`ltoolcore.dll`、
+  `ltool-plugins\*.dll`（九个工具插件一个都不能少）。上一版只比 exe —— 而自 2026-10-13 起
+  代码主要在那两个 dll 里，"只比 exe"就是假绿；另外插件目标不在 `ltool` 的依赖图上，
+  `cmake --build --target ltool` 根本不重编它们，所以要 `add_dependencies` 点名挂上。
 - **压缩档位**（2026-10-12 重测，payload 71.1MB / 34 个二进制；括号里是整条 `deliver.ps1` 闭环）：
   `lzma2/normal`+solid **6.7 秒 / 22.22MB（12.9 秒）← 现在的默认**、
   `lzma2/max`+solid 9.9 秒 / 21.52MB（16.5 秒，出最小正式包用 `deliver.ps1 -Final`）、

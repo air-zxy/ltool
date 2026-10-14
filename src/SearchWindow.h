@@ -60,6 +60,8 @@ public:
     // 弹设置页 → 工具页 → 展开那个插件的页（工具都是 DLL 插件，主程序不再 new 它们）。
     // text 非空 = 把这段递给那个工具（JSON 解析 / Base64 解码那两条）。
     void openTool(const QString& id, const QString& text = QString());
+    // 托盘「关于」：弹设置页并翻到那一行（行号就是左侧菜单的顺序）
+    void openSettingsPage(int menuRow);
 
     const SearchResult& resultAt(int i) const { return m_results[i]; }
     int resultCount() const { return m_results.size(); }   // 给离屏自测用（--pinyin 数第一行是谁）

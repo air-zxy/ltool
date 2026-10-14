@@ -36,7 +36,7 @@ private:
     QListWidget* m_menu = nullptr;
     QStackedWidget* m_stack = nullptr;
     QWidget* m_pages[7] = {};
-    bool m_built[7] = {};
+    bool m_built[8] = {};
     ToolsPage* m_toolsPage = nullptr;   // 行 5：搜索框要让它展开某个工具
     QToolButton* m_busy = nullptr;
     QTimer* m_busyTimer = nullptr;

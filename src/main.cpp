@@ -15,6 +15,7 @@
 #include "DevEnv.h"
 #include "ToolsPage.h"
 #include "PluginHost.h"
+#include "AboutPage.h"
 #include <algorithm>
 #include <QPlainTextEdit>
 #include "ltool-plugin.h"
@@ -799,6 +800,169 @@ int main(int argc, char* argv[])
         std::printf("plugintest: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad == 0 ? 0 : 1;
+    }
+
+    // --about：「关于」这一页里那些不用联网就能定的事，逐条量清楚。
+    // 版本号是不是真的从构建传进来、比较函数会不会把 1.10 排在 1.9 后面、
+    // 服务器给的资产名能不能变成 "../"、那段要动安装目录的 PowerShell 有没有逃逸口、
+    // 四颗按钮是不是真的摆在布局里（数 findChild 不等于界面可见，配置页那栏栽过）。
+    if (args.contains("--about")) {
+        int bad = 0;
+        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
+            const bool ok = got == want;
+            if (!ok)
+                ++bad;
+            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
+                        got.toUtf8().constData(), want.toUtf8().constData());
+        };
+        const auto has = [&bad](const char* name, bool ok) {
+            std::printf("%s %s\n", ok ? "PASS" : "FAIL", name);
+            if (!ok)
+                ++bad;
+        };
+        const QString ver = AboutPage::currentVersion();
+        has(QStringLiteral("版本号长得对（x.y.z，来自 ltool.iss）: [%1]").arg(ver).toUtf8().constData(),
+            QRegularExpression(QStringLiteral("^\\d+\\.\\d+\\.\\d+$")).match(ver).hasMatch());
+        check("latest 那条 API 地址", AboutPage::latestApiUrl(),
+              QStringLiteral("https://api.github.com/repos/mateo-ki/ltool/releases/latest"));
+        check("给人点的发布页", AboutPage::releasesPageUrl(),
+              QStringLiteral("https://github.com/mateo-ki/ltool/releases/latest"));
+
+        // 版本比较：这一段最容易写错成字符串比（"10" < "9"）
+        check("1.10 必须大于 1.9", QString::number(AboutPage::compareVersions("1.10", "1.9")), "1");
+        check("0.5.0 等于自己", QString::number(AboutPage::compareVersions("0.5.0", "0.5.0")), "0");
+        check("0.6.0 大于 0.5.9", QString::number(AboutPage::compareVersions("0.6.0", "0.5.9")), "1");
+        check("0.6 小于 0.6.1（段数不齐也别判成相等）",
+              QString::number(AboutPage::compareVersions("0.6", "0.6.1")), "-1");
+        check("垃圾输入不炸也不判高（abc 当 0）",
+              QString::number(AboutPage::compareVersions("abc", "0.0.0")), "0");
+        check("tag 里的 v 前缀和尾巴都能剥掉", AboutPage::versionFromTag("v0.6.0-beta"),
+              QStringLiteral("0.6.0"));
+        check("tag 里没数字就返回空（别拿整个 tag 当版本）",
+              AboutPage::versionFromTag("nightly"), QString());
+
+        // 资产名是服务器给的：路径分隔符、开头一个点、引号都不能带进落盘路径
+        const QString evil = AboutPage::safeFileName(QStringLiteral("../evil.exe"));
+        has(("资产名里的 ../ 被去掉：" + evil).toUtf8().constData(),
+            !evil.contains('/') && !evil.contains('\\') && !evil.startsWith('.'));
+        const QString quotedName = AboutPage::safeFileName(QStringLiteral("a\"b.exe"));
+        has(("资产名里的引号被换掉：" + quotedName).toUtf8().constData(),
+            !quotedName.contains('"'));
+
+        // 拼给 PowerShell 的那段：值全部走单引号字面量，翻倍之后不许留逃逸口
+        check("psQuote 把单引号翻倍", AboutPage::psQuote(QStringLiteral("a'b")),
+              QStringLiteral("'a''b'"));
+        const QString q = AboutPage::psQuote(QStringLiteral("x'; Stop-Process; #"));
+        const QString inner = q.mid(1, q.size() - 2);
+        bool paired = true;
+        for (int i = 0; i < inner.size(); ++i) {
+            if (inner.at(i) != QLatin1Char('\''))
+                continue;
+            if (i + 1 >= inner.size() || inner.at(i + 1) != QLatin1Char('\'')) {
+                paired = false;
+                break;
+            }
+            ++i;
+        }
+        has("psQuote 对注入串：单引号只能成对出现", paired
+            && q.startsWith(QLatin1Char('\'')) && q.endsWith(QLatin1Char('\'')));
+
+        const QString self = QCoreApplication::applicationFilePath();
+        const QString appDir = QCoreApplication::applicationDirPath();
+        QString err;
+        const QString script = AboutPage::updateScript(self, appDir, 4321, &err);
+        std::printf("INFO 那段脚本第一行：%s\n",
+                    script.section('\n', 0, 0).toUtf8().constData());
+        has(("脚本建得出来（拿刚编好的 exe 当安装包试）：" + err).toUtf8().constData(),
+            !script.isEmpty());
+        has("脚本里静默安装 + /DIR 指回现在这个目录",
+            script.contains("/VERYSILENT") && script.contains(AboutPage::psQuote(appDir)));
+        has("脚本先等我们自己退出（按 pid 轮询），装完再拉起来",
+            script.contains("Get-Process -Id 4321") && script.contains("Start-Process"));
+        err.clear();
+        const QString withQuote = AboutPage::updateScript(self + QStringLiteral("'x"), appDir, 1, &err);
+        has("路径里带单引号就整段拒绝（不给 PowerShell 留逃逸口）",
+            withQuote.isEmpty() && !err.isEmpty());
+        err.clear();
+        has("安装包不存在也拒绝",
+            AboutPage::updateScript(QStringLiteral("Z:/nope.exe"), appDir, 1, &err).isEmpty()
+                && !err.isEmpty());
+
+        // 页面本身：四颗按钮要在布局里、初始不该已经发过请求、下载/安装初始禁用
+        AboutPage page;
+        QSet<const QWidget*> laidOut;
+        std::function<void(QLayout*)> walk = [&](QLayout* l) {
+            if (!l)
+                return;
+            for (int i = 0; i < l->count(); ++i) {
+                QLayoutItem* it = l->itemAt(i);
+                if (!it)
+                    continue;
+                if (QWidget* w = it->widget()) {
+                    laidOut.insert(w);
+                    walk(w->layout());
+                } else if (QLayout* sub = it->layout())
+                    walk(sub);
+            }
+        };
+        walk(page.layout());
+        int onLayout = 0;
+        for (const char* objName : { "checkUpdate", "downloadUpdate", "installUpdate", "openReleases" }) {
+            QWidget* w = page.findChild<QWidget*>(QString::fromLatin1(objName));
+            if (w && laidOut.contains(w))
+                ++onLayout;
+        }
+        check("检查/下载/装并重启/发布页 四颗按钮都在布局里", QString::number(onLayout),
+              QStringLiteral("4"));
+        auto* status = page.findChild<QLabel*>(QStringLiteral("updateStatus"));
+        check("刚建好还没碰过网络（状态还是初始那句）",
+              status ? status->text() : QStringLiteral("(没有状态行)"),
+              QStringLiteral("还没检查过"));
+        bool downloadOff = false, installOff = false;
+        for (const QPushButton* b : page.findChildren<QPushButton*>()) {
+            if (b->objectName() == QLatin1String("downloadUpdate"))
+                downloadOff = !b->isEnabled();
+            if (b->objectName() == QLatin1String("installUpdate"))
+                installOff = !b->isEnabled();
+        }
+        has("没查出结果之前下载/装都不给点", downloadOff && installOff);
+        // 界面显示的版本必须和编译期那个同源（不是"我记得是 0.6.0"）
+        bool showsVersion = false;
+        for (const QLabel* l : page.findChildren<QLabel*>())
+            if (l->text().contains(ver))
+                showsVersion = true;
+        has(("页面上显示的版本 == 编译期传进来的 " + ver).toUtf8().constData(), showsVersion);
+
+        std::printf("about: 失败 %d 项\n", bad);
+        std::fflush(stdout);
+        return bad == 0 ? 0 : 1;
+    }
+
+    // --updatecheck：真去问一次 github（走配置里那条下载代理）。这是唯一能量出
+    // "这台机器现在能不能问到新版"的入口 —— 点的是界面同一颗按钮，跑的是同一条异步路径。
+    if (args.contains("--updatecheck")) {
+        AboutPage page;
+        auto* btn = page.findChild<QPushButton*>(QStringLiteral("checkUpdate"));
+        auto* status = page.findChild<QLabel*>(QStringLiteral("updateStatus"));
+        if (!btn || !status) {
+            std::printf("FAIL 找不到「检查更新」那颗按钮或状态行\n");
+            return 1;
+        }
+        btn->click();
+        QString text = status->text();
+        QElapsedTimer t;
+        t.start();
+        while (t.elapsed() < 40000 && text.contains(QStringLiteral("正在问"))) {
+            QCoreApplication::processEvents();
+            QThread::msleep(50);
+            text = status->text();
+        }
+        const bool done = !text.contains(QStringLiteral("正在问"));
+        std::printf("INFO 用时 %lld ms\n", t.elapsed());
+        std::printf("INFO 界面状态：%s\n", text.toUtf8().constData());
+        std::printf("%s 检查更新跑完并给出了一句实话\n", done ? "PASS" : "FAIL");
+        std::printf("updatecheck: 失败 %d 项\n", done ? 0 : 1);
+        return done ? 0 : 1;
     }
 
     if (args.contains("--regscan"))
@@ -2826,6 +2990,10 @@ int main(int argc, char* argv[])
         showAction->setText(QString("显示搜索框 (%1)").arg(hotkeyLabel));
     };
     QObject::connect(menu.addAction("设置"), &QAction::triggered, &win, &SearchWindow::openSettings);
+    // 「关于」就在设置最底下那一行，托盘直接把它翻到面前（省得他在七行菜单里找）
+    QObject::connect(menu.addAction("关于"), &QAction::triggered, [&win] {
+        win.openSettingsPage(7);
+    });
     QObject::connect(menu.addAction("重新扫描"), &QAction::triggered, &win, &SearchWindow::rescan);
     // 这两项以前是直接 new 那两个工具窗（JsonTool/Base64Tool）。它们搬进 DLL 插件之后，
     // 主程序够不着那两个类了，只能走和搜索框同一条路：弹设置页 → 展开那张卡。
