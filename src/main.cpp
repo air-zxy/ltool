@@ -1,13 +1,7 @@
 #include "AppScanner.h"
 #include "AdBlocker.h"
-#include "CaptureOverlay.h"
+#include "CaptureHistory.h"
 #include "ConfigPage.h"
-#include "PinWindow.h"
-#include "OcrBundle.h"
-#include "QClipboard"
-#include "QMimeData"
-#include "QKeyEvent"
-#include "QMouseEvent"
 #include "ClipboardStore.h"
 #include "DevEnv.h"
 #include "ToolsPage.h"
@@ -25,9 +19,6 @@
 #include "Archives.h"
 #include "Pinyin.h"
 #include "ShellMenu.h"
-#include "Ocr.h"
-#include "OcrPp.h"
-#include "OcrPanel.h"
 #include "RegClean.h"
 #include "Firewall.h"
 #include "SoftwarePage.h"
@@ -293,13 +284,17 @@ int runFwProbe(const QStringList& args)
 //   None            → int()                    （disk / user 那一类，只返回失败数）
 //   Ms              → int(int)                 （--recprobe 的毫秒、--rectest/--recordui 的秒）
 //   MsAndText       → int(int, const char*)    （--memloop 的轮数 + 「宽x高」）
-// flag：非空 = 判据**自己**已经打了最后那行 "<flag>: 失败 N 项"（record 那几条旗标就是这么写的），
+//   Text            → int(const char*)         （截图那族收一个图片路径）
+// flag：非空 = 判据**自己**已经打了最后那行 "<flag>: 失败 N 项"（record / capture 那几条旗标就是这么写的），
 //        这儿不能再打一遍（同一次跑出两个失败数就没法看了）；空 = 按老样子用插件 id 补那一行。
-enum class SelftestArg { None, Ms, MsAndText };
+// badOut：非空 = 把判据返回的那个**原始失败数**带回去。--capgeo / --capflash 的退出码就是这个数
+//        （不是"有没有失败"的 0/1），调用方要在事件循环结束后拿它当进程退出码。
+enum class SelftestArg { None, Ms, MsAndText, Text };
 
 int runPluginSelftest(const QString& id, const char* symbol = "ltoolPluginSelftest",
                       SelftestArg arg = SelftestArg::None, int ms = 0,
-                      const QString& text = QString(), const char* flag = nullptr)
+                      const QString& text = QString(), const char* flag = nullptr,
+                      int* badOut = nullptr)
 {
     void* raw = PluginHost::entry(id, symbol);
     if (!raw) {
@@ -313,6 +308,8 @@ int runPluginSelftest(const QString& id, const char* symbol = "ltoolPluginSelfte
                     id.toUtf8().constData(), symbol);
         std::printf("%s: 失败 1 项\n", flag ? flag : id.toUtf8().constData());
         std::fflush(stdout);
+        if (badOut)
+            *badOut = 1;
         return 1;
     }
     int bad = 0;
@@ -326,7 +323,12 @@ int runPluginSelftest(const QString& id, const char* symbol = "ltoolPluginSelfte
     case SelftestArg::MsAndText:
         bad = reinterpret_cast<int (*)(int, const char*)>(raw)(ms, text.toUtf8().constData());
         break;
+    case SelftestArg::Text:
+        bad = reinterpret_cast<int (*)(const char*)>(raw)(text.toUtf8().constData());
+        break;
     }
+    if (badOut)
+        *badOut = bad;
     if (!flag) {
         std::printf("%s: 失败 %d 项\n", id.toUtf8().constData(), bad);
         std::fflush(stdout);
@@ -696,11 +698,11 @@ int main(int argc, char* argv[])
             if (!ok)
                 ++bad;
         };
-        // 十一个自带工具现在全是 dll 插件。这张名单是"装齐了没有"的判据：
+        // 十二个自带工具现在全是 dll 插件。这张名单是"装齐了没有"的判据：
         // 少一个就是安装包少了文件，或者那个 dll 没通过检查 —— 别让它在界面上悄悄少一张卡。
         static const char* const kTools[] = { "repair", "ads", "disk", "network", "registry",
                                               "startup", "user", "json", "base64", "shell",
-                                              "record" };
+                                              "record", "capture" };
         const QDir dir(PluginHost::pluginsDir());
         std::printf("INFO 插件目录：%s\n", dir.absolutePath().toUtf8().constData());
         const auto& metas = PluginHost::scan();
@@ -781,6 +783,20 @@ int main(int argc, char* argv[])
         // 那五条全都要真屏幕，跑起来就是十几秒外加往屏幕上贴窗口）。
         has("record 插件导出 --recq 的判据入口",
             PluginHost::entry(QStringLiteral("record"), "ltoolRecqSelftest") != nullptr);
+        // F1 那一档（2026-10-15 截图族 + OCR 族进了 plugins/capture）：路数和 F2 一样 ——
+        // 热键还注册在这层薄壳里，动作名 "capture" 必须有人在门口挂牌。
+        // 这条红了 = 按 F1 什么都没发生，而那正是这程序里最难查的一个形状。
+        check("热键动作 capture 有人接（谁）",
+              PluginHost::actionOwner(QStringLiteral("capture")), QStringLiteral("capture"));
+        // 那 12 面旗标的判据本体也全在插件里：符号点名不到 = 对应那面旗当场红（不会伪装成绿）。
+        // 这里只 resolve、一次都不跑 —— 截图/置顶窗/OCR 那些要真屏幕，还要真下 27MB 引擎。
+        static const char* const kCaptureSyms[] = {
+            "ltoolSnaprectRun", "ltoolOcrtestRun", "ltoolOcrlayoutRun", "ltoolPinpickRun",
+            "ltoolOcrchainRun", "ltoolPintoolRun", "ltoolPindelRun", "ltoolOcrgetRun",
+            "ltoolOcrpanelRun", "ltoolPinshotRun", "ltoolCapgeoRun", "ltoolCapflashRun" };
+        for (const char* s : kCaptureSyms)
+            has((QStringLiteral("capture 插件导出判据入口 ") + QLatin1String(s)).toUtf8().constData(),
+                PluginHost::entry(QStringLiteral("capture"), s) != nullptr);
         QString routedTo;
         check("invoke 一个没人接的动作 = false + 说不出是谁",
               !PluginHost::invoke(QStringLiteral("compress-lzx"), { QStringLiteral("x.zip") }, &routedTo)
@@ -821,7 +837,7 @@ int main(int argc, char* argv[])
             input->clear();
             settle();
         }
-        // 卡片墙：这十一个工具现在全靠插件目录，卡片数必须等于"通过检查的插件数"，
+        // 卡片墙：这十二个工具现在全靠插件目录，卡片数必须等于"通过检查的插件数"，
         // 而且每张卡都要能在布局里走到（数 findChild 不等于界面可见 —— 配置页那栏
         // 就是这么隐身的，2026-10-12 他报的）。这条替掉了原来那两条"内嵌槽位 0..N-1"。
         ToolsPage wall;
@@ -856,9 +872,9 @@ int main(int argc, char* argv[])
         check("卡片数 = 通过检查的插件数", QString::number(cards), QString::number(okCount));
         check("每张卡都真的摆在布局里（不是只 new 出来）", QString::number(reachable),
               QString::number(cards));
-        check("十一个工具都在卡片墙上", QString::number(cards), QStringLiteral("11"));
+        check("十二个工具都在卡片墙上", QString::number(cards), QStringLiteral("12"));
         // 卡片墙的几何：离屏 resize 之后布局会算，不用 show（show 就把设置窗拍到他桌面上）。
-        // 这条盯的是"这十一张卡摆得开吗"—— 卡片来源换成插件目录之后，这是新Shape。
+        // 这条盯的是"这十二张卡摆得开吗"—— 卡片来源换成插件目录之后，这是新Shape。
         // WA_DontShowOnScreen：走完整的 show/布局激活路径，但不往屏幕上贴一个像素、
         // 也不抢焦点。裸 resize() 不够 —— 没 show 过的顶层窗口布局根本不算，
         // 第一版就是这么量出"九张卡全在 (0,0,0,0)"，那是探针坏了不是卡片坏了。
@@ -1235,64 +1251,11 @@ int main(int argc, char* argv[])
         return 0;
     }
 
-    // --snaprect：F1 悬停吸附出来的选区到底贴不贴边（无界面、不开浮层）。
-    // 三条判据：① 吸附框必须落在 GetWindowRect 之内 —— 那条里外多出来的圈就是这次的病；
-    // ② 完整落在显示器内的窗口上，吸附框必须和 DWM 的可见边界**一模一样**；
-    // ③ 至少要有一个窗口吸附框比 GetWindowRect 紧 —— 这台机器上确实存在那圈看不见的边框，
-    //    不然 ① 是空转（两个矩形本来就相等时，什么实现都能"通过"）。
-    if (args.contains("--snaprect")) {
-        int checked = 0, fail = 0, tighter = 0;
-        for (HWND h = GetWindow(GetDesktopWindow(), GW_CHILD); h && checked < 12;
-             h = GetWindow(h, GW_HWNDNEXT)) {
-            if (!IsWindowVisible(h) || GetWindowTextLengthW(h) <= 0)
-                continue;
-            RECT raw{};
-            if (!GetWindowRect(h, &raw) || raw.right - raw.left < 60 || raw.bottom - raw.top < 40)
-                continue;
-            RECT vis{};
-            const bool haveVis =
-                SUCCEEDED(DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &vis, sizeof(vis)))
-                && vis.right > vis.left && vis.bottom > vis.top;
-            MONITORINFO mi{};
-            mi.cbSize = sizeof(mi);
-            const bool fullyOn =
-                GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi)
-                && raw.left >= mi.rcMonitor.left && raw.top >= mi.rcMonitor.top
-                && raw.right <= mi.rcMonitor.right && raw.bottom <= mi.rcMonitor.bottom;
-            const QRect own = CaptureOverlay::snapRectFor(reinterpret_cast<WId>(h));
-            const QRect rRaw(raw.left, raw.top, raw.right - raw.left, raw.bottom - raw.top);
-            const QRect rVis = haveVis ? QRect(vis.left, vis.top, vis.right - vis.left, vis.bottom - vis.top)
-                                       : QRect();
-            ++checked;
-            wchar_t name[64] = L"";
-            GetWindowTextW(h, name, 64);
-            const bool inside = !own.isNull()
-                                && own.left() >= rRaw.left() && own.top() >= rRaw.top()
-                                && own.right() <= rRaw.right() && own.bottom() <= rRaw.bottom();
-            const bool sameVisible = !haveVis || !fullyOn || own == rVis;
-            if (own != rRaw)
-                ++tighter;
-            if (!inside || !sameVisible)
-                ++fail;
-            std::printf("%s %-24s 原始=%dx%d 可见=%s 吸附=%dx%d 四周去掉的余量 左%d 上%d 右%d 下%d\n",
-                        (!inside || !sameVisible) ? "FAIL" : "ok  ",
-                        QString::fromWCharArray(name).left(20).toUtf8().constData(),
-                        rRaw.width(), rRaw.height(),
-                        haveVis ? QString("%1x%2").arg(rVis.width()).arg(rVis.height()).toUtf8().constData()
-                                : QString("拿不到").toUtf8().constData(),
-                        own.width(), own.height(),
-                        own.left() - rRaw.left(), own.top() - rRaw.top(),
-                        rRaw.right() - own.right(), rRaw.bottom() - own.bottom());
-        }
-        std::printf("snaprect: 验了 %d 个窗口，失败 %d 项；吸附框比原始矩形紧的 %d 个", checked, fail, tighter);
-        if (tighter == 0) {
-            std::printf("  ← 一个都没有，这条测试什么都没测到，判失败");
-            ++fail;
-        }
-        std::printf("\n");
-        std::fflush(stdout);
-        return fail;
-    }
+    // --snaprect：吸附框贴不贴边。判据本体在 plugins/capture（导出 ltoolSnaprectRun）。
+    if (args.contains("--snaprect"))
+        return runPluginSelftest(QStringLiteral("capture"), "ltoolSnaprectRun",
+                                 SelftestArg::None, 0, QString(), "snaprect");
+
 
     // --appdirs：配置页「应用目录」那条路（往里 N 层找 exe）的无界面回归。
     // 夹具建在沙箱数据目录里（见上面那份白名单），路径全程是绝对路径 ——
@@ -1842,260 +1805,37 @@ int main(int argc, char* argv[])
         return 0;
     }
 
-    // --ocrtest <图片>：无界面跑一遍"图里取字"，把识别结果原样打出来，用来验准确率
+    // --ocrtest <图片>：判据本体在 plugins/capture（符号 ltoolOcrtestRun）。
     if (args.contains("--ocrtest")) {
-        const QString target = args.mid(args.indexOf("--ocrtest") + 1).value(0);
-        QImage img(target);
-        if (img.isNull()) {
-            std::printf("ocrtest: 读不了这张图 %s\n", target.toUtf8().constData());
-            std::fflush(stdout);
-            return 2;
-        }
-        QElapsedTimer t;
-        t.start();
-        QString err;
-        const QString text = Ocr::recognize(img, &err);
-        std::printf("ocrtest: ms=%lld chars=%d err=%s\n--- 识别结果 ---\n%s\n",
-                    t.elapsed(), int(text.size()), err.toUtf8().constData(), text.toUtf8().constData());
-        std::fflush(stdout);
-        return err.isEmpty() ? 0 : 1;
+        const QString spec = args.mid(args.indexOf("--ocrtest") + 1).value(0);
+        return runPluginSelftest(QStringLiteral("capture"), "ltoolOcrtestRun",
+                                 SelftestArg::Text, 0, spec, "ocrtest");
     }
 
-    // --ocrlayout <图片>：把"带位置的识别"原样打出来（行框/词框/切出来的字框），
-    // 划词全靠这些坐标，所以拿一张字在已知位置的图来对一下偏了多少
+
+    // --ocrlayout <图片>：判据本体在 plugins/capture（符号 ltoolOcrlayoutRun）。
     if (args.contains("--ocrlayout")) {
-        const QString target = args.mid(args.indexOf("--ocrlayout") + 1).value(0);
-        QImage img(target);
-        if (img.isNull()) {
-            std::printf("ocrlayout: 读不了这张图 %s\n", target.toUtf8().constData());
-            std::fflush(stdout);
-            return 2;
-        }
-        QElapsedTimer t;
-        t.start();
-        QString err;
-        const QVector<Ocr::Line> lines = Ocr::recognizeLayout(img, &err);
-        std::printf("ocrlayout: img=%dx%d lines=%d ms=%lld err=%s\n",
-                    img.width(), img.height(), int(lines.size()), t.elapsed(),
-                    err.toUtf8().constData());
-        for (int i = 0; i < lines.size(); ++i) {
-            const Ocr::Line& l = lines.at(i);
-            std::printf("  L%d rect=(%d,%d %dx%d) words=%d text=%s\n", i, l.rect.x(), l.rect.y(),
-                        l.rect.width(), l.rect.height(), int(l.words.size()),
-                        l.text.toUtf8().constData());
-            for (int w = 0; w < l.words.size() && w < 6; ++w) {
-                const Ocr::Word& wd = l.words.at(w);
-                std::printf("      W%d (%d,%d %dx%d) \"%s\"\n", w, wd.rect.x(), wd.rect.y(),
-                            wd.rect.width(), wd.rect.height(), wd.text.toUtf8().constData());
-            }
-            if (i < 2) {
-                const QVector<Ocr::Cell> cs = Ocr::cells(l);
-                QString boxes;
-                for (const Ocr::Cell& c : cs)
-                    boxes += QString("[%1,%2 %3x%4]%5 ").arg(c.rect.x()).arg(c.rect.y())
-                                       .arg(c.rect.width()).arg(c.rect.height()).arg(c.ch);
-                std::printf("      cells=%d %s\n", int(cs.size()), boxes.toUtf8().constData());
-            }
-        }
-        std::fflush(stdout);
-        return err.isEmpty() ? 0 : 1;
+        const QString spec = args.mid(args.indexOf("--ocrlayout") + 1).value(0);
+        return runPluginSelftest(QStringLiteral("capture"), "ltoolOcrlayoutRun",
+                                 SelftestArg::Text, 0, spec, "ocrlayout");
     }
 
-    // --pinpick <图片>：不碰桌面，把鼠标事件直接送给置顶窗，验"图上划词"整条链
-    // （按下→拖→松手→剪贴板）。合成鼠标会抢用户的键鼠，所以这条链用送事件的方式测。
+
+    // --pinpick <图片>：判据本体在 plugins/capture（符号 ltoolPinpickRun）。
     if (args.contains("--pinpick")) {
-        const QString target = args.mid(args.indexOf("--pinpick") + 1).value(0);
-        QImage img(target);
-        if (img.isNull()) {
-            std::printf("pinpick: 读不了这张图 %s\n", target.toUtf8().constData());
-            std::fflush(stdout);
-            return 2;
-        }
-        auto* pw = new PinWindow(QPixmap::fromImage(img), QString(), false);
-        // 这条自测要往剪贴板写东西，先把用户原有的内容存下来，跑完归还
-        auto* savedClip = new QMimeData();
-        if (const QMimeData* md = QGuiApplication::clipboard()->mimeData())
-            for (const QString& fmt : md->formats())
-                savedClip->setData(fmt, md->data(fmt));
-        // 同步认完字并把划词模式开着（真按钮走的是后台线程，结果一样）
-        pw->pickProbe(QRect(100000, 100000, 1, 1));
-        QClipboard* clip = QGuiApplication::clipboard();
-        const auto clipWrite = [clip](const QString& v) {
-            for (int i = 0; i < 10; ++i) {
-                clip->setText(v);
-                QCoreApplication::processEvents();
-                if (clip->text() == v)
-                    return;
-                QThread::msleep(50);
-            }
-        };
-        const auto clipRead = [clip]() {
-            for (int i = 0; i < 10; ++i) {
-                const QString v = clip->text();
-                if (!v.isEmpty())
-                    return v;
-                QCoreApplication::processEvents();
-                QThread::msleep(50);
-            }
-            return clip->text();
-        };
-        const auto send = [pw](QEvent::Type type, const QPoint& imgPos, Qt::MouseButton btn,
-                               Qt::KeyboardModifiers mod = Qt::NoModifier, int key = 0) {
-            const QPoint wp = pw->toWidgetRect(QRect(imgPos, QSize(1, 1))).topLeft();
-            const QPoint gp = pw->mapToGlobal(wp);
-            if (key) {
-                QEvent* ev = type == QEvent::KeyPress
-                                 ? static_cast<QEvent*>(new QKeyEvent(QEvent::KeyPress, key, mod))
-                                 : static_cast<QEvent*>(new QKeyEvent(QEvent::KeyRelease, key, mod));
-                QApplication::sendEvent(pw, ev);
-                delete ev;
-                return;
-            }
-            QEvent* ev = type == QEvent::MouseButtonDblClick
-                             ? static_cast<QEvent*>(new QMouseEvent(type, QPointF(wp), QPointF(gp), btn,
-                                                                    btn, mod))
-                             : type == QEvent::MouseMove
-                             ? static_cast<QEvent*>(new QMouseEvent(type, QPointF(wp), QPointF(gp), btn,
-                                                                    Qt::LeftButton, mod))
-                             : static_cast<QEvent*>(new QMouseEvent(type, QPointF(wp), QPointF(gp), btn,
-                                                                    type == QEvent::MouseButtonPress ? btn
-                                                                                                    : Qt::NoButton,
-                                                                    mod));
-            QApplication::sendEvent(pw, ev);
-            delete ev;
-        };
-        const auto drag = [&](const QPoint& from, const QPoint& to) {
-            clipWrite(QStringLiteral("SENTINEL"));
-            send(QEvent::MouseButtonPress, from, Qt::LeftButton);
-            for (int i = 1; i <= 5; ++i)
-                send(QEvent::MouseMove, QPoint(from.x() + (to.x() - from.x()) * i / 5,
-                                               from.y() + (to.y() - from.y()) * i / 5),
-                     Qt::LeftButton);
-            send(QEvent::MouseButtonRelease, to, Qt::LeftButton);
-            return clipRead();
-        };
-        int bad = 0;
-        const auto expect = [&bad](const char* name, const QString& got, const QString& want) {
-            const bool ok = got == want;
-            if (!ok)
-                ++bad;
-            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
-                        got.toUtf8().constData(), want.toUtf8().constData());
-        };
-        // 英文词那两个用例按"引擎自己报的词框"定坐标：写死像素的话，一换引擎框的左沿就挪，
-        // 测出来的"故障"其实是坐标对不上（PP-OCRv4 给的 Search 框从 43 起，WinRT 从 45 起，
-        // 而选中的判定是字的中心要落在拖动带内，1 个像素就能差出半个字母）
-        QRect searchBox;
-        for (const Ocr::Line& l : Ocr::recognizeLayout(img))
-            for (const Ocr::Word& w : l.words)
-                if (w.text == QLatin1String("Search"))
-                    searchBox = w.rect;
-        std::printf("INFO Search 词框=%d,%d %dx%d\n", searchBox.left(), searchBox.top(),
-                    searchBox.width(), searchBox.height());
-        expect("拖半行只选带内的字", drag(QPoint(60, 35), QPoint(140, 35)),
-               QString::fromUtf8("件安装"));
-        expect("单击选整词", drag(QPoint(143, 35), QPoint(144, 36)), QString::fromUtf8("路"));
-        expect("罩住两行=两行全文", drag(QPoint(0, 20), QPoint(200, 100)),
-               QString::fromUtf8("软件安装路径\n默认搜索引擎"));
-        expect("单击英文词=整词", drag(searchBox.center(), searchBox.center() + QPoint(1, 1)),
-               QString::fromUtf8("Search"));
-        // 词内拆到字：从词框左沿起，拖到六分之五处停手，就该只要前 5 个字母（这是这次选的那档粒度）
-        expect("词内只拖到一半=半个词",
-               drag(QPoint(searchBox.left() + 1, searchBox.center().y()),
-                    QPoint(searchBox.left() + searchBox.width() * 5 / 6, searchBox.center().y())),
-               QString::fromUtf8("Searc"));
-        expect("一行里跨词要补空格", drag(QPoint(45, 130), QPoint(240, 140)),
-               QString::fromUtf8("Search Engine 123"));
-        expect("整张图都能框到", drag(QPoint(0, 0), QPoint(639, 179)),
-               QString::fromUtf8("软件安装路径\n默认搜索引擎\nSearch Engine 123"));
-        // Enter = 复制全部
-        clipWrite(QStringLiteral("SENTINEL"));
-        send(QEvent::KeyPress, QPoint(), Qt::NoButton, Qt::NoModifier, Qt::Key_Return);
-        send(QEvent::KeyRelease, QPoint(), Qt::NoButton, Qt::NoModifier, Qt::Key_Return);
-        expect("Enter 复制全部", clipRead(),
-               QString::fromUtf8("软件安装路径\n默认搜索引擎\nSearch Engine 123"));
-        // Esc 只退出划词：退出后再拖一下，不该再往剪贴板写东西
-        send(QEvent::KeyPress, QPoint(), Qt::NoButton, Qt::NoModifier, Qt::Key_Escape);
-        send(QEvent::KeyRelease, QPoint(), Qt::NoButton, Qt::NoModifier, Qt::Key_Escape);
-        clipWrite(QStringLiteral("SENTINEL"));
-        const QString afterEsc = drag(QPoint(60, 35), QPoint(140, 35));
-        expect("Esc 之后不再复制", afterEsc, QStringLiteral("SENTINEL"));
-        std::printf("pinpick: 失败 %d 项\n", bad);
-        std::fflush(stdout);
-        QGuiApplication::clipboard()->setMimeData(savedClip);   // 归还用户的剪贴板
-        delete pw;
-        return bad == 0 ? 0 : 1;
+        const QString spec = args.mid(args.indexOf("--pinpick") + 1).value(0);
+        return runPluginSelftest(QStringLiteral("capture"), "ltoolPinpickRun",
+                                 SelftestArg::Text, 0, spec, "pinpick");
     }
 
-    // --ocrchain <图片>：从"一个文件都没下"开始，验 下载 → 就绪 → 起引擎 → 认字 这条整链。
-    // APPDATA 已经挪到 %TEMP%\ltool-ocrchain（见 main() 开头），所以这条会真下 26MB、真往沙箱里写，
-    // 碰不到用户 %APPDATA%\ltool\ocr 那一份。它跑一次半分钟量级，是这套里最全的一条回归。
+
+    // --ocrchain <图片>：判据本体在 plugins/capture（符号 ltoolOcrchainRun）。
     if (args.contains("--ocrchain")) {
-        const QString target = args.mid(args.indexOf("--ocrchain") + 1).value(0);
-        const QImage img(target);
-        int bad = 0;
-        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
-            const bool ok = got == want;
-            if (!ok)
-                ++bad;
-            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
-                        got.toUtf8().constData(), want.toUtf8().constData());
-        };
-        check("沙箱是干净的（引擎不在）", OcrBundle::status().present ? "yes" : "no", "no");
-        QString why;
-        check("available 说的是要下载",
-              (!Ocr::available(&why) && why.contains(QStringLiteral("下载"))) ? "yes" : "no", "yes");
-        QString lerr;
-        check("没引擎时 OcrPp 不硬跑", OcrPp::load(&lerr) ? "yes" : "no", "no");
-
-        QObject ctx;
-        QVector<int> marks;
-        bool done = false, okFetch = false, secondDone = false, secondOk = true;
-        QString ferr, secondErr;
-        OcrBundle::fetchLater(&ctx, [&marks](int pct, const QString&) { marks.push_back(pct); },
-                              [&](bool ok, const QString& err, const QString&) {
-                                  done = true;
-                                  okFetch = ok;
-                                  ferr = err;
-                              });
-        OcrBundle::fetchLater(&ctx, nullptr, [&](bool ok, const QString& err, const QString&) {
-            secondDone = true;
-            secondOk = ok;
-            secondErr = err;
-        });
-        QElapsedTimer wall;
-        wall.start();
-        while (!done && wall.elapsed() < 300000) {
-            QCoreApplication::processEvents();
-            QThread::msleep(20);
-        }
-        check("下载中再要一次不会重开一个",
-              (secondDone && !secondOk && secondErr.contains(QStringLiteral("正在下载"))) ? "yes" : "no",
-              "yes");
-        check("下载跑完了", done ? "yes" : "no", "yes");
-        check("下载成功", okFetch ? "yes" : "no", "yes");
-        std::printf("INFO 进度报了 %d 次，err=%s，用了 %llds\n", int(marks.size()),
-                    ferr.toUtf8().constData(), long long(wall.elapsed() / 1000));
-        int regress = 0;
-        for (int i = 1; i < marks.size(); ++i) {
-            if (marks[i] < marks[i - 1])
-                ++regress;
-        }
-        check("进度只朝前（回退会被当成坏了）", regress == 0 ? "yes" : "no", "yes");
-        check("进度最后到 100%",
-              marks.isEmpty() ? QStringLiteral("none") : QString::number(marks.last()),
-              QStringLiteral("100"));
-        check("下完的文件齐了", OcrBundle::status().present ? "yes" : "no", "yes");
-        QString rerr;
-        const QString text = Ocr::recognize(img, &rerr);
-        std::printf("INFO 认出来：[%s] err=%s\n", text.toUtf8().constData(),
-                    rerr.toUtf8().constData());
-        check("下完直接就能认字", text,
-              QString::fromUtf8("软件安装路径\n默认搜索引擎\nSearch Engine 123"));
-        std::printf("ocrchain: 失败 %d 项\n", bad);
-        std::fflush(stdout);
-        return bad == 0 ? 0 : 1;
+        const QString spec = args.mid(args.indexOf("--ocrchain") + 1).value(0);
+        return runPluginSelftest(QStringLiteral("capture"), "ltoolOcrchainRun",
+                                 SelftestArg::Text, 0, spec, "ocrchain");
     }
+
 
     // --memloop [轮数] [宽x高]：内存这事只能量，不能猜。每轮做一遍"解压一个压不动的 32MB 包"
     // + "录一段指定尺寸的窗口"，每一步采 私有字节/工作集/句柄数。
@@ -2123,6 +1863,10 @@ int main(int argc, char* argv[])
                         got.toUtf8().constData(), want.toUtf8().constData());
         };
         const QString defCap = QCoreApplication::applicationDirPath() + "/captures";
+        // 先记一份"开跑之前存不存在"：这条要判的是**这一问有没有把目录建出来**，不是"它在不在"。
+        // 装在软件目录里那份 captures 本来就有用户真实的截图（本机 D:\software\ltool\captures 就是），
+        // 拿"存在=no"去断言，对着安装包跑就会红一项（2026-10-15 实测：build 那份绿、装出来的那份红）。
+        const bool defCapBefore = QFileInfo::exists(defCap);
         check("没配置时截图存到软件目录下（不是 C 盘）", Utils::capturesDir() == defCap ? "yes" : "no", "yes");
         check("没配置时录像存到软件目录下",
               Utils::recordingsDir() == QCoreApplication::applicationDirPath() + "/recordings" ? "yes" : "no",
@@ -2146,7 +1890,7 @@ int main(int argc, char* argv[])
         std::printf("INFO 往期的 key=%s\n", key.toUtf8().constData());
         check("新截图真的写进新目录", QFile::exists(newCap + "/" + key) ? "yes" : "no", "yes");
         check("光问一句不该把软件目录下的 captures 建出来（构建目录会被安装包收走）",
-              QFileInfo::exists(defCap) ? "yes" : "no", "no");
+              QFileInfo::exists(defCap) == defCapBefore ? "same" : "created", "same");
 
         CaptureHistory::reload();
         check("重载往期：还是那一张", CaptureHistory::count() == 1 ? "yes" : "no", "yes");
@@ -2167,166 +1911,25 @@ int main(int argc, char* argv[])
         return bad == 0 ? 0 : 1;
     }
 
-    // --pintool：离屏验置顶窗那两个"收起"开关（不显示窗口、不在你桌面上闪）。
-    // 核心断言只有一件事：收起工具栏 / 收起往期带之后，**图区的尺寸必须一模一样**，
-    // 变的是窗口尺寸；反过来放回去要回到原值。APPDATA 挪到临时目录（会往 captures 写一张）。
-    if (args.contains("--pintool")) {
-        int bad = 0;
-        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
-            const bool ok = got == want;
-            if (!ok)
-                ++bad;
-            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
-                        got.toUtf8().constData(), want.toUtf8().constData());
-        };
-        QPixmap pm(320, 200);
-        pm.fill(QColor(90, 140, 200));
-        const QString key = CaptureHistory::add(pm);
-        check("先造一张往期", key.isEmpty() ? "empty" : "ok", "ok");
-        const auto rectStr = [](const QRect& r) {
-            return QStringLiteral("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
-        };
-        const auto sizeStr = [](const QSize& s) { return QStringLiteral("%1x%2").arg(s.width()).arg(s.height()); };
-        PinWindow pw(pm, key, false);
-        // 默认就是"两样都收起"：刚截完看到的应该是一张干净的图。
-        check("默认两样都收起", (pw.barHidden() && pw.stripHidden()) ? "yes" : "no", "yes");
-        check("默认收起时点左上角不命中缩略图", QString::number(pw.probeThumbAt(QPoint(10, 10))), "-1");
-        const QSize hidden0 = pw.size();
-        const QString shots = QDir::tempPath() + "/ltool-pintool";
-        QDir().mkpath(shots);
-        pw.grab().save(shots + "/c_default.png");   // 用户每次截完图看到的就是这张
-        // 从默认状态把两样放出来。以前默认就是展开，这条路径不存在；现在它是用户第一次
-        // 右键「显示工具栏」走的那条 —— "展开时该多大"必须在建窗时就记好，不然回不去。
-        pw.setBarHidden(false);
-        pw.setStripHidden(false);
-        const QRect r0 = pw.probeImageRect();
-        const QSize s0 = pw.size();
-        const int strip0 = pw.stripW();      // 用实例问出来的宽度，不去碰私有常量
-        const int bar0 = pw.barH();
-        std::printf("INFO 初始：窗口 %s，图区 %s，带宽 %d，栏高 %d\n",
-                    sizeStr(s0).toUtf8().constData(), rectStr(r0).toUtf8().constData(), strip0, bar0);
-        check("从默认收起放出两样：图区就是那张图", sizeStr(r0.size()), QStringLiteral("320x200"));
-        check("从默认收起放出两样：高出一个栏高",
-              QString::number(s0.height() - hidden0.height()), QString::number(bar0));
-        check("现在两样都开着", (pw.barHidden() || pw.stripHidden()) ? "yes" : "no", "no");
+    // --pintool：离屏验置顶窗那两个"收起"开关。判据本体在 plugins/capture。
+    if (args.contains("--pintool"))
+        return runPluginSelftest(QStringLiteral("capture"), "ltoolPintoolRun",
+                                 SelftestArg::None, 0, QString(), "pintool");
 
-        pw.setBarHidden(true);
-        check("收起工具栏：窗口矮了一个栏高", QString::number(pw.size().height()),
-              QString::number(s0.height() - bar0));
-        check("收起工具栏：图区尺寸没变", sizeStr(pw.probeImageRect().size()), sizeStr(r0.size()));
-        check("收起工具栏：窗口抱住图，不留左右黑边", QString::number(pw.size().width()),
-              QString::number(strip0 + r0.width()));
-        pw.setBarHidden(false);
-        check("放出工具栏：窗口回到原尺寸", sizeStr(pw.size()), sizeStr(s0));
-        check("放出工具栏：图区还是那个图区", rectStr(pw.probeImageRect()), rectStr(r0));
 
-        check("收起之前点左上角会命中第 0 张", QString::number(pw.probeThumbAt(QPoint(10, 10))), "0");
-        pw.setStripHidden(true);
-        // 注意这里不能要求"正好窄 76"：窗口的最小宽度是工具栏那一排按钮撑出来的
-        //（这张 320px 宽的图，窗口最小就要 612），收起往期带时缩不到最小值以下。
-        // 正确的不变量是：不宽于原来、不低于最小值、图区尺寸一点不动。
-        check("收起往期带：窗口不宽于原来", pw.size().width() <= s0.width() ? "yes" : "no", "yes");
-        check("收起往期带：不低于最小宽度",
-              pw.size().width() >= pw.minimumWidth() ? "yes" : "no", "yes");
-        check("收起往期带：图区尺寸没变", sizeStr(pw.probeImageRect().size()), sizeStr(r0.size()));
-        check("收起往期带：点左上角不再命中缩略图", QString::number(pw.probeThumbAt(QPoint(10, 10))),
-              "-1");
-        pw.setStripHidden(false);
-        check("放出往期带：窗口回到原尺寸", sizeStr(pw.size()), sizeStr(s0));
-        check("放出往期带：又命中第 0 张", QString::number(pw.probeThumbAt(QPoint(10, 10))), "0");
-        // 离屏抓两张图自己看一眼（不显示窗口、不在你桌面上闪）：一张正常、一张两样都收起
-        pw.grab().save(shots + "/a_normal.png");
-        pw.setBarHidden(true);
-        pw.setStripHidden(true);
-        check("两样都收起：窗口正好等于图本身", sizeStr(pw.size()), sizeStr(r0.size()));
-        pw.grab().save(shots + "/b_hidden.png");
-        // 最容易被写坏的一步：两个开关叠着用之后再依次放开。
-        // 收起工具栏时"记住的原尺寸"是在往期带还开着的时候记的，中间往期带又收过一次，
-        // 放开时必须还是回到最初那个尺寸 —— 不然来回点几下窗口就越走越歪（这一条抓到过真 bug）。
-        pw.setStripHidden(false);
-        pw.setBarHidden(false);
-        check("叠用之后再放开：窗口回到原尺寸", sizeStr(pw.size()), sizeStr(s0));
-        check("叠用之后再放开：图区还是那个图区", rectStr(pw.probeImageRect()), rectStr(r0));
-        check("叠用之后再放开：又命中第 0 张", QString::number(pw.probeThumbAt(QPoint(10, 10))), "0");
-        check("叠用之后再放开：两个开关都回到开", (pw.barHidden() || pw.stripHidden()) ? "yes" : "no", "no");
-        std::printf("INFO 离屏抓图：%s/a_normal.png 与 b_hidden.png\n", shots.toUtf8().constData());
-        QFile::remove(Utils::capturesDir() + "/" + key);
-        std::printf("pintool: 失败 %d 项\n", bad);
-        std::fflush(stdout);
-        return bad == 0 ? 0 : 1;
-    }
-
-    // --pindel <图片>：无界面验"右键缩略图删除"。这张图只用来给置顶窗当初始内容，
-    // 往期是现场造的三张纯色图，删的是临时目录里的文件，碰不到用户真实的 captures。
+    // --pindel <图片>：判据本体在 plugins/capture（符号 ltoolPindelRun）。
     if (args.contains("--pindel")) {
-        const QImage img(args.mid(args.indexOf("--pindel") + 1).value(0));
-        if (img.isNull()) {
-            std::printf("pindel: 读不了这张图\n");
-            std::fflush(stdout);
-            return 2;
-        }
-        int bad = 0;
-        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
-            const bool ok = got == want;
-            if (!ok)
-                ++bad;
-            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
-                        got.toUtf8().constData(), want.toUtf8().constData());
-        };
-        QPixmap old3(100, 100); old3.fill(QColor(220, 30, 30));
-        QPixmap old2(100, 100); old2.fill(QColor(30, 200, 30));
-        QPixmap old1(100, 100); old1.fill(QColor(30, 60, 220));
-        const QString k3 = CaptureHistory::add(old3);   // add 是 prepend：列表顺序 = old1, old2, old3
-        const QString k2 = CaptureHistory::add(old2);
-        const QString k1 = CaptureHistory::add(old1);
-        const QString capDir = Utils::capturesDir();
-        auto* pw = new PinWindow(old1, k1, false);
-        check("起点：往期 3 张", QString::number(CaptureHistory::count()), "3");
-        // 删中间那张（不是当前显示的）：当前不动，文件要没了
-        check("删中间那张后当前还是原图", pw->deleteThumb(1), k1);
-        check("往期剩 2 张", QString::number(CaptureHistory::count()), "2");
-        check("被删的文件落盘也没了", QFile::exists(capDir + "/" + k2) ? "yes" : "no", "no");
-        check("剩下的第 2 张是那张旧的", CaptureHistory::at(1).key, k3);
-        // 删当前这张：应该自动挪到邻居，图上画的也该换了
-        check("删当前那张=挪到邻居", pw->deleteThumb(0), k3);
-        {
-            const QImage shot = pw->grab().toImage();
-            int r = 0, g = 0, b = 0;
-            for (int y = 0; y < shot.height(); ++y)
-                for (int x = 76; x < shot.width(); ++x) {
-                    const QColor c = shot.pixelColor(x, y);
-                    if (c.red() > 150 && c.green() < 100) ++r;
-                    else if (c.green() > 150 && c.red() < 100) ++g;
-                    else if (c.blue() > 150 && c.red() < 100) ++b;
-                }
-            // 剩下的那张是 old3（红）：窗口里画的得是它，不能还是被删掉的蓝
-            check("窗口里画的是剩下那张(红)", QString::number(r > g && r > b ? 1 : 0), "1");
-        }
-        // 删最后一张：往期空了，图还显示着，但 key 已经没有去处了
-        check("删掉最后一张后 key 空", pw->deleteThumb(0), QString());
-        check("往期 0 张", QString::number(CaptureHistory::count()), "0");
-        check("越界删除不炸", pw->deleteThumb(7), QString());
-        std::printf("pindel: 失败 %d 项\n", bad);
-        std::fflush(stdout);
-        delete pw;
-        return bad == 0 ? 0 : 1;
+        const QString spec = args.mid(args.indexOf("--pindel") + 1).value(0);
+        return runPluginSelftest(QStringLiteral("capture"), "ltoolPindelRun",
+                                 SelftestArg::Text, 0, spec, "pindel");
     }
 
-    // --ocrget：下载 OCR 引擎（PaddleOCR PP-OCRv4 + ONNX Runtime，27.9MB）并校验/解包。
-    // 有界面入口走的也是这套代码，所以这条跑通就说明"新机器没装中文语言包也能用"这件事成立。
-    if (args.contains("--ocrget")) {
-        std::printf("目标：%s\n", OcrBundle::describe().toUtf8().constData());
-        std::fflush(stdout);
-        QString err;
-        const bool ok = OcrBundle::fetchSync(&err,
-            [](int pct, const QString& s) { std::printf("  %3d%% %s\n", pct, s.toUtf8().constData()); std::fflush(stdout); });
-        const OcrBundle::Files f = OcrBundle::status();
-        std::printf("ocrget: ok=%d err=%s\n  det=%lld KB rec=%lld KB ort=%lld KB\n", ok ? 1 : 0,
-                    err.toUtf8().constData(), QFileInfo(f.det).size() / 1024,
-                    QFileInfo(f.rec).size() / 1024, QFileInfo(f.onnxruntime).size() / 1024);
-        std::fflush(stdout);
-        return ok ? 0 : 1;
-    }
+
+    // --ocrget：下载并校验 OCR 引擎包。判据本体在 plugins/capture。
+    if (args.contains("--ocrget"))
+        return runPluginSelftest(QStringLiteral("capture"), "ltoolOcrgetRun",
+                                 SelftestArg::None, 0, QString(), "ocrget");
+
 
     // --recprobe [观察毫秒]：录屏之前先量机器（有没有 H.264/AAC 编码器、MP4 写得出吗、
     // Win11 的按窗口取帧能不能用、一帧拷到 CPU 要多久）。会弹一个自己的小窗动 1 秒多，
@@ -2371,48 +1974,21 @@ int main(int argc, char* argv[])
                                  SelftestArg::Ms, secs, QString(), "recordui");
     }
 
-    // --ocrpanel <图片>：把"提取文字"结果窗真开一次（不经过截图遮罩），用来验识别→回填这条链
+    // --ocrpanel <图片>：判据本体在 plugins/capture（符号 ltoolOcrpanelRun）。
     if (args.contains("--ocrpanel")) {
-        const QString target = args.mid(args.indexOf("--ocrpanel") + 1).value(0);
-        QImage img(target);
-        if (img.isNull()) {
-            std::printf("ocrpanel: 读不了这张图 %s\n", target.toUtf8().constData());
-            std::fflush(stdout);
-            return 2;
-        }
-        OcrPanel::extractFrom(img);
-        auto* tick = new QTimer(&app);
-        tick->setInterval(300);
-        QObject::connect(tick, &QTimer::timeout, &app, [&app] {
-            if (app.topLevelWidgets().isEmpty())
-                app.quit();
-        });
-        tick->start();
-        const int rc = app.exec();
-        std::printf("ocrpanel: 窗口已关闭\n");
-        std::fflush(stdout);
-        return rc;
+        const QString spec = args.mid(args.indexOf("--ocrpanel") + 1).value(0);
+        return runPluginSelftest(QStringLiteral("capture"), "ltoolOcrpanelRun",
+                                 SelftestArg::Text, 0, spec, "ocrpanel");
     }
 
-    // --pinshot <图片>：用这张图开一个置顶截图窗（验标注对象的选中/拖动/缩放/删除）
+
+    // --pinshot <图片>：判据本体在 plugins/capture（符号 ltoolPinshotRun）。
     if (args.contains("--pinshot")) {
-        const QString target = args.mid(args.indexOf("--pinshot") + 1).value(0);
-        const QPixmap pm(target);
-        if (pm.isNull()) {
-            std::printf("pinshot: 读不了这张图 %s\n", target.toUtf8().constData());
-            std::fflush(stdout);
-            return 2;
-        }
-        auto* w = new PinWindow(pm, CaptureHistory::add(pm));
-        QObject::connect(w, &QObject::destroyed, &app, [&app] {
-            if (app.topLevelWidgets().isEmpty())
-                app.quit();
-        });
-        const int rc = app.exec();
-        std::printf("pinshot: 窗口已关闭\n");
-        std::fflush(stdout);
-        return rc;
+        const QString spec = args.mid(args.indexOf("--pinshot") + 1).value(0);
+        return runPluginSelftest(QStringLiteral("capture"), "ltoolPinshotRun",
+                                 SelftestArg::Text, 0, spec, "pinshot");
     }
+
 
     // --shredtest <路径> yes：不弹界面直接跑一遍粉碎，用来验证覆写真的发生。
     // 必须带 "yes"，否则只报告目标信息不动手。
@@ -2507,27 +2083,33 @@ int main(int argc, char* argv[])
         }
     });
 
+    // 热键背后那个插件动作没人接的时候怎么说：日志（事后能查）+ 托盘气泡（当下能看见）+
+    // stderr（从命令行起着的时候能看见），**三层都说、绝不弹模态框** ——
+    // 那会盖在用户正做的事情上面（2026-10-15 右键那一路就是这么被他撞上的）。
+    // who 空 = 根本没插件声明接这个动作；非空 = 它接了但没干成（那一份插件自己会说明为什么）。
+    const auto routeHotkey = [&](const QString& keyLabel, const QString& action) {
+        QString who;
+        if (PluginHost::invoke(action, {}, &who))
+            return;
+        const QString why = who.isEmpty()
+            ? QStringLiteral("没装接 %1 这个动作的插件（ltool-plugins 里是不是缺 ltool-%2.dll）")
+                  .arg(action, action)
+            : QStringLiteral("%1 接了但没干成").arg(who);
+        Utils::log(QStringLiteral("%1 没人接：%2").arg(keyLabel, why));
+        std::fprintf(stderr, "%s: %s\n", keyLabel.toUtf8().constData(), why.toUtf8().constData());
+        std::fflush(stderr);
+        if (trayPtr)
+            trayPtr->showMessage(keyLabel, why, QSystemTrayIcon::Warning, 5000);
+    };
+
+    // F1 = 截图（本体在 plugins/capture，2026-10-15 搬过去的）、F2 = 录屏（plugins/record）：
+    // 这层壳只把热键编号翻译成动作名递过去。注册仍然在这里 —— 主程序必须是那个还能起得来的薄壳。
     HotkeyFilter filter([&](WPARAM id) {
         if (id == kCaptureId)
-            CaptureOverlay::start();
-        else if (id == kRecordId) {
-            // F2 录屏：本体在 plugins/record（2026-10-15 搬过去的），这层壳只把动作名递过去。
-            // **没人接的时候绝不弹模态框** —— 那会盖在用户正做的事情上面（2026-10-15 右键那一路
-            // 就是这么被他撞上的）。说实话分三层：日志（事后能查）、托盘气泡（当下能看见）、
-            // stderr（从命令行起着的时候能看见）。谁 空 = 根本没插件声明接这个动作。
-            QString who;
-            if (!PluginHost::invoke(QStringLiteral("record"), {}, &who)) {
-                const QString why = who.isEmpty()
-                    ? QStringLiteral("没装接 record 这个动作的插件（ltool-plugins 里是不是缺 ltool-record.dll）")
-                    : QStringLiteral("%1 接了但没干成").arg(who);
-                Utils::log(QStringLiteral("F2 没人接：%1").arg(why));
-                std::fprintf(stderr, "F2 record: %s\n", why.toUtf8().constData());
-                std::fflush(stderr);
-                if (trayPtr)
-                    trayPtr->showMessage(QStringLiteral("F2 录屏"), why,
-                                         QSystemTrayIcon::Warning, 5000);
-            }
-        } else
+            routeHotkey(QStringLiteral("F1 截图"), QStringLiteral("capture"));
+        else if (id == kRecordId)
+            routeHotkey(QStringLiteral("F2 录屏"), QStringLiteral("record"));
+        else
             win.toggleVisible();
     });
     app.installNativeEventFilter(&filter);
@@ -2851,178 +2433,24 @@ int main(int argc, char* argv[])
         });
     }
 
-    // --capgeo：把"缩放不是 100% 时截全屏"这条链路的几何一次量清楚，**不开浮层、不动系统设置**。
-    // 造环境靠 QT_SCALE_FACTOR=1.5（Qt 自己的缩放因子，效果就是逻辑/物理两套坐标错开，
-    // 和他把 Windows 缩放调到 150% 走的是同一段代码）。量四件事：
-    //   ① 抓到的整屏图：物理尺寸 == 屏幕逻辑尺寸 × DPR（截的就是全屏，没少一块）
-    //   ② rendered() 那一步的裁剪：在带 DPR 的画布上按**逻辑选区**裁全屏，
-    //      出来的物理尺寸必须还是整块屏 —— 这条就是"截不全"的判据
-    //   ③ 裁完 DPR 还在（丢了就会被当 100% 显示，等于白截）
-    //   ④ 把逻辑点换算成物理点那一步（悬停吸附用的）在多屏偏移下对不对
-    // 造不出真缩放（不动他的系统设置），所以两条一起跑：
-    //   · 真屏：抓的图物理尺寸 == 屏幕逻辑尺寸 × DPR（配合 QT_SCALE_FACTOR=1.5 起进程用）
-    //   · 合成画布：自造一张 DPR=1.5 的"1000x600 逻辑 / 1500x900 物理"的图，直接问产品函数
-    //     CaptureOverlay::cropCanvas —— 这条**不依赖他当前缩放是多少**，100% 的机器上也能
-    //     把"截不全全屏"这个错抓出来（改之前它就是红的）。
-    // 另外探一下 QPainter::drawPixmap 的 sourceRect 按哪种坐标解释 —— 浮层"选区亮起"那一步
-    // 用的就是它，答错了一截就是预览和成品对不上。
+    // --capgeo / --capflash：判据本体在 plugins/capture（ltoolCapgeoRun / ltoolCapflashRun），
+    // 但这两条**必须留在单实例守卫之后**：浮层要在事件循环里真开出来才算数。
+    // 延一拍再跑是原来的行为（窗口刚建好那一下屏幕还在动，量出来的几何不作数）。
     int capGeoBad = 0;
+    int capFlashBad = 0;
     if (args.contains("--capgeo")) {
         QTimer::singleShot(80, &app, [&app, &capGeoBad] {
-            const auto check = [&capGeoBad](const char* what, bool ok, const QString& got) {
-                std::printf("%s %s：%s\n", ok ? "ok  " : "FAIL", what, got.toUtf8().constData());
-                if (!ok)
-                    ++capGeoBad;
-                std::fflush(stdout);
-            };
-            QScreen* scr = QGuiApplication::primaryScreen();
-            const qreal dpr = scr->devicePixelRatio();
-            const QSize log = scr->geometry().size();
-            const QPixmap shot = scr->grabWindow(0);
-            std::printf("INFO 屏幕逻辑=%dx%d DPR=%.2f 抓取物理=%dx%d(图上 DPR=%.2f)\n",
-                        log.width(), log.height(), dpr, shot.width(), shot.height(),
-                        shot.devicePixelRatio());
-            const int wantW = int(log.width() * dpr + 0.5);
-            const int wantH = int(log.height() * dpr + 0.5);
-            check("抓的图铺满整块屏（物理=逻辑×DPR）",
-                  qAbs(shot.width() - wantW) <= 2 && qAbs(shot.height() - wantH) <= 2,
-                  QStringLiteral("期望 %1x%2，拿到 %3x%4").arg(wantW).arg(wantH)
-                      .arg(shot.width()).arg(shot.height()));
-            const QPixmap full = CaptureOverlay::cropCanvas(shot, QRect(QPoint(0, 0), log));
-            check("产品那条裁剪路：逻辑选区裁全屏，出来的还是整块屏",
-                  qAbs(full.width() - wantW) <= 2 && qAbs(full.height() - wantH) <= 2,
-                  QStringLiteral("选区=%1x%2(逻辑) 裁完=%3x%4(物理)，差 %5x%6")
-                      .arg(log.width()).arg(log.height())
-                      .arg(full.width()).arg(full.height())
-                      .arg(wantW - full.width()).arg(wantH - full.height()));
-
-            // ---- 合成 DPR=1.5 的画布（和真屏缩放无关，100% 的机器上照样能抓到这个错） ----
-            constexpr qreal kDpr = 1.5;
-            const QSize kLog(1000, 600);
-            const QSize kPhys(int(kLog.width() * kDpr), int(kLog.height() * kDpr));   // 1500x900
-            auto makeCanvas = [&]() {
-                QPixmap pm(kPhys.width(), kPhys.height());
-                pm.fill(Qt::white);
-                QPainter q(&pm);
-                q.fillRect(kPhys.width() - 1, kPhys.height() - 1, 1, 1, Qt::black);
-                q.fillRect(300, 150, 1, 1, QColor(255, 0, 0));   // 设备 (300,150) = 逻辑 (200,100)
-                q.end();
-                pm.setDevicePixelRatio(kDpr);                     // 现在它的逻辑尺寸是 1000x600
-                return pm;
-            };
-            const QPixmap whole = CaptureOverlay::cropCanvas(makeCanvas(), QRect(QPoint(0, 0), kLog));
-            check("合成 1.5 倍画布上裁全屏：尺寸=物理全幅",
-                  whole.size() == kPhys,
-                  QStringLiteral("期望 %1x%2，拿到 %3x%4（少了 %5x%6）")
-                      .arg(kPhys.width()).arg(kPhys.height()).arg(whole.width()).arg(whole.height())
-                      .arg(kPhys.width() - whole.width()).arg(kPhys.height() - whole.height()));
-            check("合成 1.5 倍画布上裁全屏：右下角那颗点还在",
-                  qAbs(whole.devicePixelRatio() - kDpr) < 0.01
-                      && whole.toImage().pixelColor(kPhys.width() - 1, kPhys.height() - 1) == QColor(Qt::black),
-                  QStringLiteral("图上 DPR=%1，右下角=%2")
-                      .arg(whole.devicePixelRatio())
-                      .arg(whole.toImage().pixelColor(kPhys.width() - 1, kPhys.height() - 1).name()));
-            // 局部选区：逻辑 (200,100) 起 = 设备 (300,150)，那颗红点必须正好落到裁出来那张图的左上角
-            const QRect part(200, 100, 400, 200);
-            const QPixmap piece = CaptureOverlay::cropCanvas(makeCanvas(), part);
-            check("合成画布上裁局部：取到的就是那块（红点跑到左上角）",
-                  piece.toImage().pixelColor(0, 0) == QColor(255, 0, 0),
-                  QStringLiteral("选区=(%1,%2,%3x%4) 左上角像素=%5，裁完尺寸=%6x%7")
-                      .arg(part.x()).arg(part.y()).arg(part.width()).arg(part.height())
-                      .arg(piece.toImage().pixelColor(0, 0).name())
-                      .arg(piece.width()).arg(piece.height()));
-
-            // ---- QPainter::drawPixmap 的 sourceRect 按哪种坐标解释（浮层"选区亮起"用的就是它） ----
-            const QPixmap canvas = makeCanvas();
-            QImage sink(kPhys, QImage::Format_ARGB32);
-            sink.fill(Qt::red);
-            {
-                QPainter q(&sink);
-                q.drawPixmap(QRect(QPoint(0, 0), kPhys), canvas, QRect(QPoint(0, 0), kLog));
-            }
-            const QColor rawCorner = sink.pixelColor(kPhys.width() - 1, kPhys.height() - 1);
-            std::printf("INFO 直接把逻辑矩形当 sourceRect：目标右下角=%s，说明 Qt 把它当%s看的\n",
-                        rawCorner.name().toUtf8().constData(),
-                        rawCorner == QColor(Qt::black) ? "逻辑坐标" : "设备像素");
-            QImage fixed(kPhys, QImage::Format_ARGB32);
-            fixed.fill(Qt::red);
-            {
-                QPainter q(&fixed);
-                q.drawPixmap(QRect(QPoint(0, 0), kPhys), canvas,
-                             CaptureOverlay::deviceRectFor(QRect(QPoint(0, 0), kLog), kDpr));
-            }
-            check("预览那一步换算之后取到的才是整块画布",
-                  fixed.pixelColor(kPhys.width() - 1, kPhys.height() - 1) == QColor(Qt::black),
-                  QStringLiteral("换算后右下角=%1").arg(
-                      fixed.pixelColor(kPhys.width() - 1, kPhys.height() - 1).name()));
-            const QRect keep = CaptureOverlay::deviceRectFor(QRect(7, 9, 120, 60), 1.0);
-            check("dpr=1 时换算原样返回（100% 缩放下的行为一点没动）",
-                  keep == QRect(7, 9, 120, 60),
-                  QStringLiteral("(%1,%2,%3x%4)").arg(keep.x()).arg(keep.y())
-                      .arg(keep.width()).arg(keep.height()));
-            std::printf("capgeo: 失败 %d 项\n", capGeoBad);
-            std::fflush(stdout);
+            runPluginSelftest(QStringLiteral("capture"), "ltoolCapgeoRun",
+                              SelftestArg::None, 0, QString(), "capgeo", &capGeoBad);
             app.quit();
         });
     }
-
-    // --capflash [次]：把"按 F1 到底有没有反应"变成可量数的东西。直接调 start()（不注入键盘，
-    // 注入 F1 等于把全屏浮层压在用户屏幕上还不一定收得掉），量三件事：浮层存在且铺满整屏、
-    // 它是当前前台窗口、鼠标底下那个窗口就是它（别的程序自己也 topmost 时会被压住）。
-    // 每次开完立刻走和 Esc 一模一样的取消路径，屏幕只会亮不到半秒。要冷启动跑。
-    int capFlashOk = 0;
-    int capFlashTimes = 0;
     if (args.contains("--capflash")) {
         const QString nArg = args.mid(args.indexOf("--capflash") + 1).value(0);
         const int times = nArg.isEmpty() ? 2 : qBound(1, nArg.toInt(), 5);
-        capFlashTimes = times;
-        QTimer::singleShot(500, &app, [&app, times, &capFlashOk] {
-            for (int i = 1; i <= times; ++i) {
-                CaptureOverlay::start();
-                for (int k = 0; k < 20; ++k) {
-                    QCoreApplication::processEvents();
-                    QThread::msleep(20);
-                }
-                QWidget* ov = nullptr;
-                for (QWidget* w : QApplication::topLevelWidgets())
-                    if (w->inherits("CaptureOverlay") && w->isVisible())
-                        ov = w;
-                const QRect scr = QGuiApplication::primaryScreen()->geometry();
-                const bool full = ov && ov->geometry() == scr;
-                HWND hwnd = ov ? reinterpret_cast<HWND>(ov->winId()) : nullptr;
-                const bool fg = hwnd && GetForegroundWindow() == hwnd;
-                POINT pt {};
-                GetCursorPos(&pt);
-                const bool onTop = hwnd && GetAncestor(WindowFromPoint(pt), GA_ROOT) == hwnd;
-                // 判据只用确定性的三件事（浮层在、铺满整屏、鼠标底下就是它）。
-                // "有没有拿到前台"在这里不当判据：脚本环境里前台归属本来就不稳
-                //（同一环境下 --toggle 也会 10 次输 1 次），真实按 F1 有物理输入垫底，
-                // 那一支由产品日志里的 前台=/试了N次 说话。
-                const bool good = ov && full && onTop;
-                const quint64 ex = hwnd ? quint64(GetWindowLongPtrW(hwnd, GWL_EXSTYLE)) : 0;
-                std::printf("%s 第%d次：浮层=%s 铺满整屏=%s 在最上=%s 前台=%s（屏 %dx%d）exstyle=0x%llX fg=0x%llX 自己=0x%llX\n",
-                            good ? "PASS" : "FAIL", i,
-                            ov ? "在" : "没有", full ? "是" : "否",
-                            onTop ? "是" : "否", fg ? "是" : "否", scr.width(), scr.height(),
-                            (unsigned long long)ex,
-                            (unsigned long long)(quintptr)GetForegroundWindow(),
-                            (unsigned long long)(quintptr)hwnd);
-                if (good)
-                    ++capFlashOk;
-                CaptureOverlay::cancelActive();
-                for (int k = 0; k < 25 && CaptureOverlay::isActive(); ++k) {
-                    QCoreApplication::processEvents();
-                    QThread::msleep(20);
-                }
-                if (CaptureOverlay::isActive()) {
-                    std::printf("FAIL 第%d次：取消之后浮层还开着\n", i);
-                } else {
-                    std::printf("INFO 第%d次：取消干净了\n", i);
-                }
-                std::fflush(stdout);
-            }
-            std::printf("capflash: %d/%d 次做到了\"浮层在、铺满整屏、压在所有窗口最上\"\n",
-                        capFlashOk, times);
+        QTimer::singleShot(500, &app, [&app, times, &capFlashBad] {
+            runPluginSelftest(QStringLiteral("capture"), "ltoolCapflashRun",
+                              SelftestArg::Ms, times, QString(), "capflash", &capFlashBad);
             app.quit();
         });
     }
@@ -3032,7 +2460,9 @@ int main(int argc, char* argv[])
     const int rc = app.exec();
     if (args.contains("--toggle"))
         return toggleBad;
+    if (args.contains("--capgeo"))
+        return capGeoBad;
     if (args.contains("--capflash"))
-        return capFlashTimes - capFlashOk;
+        return capFlashBad;
     return rc;
 }

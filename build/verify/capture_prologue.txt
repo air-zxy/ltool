@@ -1,0 +1,45 @@
+// ltool 插件 plugins/capture 的判据本体
+//
+// 这 12 面旗标原来写在 src/main.cpp 里。截图那三个窗口（CaptureOverlay / PinWindow / Anno）
+// 和 OCR 那一族搬进这个 dll 之后，主程序链接不到它们内部的函数，只能由这里 extern "C" 导出、
+// 主程序按名字点名要（见 src/main.cpp 的 runPluginSelftest；符号找不到 = 判失败，空输出 = 判失败）。
+// 搬的时候一个字没改：PASS/FAIL/INFO 那些行、"<旗标>: 失败 N 项"那一行、返回的那个 N，
+// 和原来在主程序里跑出来的一模一样。
+//
+// 形状分三种：
+//   int ()              —— snaprect / pintool / ocrget / capgeo
+//   int (const char*)   —— 收一个图片路径：ocrtest / ocrlayout / pinpick / ocrchain /
+//                          pindel / ocrpanel / pinshot
+//   int (int)           —— capflash 的"开合几次"
+#include "CaptureHistory.h"
+#include "CaptureOverlay.h"
+#include "Ocr.h"
+#include "OcrBundle.h"
+#include "OcrPanel.h"
+#include "OcrPp.h"
+#include "PinWindow.h"
+#include "Utils.h"
+
+#include <QApplication>
+#include <QClipboard>
+#include <QColor>
+#include <QElapsedTimer>
+#include <QEvent>
+#include <QFile>
+#include <QFileInfo>
+#include <QGuiApplication>
+#include <QImage>
+#include <QKeyEvent>
+#include <QMimeData>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QPixmap>
+#include <QScreen>
+#include <QThread>
+#include <QTimer>
+
+#include <windows.h>
+#include <dwmapi.h>
+
+#include <cstdio>
+

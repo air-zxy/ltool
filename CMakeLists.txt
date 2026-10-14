@@ -60,10 +60,14 @@ add_custom_target(appicon DEPENDS ${ICON_FILE})
 # 代码只能有一份，否则同一个后台状态会出现两份（界面里关了广告拦截、主程序那份还在拦）。
 # 边界是按引用查出来的：AdBlocker 主程序在后台跑、DevEnv/SilentInstallLog 被配置页/语言页/
 # 软件页/设置窗用、RegClean 与 SysTools 被搜索框用、FileTools 被搜索框和广告页用、
-# InfoRow 被卸载页用 —— 这些都进 core；那 10 个工具页 + 右键动作 + F2 录屏都在插件里。
+# InfoRow 被卸载页用 —— 这些都进 core；那 10 个工具页 + 右键动作 + F2 录屏 + F1 截图都在插件里。
 # （2026-10-15：Recorder/RecordUi/RecProbe 也从 core 搬进了 plugins/record —— 录屏只有
 #  那一个插件用，主程序现在只认动作名 "record"，所以 core 里不再编它，
-#  WindowPicker 上那个 LTOOL_CORE_API 也跟着删了。）
+#  WindowPicker 上那个 LTOOL_CORE_API 也跟着删了。
+#  同一天 CaptureOverlay/PinWindow/Anno/Ocr/OcrBundle/OcrPanel/OcrPp 七个搬进 plugins/capture，
+#  但 core 里留下 src/CaptureHistory.{h,cpp} 两样东西：往期的那份列表（配置页改存放目录要
+#  reload() 并显示"共 N 张"）和 CaptureState::isActive()（搜索框靠它决定浮层举着时先别收起）。
+#  这两个都是 core→插件的反向依赖，不留在 core 就得让 core 去链插件 dll。）
 #
 # 导出方式用 WINDOWS_EXPORT_ALL_SYMBOLS（CMake 扫 obj 自动生成 .def），而不是给
 # 每个函数贴 __declspec：本项目跨界的几乎全是自由函数和类成员，自动导出够用；
@@ -88,9 +92,7 @@ qt_add_library(ltoolcore SHARED
     src/SoftwarePage.cpp
     src/WebsitesPage.cpp
     src/TasksPage.cpp
-    src/CaptureOverlay.cpp
-    src/Anno.cpp
-    src/PinWindow.cpp
+    src/CaptureHistory.cpp
     src/InstallLogDialog.cpp
     src/SilentInstallLog.cpp
     src/FileTools.cpp
@@ -106,10 +108,6 @@ qt_add_library(ltoolcore SHARED
     src/FileOps.cpp
     src/Archives.cpp
     src/SevenZip.cpp
-    src/Ocr.cpp
-    src/OcrPanel.cpp
-    src/OcrBundle.cpp
-    src/OcrPp.cpp
     src/AboutPage.cpp
     src/ConfigPage.cpp
     src/SettingsDialog.cpp
@@ -128,7 +126,7 @@ target_compile_definitions(ltoolcore PUBLIC LTOOL_VERSION="${LTOOL_VERSION_STRIN
 # ---- 预编译头 ----
 # 53 个 TU 每个都要啃同一批 Qt 头（QApplication/QWidget/QtConcurrent 展开就是几万行），
 # /MP 只能并行"各自啃一遍"，PCH 才是根本不啃。内容见 src/pch.h（故意不含 windows.h）。
-# 挂在 INTERFACE 上：exe 和十一个插件都复用 core 编好的那一份，不用每个目标各啃一遍。
+# 挂在 INTERFACE 上：exe 和十二个插件都复用 core 编好的那一份，不用每个目标各啃一遍。
 target_precompile_headers(ltoolcore INTERFACE src/pch.h)
 
 find_package(LibArchive REQUIRED)
@@ -232,7 +230,7 @@ add_dependencies(ltool appicon)
 target_link_libraries(ltool PRIVATE ltoolcore)
 ltool_target_setup(ltool)
 
-# ---- 工具插件：十一个各一个 dll，产出后拷进 exe 旁边的 ltool-plugins\ ----
+# ---- 工具插件：十二个各一个 dll，产出后拷进 exe 旁边的 ltool-plugins\ ----
 #
 # 产物先落在 Release 树**外面**（plugin-build）：Qt 的插件部署会往目标的输出目录倒依赖，
 # 放进 build\Release 里会被 ltool.iss 那条 `build\Release\*` 一起收进安装包（实测多 58MB）。
@@ -278,12 +276,24 @@ ltool_add_tool(shell ShellPlugin         plugins/shell/shellaction.cpp plugins/s
 # runPluginSelftest）。
 ltool_add_tool(record RecordPlugin       plugins/record/Recorder.cpp plugins/record/RecordUi.cpp
                                            plugins/record/RecProbe.cpp plugins/record/recordplugin.cpp)
+# 第三个「动作型」插件：F1 截图。截图浮层 / 置顶窗 / 标注 / OCR 那一族七个文件从 src 搬了进来，
+# 十二套判据（--snaprect / --ocrtest / --ocrlayout / --pinpick / --ocrchain / --pintool / --pindel /
+# --ocrget / --ocrpanel / --pinshot / --capgeo / --capflash）跟着搬成 captureselftest.cpp 里的
+# extern "C" 导出符号。**只有 CaptureHistory（往期列表）和 CaptureState（浮层开没开）留在 core**：
+# 配置页要改存放目录并 reload()、搜索框要在浮层举着的时候先别收起，而 core 不能反向依赖插件 dll。
+ltool_add_tool(capture CapturePlugin     plugins/capture/CaptureOverlay.cpp plugins/capture/PinWindow.cpp
+                                           plugins/capture/Anno.cpp plugins/capture/Ocr.cpp
+                                           plugins/capture/OcrBundle.cpp plugins/capture/OcrPanel.cpp
+                                           plugins/capture/OcrPp.cpp
+                                           plugins/capture/captureplugin.cpp
+                                           plugins/capture/captureselftest.cpp)
 
 # 交付闭环是 `cmake --build --target ltool`（只编主程序那一棵）。插件目标只依赖 core，
 # 不在 ltool 的依赖图上 —— 不点名挂上去，改完页面不重编，ISCC 照旧把**上一个 dll**
 # 打进安装包，装出来的还是旧的（构建那一段照样报绿）。
 add_dependencies(ltool ltool-repair ltool-ads ltool-disk ltool-network ltool-registry
-                        ltool-startup ltool-user ltool-json ltool-base64 ltool-shell ltool-record)
+                        ltool-startup ltool-user ltool-json ltool-base64 ltool-shell ltool-record
+                        ltool-capture)
 
 # ---- Qt 运行库部署：把 exe 所需的 Qt DLL / platform 插件复制到输出目录，
 #      避免 "no Qt platform plugin could be initialized" ----

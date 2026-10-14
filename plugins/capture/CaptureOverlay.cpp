@@ -1,3 +1,4 @@
+#include "CaptureHistory.h"
 #include "CaptureOverlay.h"
 #include "OcrPanel.h"
 #include "PinWindow.h"
@@ -169,7 +170,8 @@ void CaptureOverlay::start()
 
 bool CaptureOverlay::isActive()
 {
-    return s_instance && s_instance->isVisible();
+    // 状态位存在 core（src/CaptureHistory.cpp）：那边搜索框要读它，而 core 链接不到这个 dll。
+    return CaptureState::isActive();
 }
 
 void CaptureOverlay::cancelActive()
@@ -184,6 +186,7 @@ CaptureOverlay::CaptureOverlay(const QPixmap& shot)
     , m_canvas(shot)
 {
     s_instance = this;
+    CaptureState::setActive(true);
     setMouseTracking(true);
     setCursor(Qt::CrossCursor);
     QScreen* screen = QGuiApplication::screenAt(QCursor::pos());
@@ -845,6 +848,7 @@ void CaptureOverlay::saveFile()
 void CaptureOverlay::cancel()
 {
     s_instance = nullptr;
+    CaptureState::setActive(false);
     close();
     Utils::trimWorkingSet(); // 释放全屏位图占用的内存
 }

@@ -7,46 +7,12 @@
 #include <QVector>
 
 #include "Anno.h"
+#include "CaptureHistory.h"
 #include "Ocr.h"
 
 class QPushButton;
 class QWidget;
 namespace Ocr { struct Line; }
-
-// 截图历史：内存里留着最近若干张，同时落盘到 %APPDATA%/ltool/captures，
-// 所以重启 ltool 之后置顶窗左侧的往期截图还在。
-// 每条给一个 key（就是它落盘的文件名）：置顶窗编辑完要写回"自己那一条"，
-// 用下标写会被后来的截图把下标挤掉，写错条目。
-class CaptureHistory {
-public:
-    struct Item {
-        QPixmap pm;
-        QString key;
-    };
-
-    static QString add(const QPixmap& pm);                // 入列并存盘，返回 key
-    // 编辑结果写回同一条。write=false 只更新内存：马赛克是逐个鼠标事件在改图，
-    // 每改一下都 PNG 编码落盘会把手感拖死，所以只在松手时写一次。
-    static void replace(const QString& key, const QPixmap& pm, bool write = true);
-    static int count();
-    static Item at(int index);                            // 越界返回空条目
-    // 右键缩略图删除用：去掉内存里第 index 张，并删掉它落盘的那个文件，返回它的 key。
-    // 只按 key 删不行：存盘失败过的条目 key 是空的，也得能从列表里拿掉。
-    static QString removeAt(int index);
-    static void clear();                                  // 清空内存 + 删掉 captures 里的文件
-    // 配置页改了存放目录之后调这个：丢掉内存里的旧目录条目，按新目录重读一遍
-    // （不删文件 —— 新目录里可能本来就有你自己的截图）
-    static void reload();
-
-private:
-    struct Entry {
-        QPixmap pm;
-        QString key;    // captures 目录里的文件名；存不下时为空
-    };
-    static QVector<Entry>& items();
-    static void load(bool trim = true);   // 首次访问时才扫盘读取；trim=false 不清理超额文件
-    static QString dir();
-};
 
 // 置顶截图窗口：主图 + 左侧竖向历史缩略图（点一下换图）+ 底部标注工具栏。
 // 工具栏里的矩形/圆/箭头/马赛克/裁剪和截图浮层是同一套（Anno），

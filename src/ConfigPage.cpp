@@ -2,7 +2,7 @@
 #include "ShellMenu.h"
 #include "ClipboardStore.h"
 #include "DevEnv.h"
-#include "PinWindow.h"
+#include "CaptureHistory.h"
 #include "Utils.h"
 
 #include <QApplication>

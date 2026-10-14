@@ -1,6 +1,6 @@
 #include "SearchWindow.h"
 
-#include "CaptureOverlay.h"
+#include "CaptureHistory.h"
 #include "ClipboardStore.h"
 #include "DevEnv.h"
 #include "EnvPath.h"
@@ -335,7 +335,7 @@ void SearchWindow::buildUi()
     m_captureHold = new QTimer(this);
     m_captureHold->setInterval(200);
     connect(m_captureHold, &QTimer::timeout, this, [this] {
-        if (CaptureOverlay::isActive())
+        if (CaptureState::isActive())
             return;
         m_captureHold->stop();
         if (!isActiveWindow() && (!m_menu || !m_menu->isVisible()))
@@ -606,7 +606,7 @@ bool SearchWindow::event(QEvent* e)
         // 设置页现在是非模态的，点去设置页时搜索框照样该收起（以前模态时不能这么判）
         const bool grace = m_showTime.isValid() && m_showTime.elapsed() < 500;
         if (!grace && (!m_menu || !m_menu->isVisible())) {
-            if (m_captureHold && CaptureOverlay::isActive()) {
+            if (m_captureHold && CaptureState::isActive()) {
                 if (!m_captureHold->isActive())
                     m_captureHold->start();   // 截图结束再收（见构造函数里的说明）
             } else {
@@ -621,7 +621,7 @@ bool SearchWindow::event(QEvent* e)
                     return;
                 if (m_menu && m_menu->isVisible())
                     return;
-                if (m_captureHold && CaptureOverlay::isActive())
+                if (m_captureHold && CaptureState::isActive())
                     return;
                 Utils::log(QStringLiteral("show: 失焦落在宽限里，复查后收起"));
                 hide();
