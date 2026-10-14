@@ -4,21 +4,23 @@
 #include <QVector>
 #include <QWidget>
 
-#include "PluginStore.h"     // 商店那一栏要按条目画行，Entry/Row 在这里是完整类型
+#include "PluginStore.h"     // 一张列表：每张卡片就是一个条目，带状态和那颗按钮
 
 class QLabel;
 class QPushButton;
 class QStackedWidget;
 class QToolButton;
-class QVBoxLayout;
 
-// 配置 - 工具页。卡片墙**完全由插件目录决定**：`<exe 目录>\ltool-plugins\*.dll`。
-// 九个自带工具（DLL 修复 / 广告弹窗 / 磁盘清理 / 网络 / 注册表分析 / 开机启动分析 /
-// Windows 用户名 / JSON / Base64）现在也是插件，和别人写的插件走同一条路，没有特判。
+// 插件商店。**一张列表**，卡片就是条目 —— 没有"已装的墙 + 能装的清单"两页。
 //
-// 画卡片只读元数据（plugin.json 嵌在 dll 里），点开才 LoadLibrary + createPage；
-// 加载过的页缓存着复用，插件 dll 只装不卸。
-// 目录空了 / 某个 dll 没通过检查 —— 界面上一行老实话说出来，不能默默一张卡都不显示。
+// 这一面列什么只有一条规则：
+//   · 还没拉清单 → 本机 `<exe 目录>\ltool-plugins\` 里装着的那几个（含改名成 .off 的）
+//   · 拉过清单 → 以插件仓库那份 index.json 为准，后面再跟上"本机装着、清单里没列"的那几个
+// 每张卡按状态给一颗按钮：没装的「装」、装了但哈希不同的「更新」再加「禁用」、装了的「禁用」、
+// 被改名的「启用」；接口版本对不上的那条不给按钮，note 里说清是哪一侧旧。
+//
+// 点卡片正文只做这一张卡该做的那件事：本机真装着 dll 的就是打开那张页（点开才 LoadLibrary，
+// 页缓存着复用，dll 只装不卸）；还没装的就是装它 —— 绝不能给一张点开没页可看的卡。
 class ToolsPage : public QWidget {
     Q_OBJECT
 public:
@@ -28,33 +30,24 @@ public:
     // 返回 false = 这个 id 没加载起来（错误已经进日志，界面上说了一句人话）。
     bool showTool(const QString& id, const QString& text = QString());
 
-    void rebuildGrid();       // 重新扫插件目录之后重画卡片墙
-
-    // 商店那一栏：刷新远端清单、把每个插件画成一行（状态 + 一个按钮）。
-    // 联网只有"拉清单"和"下 dll"两段，判哈希/落盘/改名都交给 PluginStore 那几个纯函数，
-    // 所以 --storetest 能一次不联网把整条判据跑完。
-    void refreshStore();
+    void rebuildGrid();      // 重扫目录之后重画那一面卡片（装完/禁用完走的就是这条）
+    void refreshStore();     // 联网拉清单：判哈希/落盘/改名都在 PluginStore 那几个纯函数里
 
 private:
+    QVector<PluginStore::Row> shopRows() const;   // 这一面卡片的数据，唯一一条路
     QWidget* buildGrid();
-    QWidget* buildStore();                                  // 卡片墙下面那一栏
-    void showStoreRows(const QVector<PluginStore::Row>& rows, const QStringList& problems);
+    QWidget* makeCard(const PluginStore::Row& r);
     void installEntry(const PluginStore::Entry& e, QPushButton* btn, QLabel* state);
 
     QLabel* m_storeStatus = nullptr;
-    QVBoxLayout* m_storeRows = nullptr;
     bool m_storeBusy = false;
-    // 卡片墙和商店在**同一格**里，而 rebuildGrid()（装完一个、禁用一个之后要重扫）是整格换掉的：
-    // 缓存清单本身（不是画出来的那一屏行），回填时拿它**重新比一次本地目录** ——
-    // 不然刚点完"禁用"，那一栏会退回"还没拉过清单"，说的和做的对不上。
+    // 存的是**清单本身**而不是画出来的那屏卡：rebuildGrid 整格换掉之后拿它重新比一次本地目录，
+    // 刚装完/刚禁用完，状态就跟着目录里的文件动。
     QVector<PluginStore::Entry> m_lastEntries;
     QStringList m_lastProblems;
-    QString m_lastStatus;
-    int m_lastExtra = 0;      // 清单外那几个的个数（状态行回填的是同一个数）
     bool m_haveStore = false;
 
     QStackedWidget* m_stack = nullptr;
     QToolButton* m_back = nullptr;
     QLabel* m_heading = nullptr;
-    QWidget* m_grid = nullptr;    // stack 的第 0 格，就是卡片墙本身
 };

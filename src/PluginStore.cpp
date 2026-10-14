@@ -174,12 +174,8 @@ QVector<Row> rows(const QVector<Entry>& entries, const QString& dir)
     return out;
 }
 
-QVector<Row> localOnly(const QVector<Entry>& listed, const QString& dir)
+QVector<Row> localRows(const QString& dir)
 {
-    // 判"在不在清单里"按**文件名**，不按 id：清单给的就是文件名，而目录里那个文件名是唯一的事实。
-    QSet<QString> listed_files;
-    for (const Entry& e : listed)
-        listed_files.insert(e.file.toLower());
     const QString d = local(dir);
     QVector<Row> out;
     const QStringList files = QDir(d).entryList({ QStringLiteral("*.dll"), QStringLiteral("*.dll.off") },
@@ -187,16 +183,15 @@ QVector<Row> localOnly(const QVector<Entry>& listed, const QString& dir)
     for (const QString& f : files) {
         const bool off = f.endsWith(QStringLiteral(".off"));
         const QString base = off ? f.left(f.size() - 4) : f;
-        if (listed_files.contains(base.toLower()))
-            continue;
         Row r;
         r.remote.file = base;
-        // id 就是文件名去掉 "ltool-" 前缀；认得出来就顺便把名字/描述/颜色从宿主扫过的那份元数据里拿
         QString id = base;
         if (id.startsWith(QStringLiteral("ltool-")))
             id = id.mid(6);
         id.chop(4);   // .dll
         r.remote.id = id;
+        // 元数据只读 dll 里嵌的那份 plugin.json（PluginHost::scan 的产物），不加载 dll；
+        // .off 那个不在扫描结果里（宿主根本不会去认它），就只能报文件名。
         if (const PluginHost::Meta* m = PluginHost::meta(id)) {
             r.remote.name = m->name;
             r.remote.desc = m->desc;
@@ -206,15 +201,35 @@ QVector<Row> localOnly(const QVector<Entry>& listed, const QString& dir)
             r.remote.actions = m->actions;
             r.remote.api = m->api;
         } else {
-            r.remote.name = base;     // 目录里那个文件宿主还没认出来，就直说文件名
+            r.remote.name = base;
             r.remote.api = LTOOL_PLUGIN_API_VERSION;
         }
         r.remote.bytes = QFileInfo(d + QLatin1Char('/') + f).size();
-        r.state = off ? State::Disabled : State::LocalOnly;
-        r.note = off ? QStringLiteral("%1 被改名成 .off，清单里也没有这一条").arg(base)
-                     : QStringLiteral("本机装着 %1（%2 B），清单里没有这一条 —— 能禁用，谈不上更新")
-                           .arg(base).arg(r.remote.bytes);
+        r.state = off ? State::Disabled : State::Installed;
+        r.note = off ? QStringLiteral("%1 被改名成 .off，下次启动不会加载它").arg(base)
+                     : QStringLiteral("%1 · %2 B").arg(base).arg(r.remote.bytes);
         out.append(r);
+    }
+    return out;
+}
+
+QVector<Row> localOnly(const QVector<Entry>& listed, const QString& dir)
+{
+    // 判"在不在清单里"按**文件名**：清单给的就是文件名，而目录里那个文件名是唯一的事实。
+    QSet<QString> known;
+    for (const Entry& e : listed)
+        known.insert(e.file.toLower());
+    QVector<Row> out;
+    for (const Row& r : localRows(dir)) {
+        if (known.contains(r.remote.file.toLower()))
+            continue;
+        Row copy = r;
+        copy.state = r.state == State::Disabled ? State::Disabled : State::LocalOnly;
+        copy.note = r.state == State::Disabled
+                        ? QStringLiteral("%1 被改名成 .off，清单里也没有这一条").arg(r.remote.file)
+                        : QStringLiteral("清单里没有这一条（本机 %1 B）—— 能禁用，谈不上更新")
+                              .arg(r.remote.bytes);
+        out.append(copy);
     }
     return out;
 }

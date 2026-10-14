@@ -2135,6 +2135,40 @@ int main(int argc, char* argv[])
                       ? QStringLiteral("ok") : QStringLiteral("err"), "err");
         }
 
+        // ---- 4a. 「目录里有什么」这一面（没拉清单时列表就是它） ----
+        {
+            // 到这儿为止目录里有三个 *.dll（new / off / old2，都是上面几段落的产物），
+            // 再造一个改名成 .off 的，就能同时看到"活着"和"被禁用"两种。
+            makeFile(box + "/ltool-extra.dll", QByteArray("要被禁的那个"));
+            PluginStore::setEnabled(QStringLiteral("ltool-extra.dll"), false, box);
+            const auto locals = PluginStore::localRows(box);
+            QStringList who;
+            int on = 0, off = 0;
+            for (const PluginStore::Row& r : locals) {
+                who << QStringLiteral("%1=%2").arg(r.remote.file, PluginStore::stateWord(r.state));
+                if (r.state == PluginStore::State::Installed)
+                    ++on;
+                if (r.state == PluginStore::State::Disabled)
+                    ++off;
+            }
+            // 目录里有 *.dll / *.dll.off / *.bin（bin 不算）、还有那个 .part 留下的别的文件也不算
+            check("只把 *.dll 和 *.dll.off 当插件（旁边那些 *.bin 不算）", QString::number(who.size()), "4");
+            std::printf("INFO 目录里认出来的：%s\n", who.join(QStringLiteral("，")).toUtf8().constData());
+            check("活着的报已装、改名 .off 的报已禁用",
+                  QStringLiteral("%1/%2").arg(on).arg(off), QStringLiteral("3/1"));
+            check("每一条的 note 都写着自己的文件名（不是空话）",
+                  std::all_of(locals.begin(), locals.end(), [](const PluginStore::Row& r) {
+                      return r.note.contains(r.remote.file);
+                  })
+                      ? "yes" : "no", "yes");
+            check("活着的那几条还带字节数",
+                  std::all_of(locals.begin(), locals.end(), [](const PluginStore::Row& r) {
+                      return r.state != PluginStore::State::Installed
+                             || r.note.contains(QStringLiteral(" B"));
+                  })
+                      ? "yes" : "no", "yes");
+        }
+
         // ---- 4b. 本机装着、清单里却没列的那几个 ----
         {
             makeFile(box + "/ltool-stranger.dll", QByteArray("不在清单上的那个"));
@@ -2161,12 +2195,13 @@ int main(int argc, char* argv[])
                       && names.contains(QStringLiteral("ltool-new.dll")) ? "yes" : "no", "yes");
             check("清单里已经列过的那个文件不再报成清单外",
                   names.contains(QStringLiteral("ltool-good.dll")) ? "yes" : "no", "no");
-            check("没禁用之前每一条都是「清单外」", QString::number(localOnly), QString::number(names.size()));
+            check("没禁用之前：清单外的条数 = 总条数减掉已禁用的那几条", QString::number(localOnly),
+                  QString::number(names.size() - off));
             const QString err = PluginStore::setEnabled(QStringLiteral("ltool-stranger.dll"), false, box);
             collect(PluginStore::localOnly(entries, box));
-            check("清单外那条也能禁用（禁用之后它还在栏里，状态变成已禁用）",
+            check("清单外那条也能禁用（禁完它还在栏里，已禁用的数比上一轮多一条）",
                   err.isEmpty() && names.contains(QStringLiteral("ltool-stranger.dll"))
-                      && off == 1 && localOnly == names.size() - 1 ? "yes" : "no", "yes");
+                      && off == 2 && localOnly == names.size() - off ? "yes" : "no", "yes");
         }
 
         // ---- 5. 索引地址：留空用内置那条，配了就用配的 ----
@@ -2761,7 +2796,7 @@ int main(int argc, char* argv[])
                     ++storeNetBad;
             };
             QPushButton* refresh = page.findChild<QPushButton*>(QStringLiteral("storeRefresh"));
-            check("商店那一栏真有一颗「刷新清单」，而且在布局里", refresh && refresh->isVisible(),
+            check("标题那一行真有一颗「刷新清单」，而且在布局里", refresh && refresh->isVisible(),
                   QStringLiteral("找得到=%1 可见=%2").arg(refresh ? 1 : 0)
                       .arg(refresh && refresh->isVisible() ? 1 : 0));
             if (!refresh) {
@@ -2769,70 +2804,147 @@ int main(int argc, char* argv[])
                 app.quit();
                 return;
             }
+            // 数之前先把 deleteLater 排干净：rebuildGrid 换整格时旧卡片是"待删"状态，
+            // 这时候数 findChildren 会把新旧两批一起数进去（探针第一版就是这么量出 30 张卡的）。
+            const auto drain = [] { for (int i = 0; i < 30; ++i) QCoreApplication::processEvents(); };
+            drain();
+            const auto countButtons = [&page](const QStringList& texts) {
+                int n = 0;
+                for (QPushButton* b : page.findChildren<QPushButton*>()) {
+                    if (b->objectName() == QLatin1String("storeRefresh") || !b->isVisible())
+                        continue;
+                    if (texts.contains(b->text()))
+                        ++n;
+                }
+                return n;
+            };
+            const int cardsBefore = page.findChildren<QFrame*>(QStringLiteral("row")).size();
+            // 还没拉清单：这一面只报目录里有什么，所以一颗「装」都没有 —— 装什么得先问仓库
+            const int installersBefore = countButtons({QStringLiteral("装"), QStringLiteral("更新")});
             refresh->click();
-            // 等到长出行为止：raw 那一份一次往返几百毫秒，五秒都等不出来就是没网或对端变了
-            int rows = 0;
-            // 20 秒上限：raw 平时几百毫秒就回来，慢了通常是代理在排队 —— 到点就把看到的说出来，
-            // 不许静默当"通过"，也不许把"网络慢"和"界面坏"混成同一条红。
-            for (int i = 0; i < 400
-                     && (rows = page.findChildren<QFrame*>(QStringLiteral("storeRow")).size()) == 0; ++i) {
+            // 等到状态行变成"清单 N 条…"为止。raw 平时几百毫秒，慢了通常是代理在排队 ——
+            // 20 秒上限，到点就把看到的说出来，不许静默当"通过"，也不许把"网络慢"读成"界面坏"。
+            QString st;
+            QLabel* status = nullptr;
+            for (int i = 0; i < 400; ++i) {
                 QCoreApplication::processEvents();
                 QThread::msleep(50);
-            }
-            // 找那一行状态字：拉成功是"清单 N 条…"，失败是"清单没拉到：…"，
-            // 两种都要能认出来 —— 只认前一种会把"网络失败"读成"界面坏了"（刚才就是这么误判的）
-            QLabel* status = nullptr;
-            for (QLabel* l : page.findChildren<QLabel*>()) {
-                if (l->text().startsWith(QStringLiteral("清单"))
-                    || l->text().startsWith(QStringLiteral("正在拉清单"))
-                    || l->text().startsWith(QStringLiteral("清单没拉到"))) {
-                    status = l;
-                    break;
+                status = nullptr;
+                for (QLabel* l : page.findChildren<QLabel*>()) {
+                    if (l->text().startsWith(QStringLiteral("清单"))) {
+                        status = l;
+                        break;
+                    }
                 }
+                st = status ? status->text() : QString();
+                if (st.startsWith(QStringLiteral("清单 ")) || st.startsWith(QStringLiteral("清单没拉到")))
+                    break;
             }
-            if (!status) {
-                std::printf("INFO 这一面上所有带字的行：\n");
+            drain();
+            std::printf("INFO 状态行：%s\n", st.toUtf8().constData());
+            const QRegularExpression re(QStringLiteral(
+                "清单 (\\d+) 条（地址 .+?）· 这一面 (\\d+) 张卡 · 能装或可更新 (\\d+) · 拒收 (\\d+) · 清单外 (\\d+)"));
+            const auto m = re.match(st);
+            check("拉到了就在状态行把数说清（没拉到会走另一句，不当成通过）", m.hasMatch(), st.left(70));
+            if (!m.hasMatch()) {
                 for (QLabel* l : page.findChildren<QLabel*>())
                     if (!l->text().isEmpty())
                         std::printf("  [%s]\n", l->text().left(90).toUtf8().constData());
-            }
-            const QString st = status ? status->text() : QStringLiteral("(状态行还停在没拉过的样子)");
-            std::printf("INFO 状态行：%s\n", st.toUtf8().constData());
-            // 从状态行里把那两个数抠出来：界面写的数必须和界面画出来的东西一致
-            QRegularExpression re(QStringLiteral("清单 (\\d+) 条（地址 .+?）· 能装或可更新 (\\d+) · 拒收 (\\d+) · 本机另有 (\\d+)"));
-            const auto m = re.match(st);
-            check("状态行是那句形状对的（拉到了就说数）", m.hasMatch(), st.left(60));
-            if (m.hasMatch()) {
+            } else {
                 const int said = m.captured(1).toInt();
-                const int canInstall = m.captured(2).toInt();
-                const int rejected = m.captured(3).toInt();
-                const int extra = m.captured(4).toInt();
-                check("画出来的行数 = 清单条数 + 清单外那几个", rows == said + extra,
-                      QStringLiteral("画了 %1 行 / 清单 %2 + 清单外 %3").arg(rows).arg(said).arg(extra));
+                const int cards = m.captured(2).toInt();
+                const int canInstall = m.captured(3).toInt();
+                const int rejected = m.captured(4).toInt();
+                const int outside = m.captured(5).toInt();
+                const int nowCards = page.findChildren<QFrame*>(QStringLiteral("row")).size();
+                // 只剩一面列表：卡片数就是状态行报的那个数，而且它是"清单 + 清单外"合起来
+                check("一面列表：画出的卡片数 = 状态行说的数", nowCards == cards,
+                      QStringLiteral("画出 %1 / 说了 %2").arg(nowCards).arg(cards));
+                check("卡片数 = 清单条数 + 清单外那几个", cards == said + outside,
+                      QStringLiteral("清单 %1 + 清单外 %2 = %3").arg(said).arg(outside).arg(cards));
+                check("没拉清单之前一颗「装」都没有（列的是目录，不是仓库）", installersBefore == 0,
+                      QStringLiteral("刷新前 %1 颗装/更新按钮").arg(installersBefore));
+                check("刷新前后是同一面列表（卡片数随目录/清单变，不是另开一屏）", nowCards >= cardsBefore,
+                      QStringLiteral("刷新前 %1 / 刷新后 %2").arg(cardsBefore).arg(nowCards));
                 check("插件仓库那十二个都在清单里", said >= 12, QStringLiteral("清单 %1 条").arg(said));
-                // 按钮数对得上"能装或可更新"：这一条盯的就是"界面说有三条能装、实际一颗按钮都没有"
-                int installers = 0;
-                for (QPushButton* b : page.findChildren<QPushButton*>())
-                    if (b->text() == QStringLiteral("装") || b->text() == QStringLiteral("更新"))
-                        ++installers;
-                check("能按的装/更新按钮数 = 状态行说的数", installers == canInstall,
-                      QStringLiteral("按钮 %1 颗 / 说了 %2 条").arg(installers).arg(canInstall));
-                // 本机这十二个 dll 是自己编的那份，仓库 dist 里是 CI 那份，哈希不同就判"可更新" ——
-                // 所以这里只要求"每一条都能认出个状态"，不许出现空状态。
+                // 装了的那张卡**不许再有「装」这颗按钮**，没装的那张必须有 —— 这是这次改的正面判据
                 // 六个状态词都从 stateWord 取，别把中文抄第二遍（抄的那份第一次加状态就过期）
                 const QVector<QString> words = {
-                    PluginStore::stateWord(PluginStore::State::Missing),
-                    PluginStore::stateWord(PluginStore::State::Update),
-                    PluginStore::stateWord(PluginStore::State::Installed),
-                    PluginStore::stateWord(PluginStore::State::Disabled),
-                    PluginStore::stateWord(PluginStore::State::ApiMismatch),
-                    PluginStore::stateWord(PluginStore::State::LocalOnly),
+                    PluginStore::stateWord(PluginStore::State::Missing),      // 0 能装
+                    PluginStore::stateWord(PluginStore::State::Update),       // 1 可更新
+                    PluginStore::stateWord(PluginStore::State::Installed),    // 2 已装
+                    PluginStore::stateWord(PluginStore::State::Disabled),     // 3 已禁用
+                    PluginStore::stateWord(PluginStore::State::ApiMismatch),  // 4 装不了
+                    PluginStore::stateWord(PluginStore::State::LocalOnly),    // 5 清单外
                 };
-                int states = 0;
-                for (QFrame* r : page.findChildren<QFrame*>(QStringLiteral("storeRow")))
-                    for (QLabel* l : r->findChildren<QLabel*>())
-                        if (words.contains(l->text()))
-                            ++states;
+                // 逐张卡看：状态词说什么，按钮就该给什么。这是这次"一张列表"的正面判据 ——
+                // 装了的不许出现「装」，没装的不许出现「禁用」，可更新的两颗都得有。
+                int states = 0, nMissing = 0, nOnDisk = 0, wrong = 0;
+                QStringList wrongs;
+                for (QFrame* card : page.findChildren<QFrame*>(QStringLiteral("row"))) {
+                    int idx = -1;
+                    for (QLabel* l : card->findChildren<QLabel*>()) {
+                        if (idx >= 0)
+                            continue;
+                        for (int i = 0; i < words.size(); ++i)
+                            if (l->text().startsWith(words[i])) {
+                                idx = i;
+                                break;
+                            }
+                    }
+                    bool hasInstall = false, hasToggle = false;
+                    for (QPushButton* b : card->findChildren<QPushButton*>()) {
+                        if (!b->isVisible())
+                            continue;
+                        const QString t = b->text();
+                        if (t == QStringLiteral("装") || t == QStringLiteral("更新"))
+                            hasInstall = true;
+                        if (t == QStringLiteral("禁用") || t == QStringLiteral("启用"))
+                            hasToggle = true;
+                    }
+                    if (idx < 0) {
+                        ++wrong;
+                        wrongs << QStringLiteral("(一张没有状态词的卡)");
+                        continue;
+                    }
+                    ++states;
+                    const bool wantInstall = idx == 0 || idx == 1;
+                    const bool wantToggle = idx >= 1 && idx != 4;   // 装了的（含可更新、清单外、已禁用）都能动
+                    if (idx == 0)
+                        ++nMissing;
+                    if (wantToggle)
+                        ++nOnDisk;
+                    if (hasInstall != wantInstall || hasToggle != wantToggle) {
+                        ++wrong;
+                        wrongs << QStringLiteral("「%1」那张 装=%2 禁用=%3（该给 装=%4 禁用=%5）")
+                                      .arg(words[idx],
+                                           hasInstall ? QStringLiteral("有") : QStringLiteral("没"),
+                                           hasToggle ? QStringLiteral("有") : QStringLiteral("没"),
+                                           wantInstall ? QStringLiteral("有") : QStringLiteral("没"),
+                                           wantToggle ? QStringLiteral("有") : QStringLiteral("没"));
+                    }
+                }
+                check("每张卡的状态词都认得出", states == nowCards,
+                      QStringLiteral("有状态 %1 / 卡片 %2").arg(states).arg(nowCards));
+                check("每张卡的按钮和自己那句状态对得上（装了的不给装、没装的不给禁用）", wrong == 0,
+                      wrongs.isEmpty() ? QStringLiteral("%1 张全对上").arg(nowCards)
+                                       : QStringLiteral("%1 张不对：%2").arg(wrong).arg(wrongs.join(QStringLiteral("；"))));
+                int installers = 0, toggles = 0;
+                for (QPushButton* b : page.findChildren<QPushButton*>()) {
+                    if (b->objectName() == QLatin1String("storeRefresh") || !b->isVisible())
+                        continue;
+                    if (b->text() == QStringLiteral("装") || b->text() == QStringLiteral("更新"))
+                        ++installers;
+                    else if (b->text() == QStringLiteral("禁用") || b->text() == QStringLiteral("启用"))
+                        ++toggles;
+                }
+                check("装/更新按钮颗数 = 状态行说的能装或可更新", installers == canInstall,
+                      QStringLiteral("按钮 %1 颗 / 说了 %2 条").arg(installers).arg(canInstall));
+                check("禁用/启用按钮颗数 = 本机真装着的那几个", toggles == nOnDisk,
+                      QStringLiteral("禁用/启用 %1 颗 / 装着 %2 张（能装 %3 张）")
+                          .arg(toggles).arg(nOnDisk).arg(nMissing));
+                check("没拉清单之前这一面只列本机那几个，所以一颗「装」都没有", installersBefore == 0,
+                      QStringLiteral("刷新前 %1 颗").arg(installersBefore));
                 std::printf("INFO 拒收 %d 条（本仓库的 dist 现在是干净的）\n", rejected);
             }
             page.hide();

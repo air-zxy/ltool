@@ -58,6 +58,10 @@ State compare(const Entry& e, QString* note, const QString& dir = QString());
 QVector<Row> rows(const QVector<Entry>& entries, const QString& dir = QString());
 // 本机装了、清单里却没列的那些插件也得上那一栏 —— 不然它们在卡片墙上看得见、
 // 在这上面却连"禁用"都按不到（清单没这条，按钮也就没处生成）。
+// 目录里现在有什么：`*.dll` 算已装、`*.dll.off` 算已禁用。不碰网络、不猜清单。
+// 名字/描述/颜色从 PluginHost 扫出来的那份元数据里拿（只读嵌入的 plugin.json，不加载 dll）。
+QVector<Row> localRows(const QString& dir = QString());
+// 本机装着、清单里却没列的那几个 = localRows 减去清单覆盖的那些文件名。
 QVector<Row> localOnly(const QVector<Entry>& listed, const QString& dir = QString());
 
 QString stateWord(State s);            // 界面上那一个词：能装/可更新/已装/已禁用/装不了
