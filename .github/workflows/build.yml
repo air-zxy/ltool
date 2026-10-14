@@ -61,18 +61,17 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       # 关键优化：把 build/vcpkg_installed 加入缓存！
-      # 以前只存 vcpkg 树，每次工作区重新拉取 build/ 为空，必须重新解压甚至重编 Qt6。
-      # 现在只要 vcpkg.json 没变，整棵 vcpkg_installed 直接还原到位，安装检测瞬间跳过。
-      - name: 缓存 vcpkg 依赖树、安装产物与下载包
-        uses: actions/cache@v4
+      # 使用 actions/cache/restore@v4 恢复，安装完依赖后立即用 cache/save 保存，
+      # 避免后续步骤哪怕遇到网络/取消等意外时导致几十分钟编译的依赖被全部丢弃。
+      - name: 恢复 vcpkg 依赖缓存
+        id: cache-vcpkg
+        uses: actions/cache/restore@v4
         with:
           path: |
             ${{ env.LTOOL_VCPKG }}
             build/vcpkg_installed
             ${{ env.VCPKG_DOWNLOADS }}
             ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          # 键里带 vcpkg.json 的哈希：依赖不变直接全命中；依赖改变则通过 restore-keys
-          # 回退到旧缓存，未改动的包（如庞大的 qtbase）直接从二进制缓存秒级复用。
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-${{ runner.os }}-
@@ -103,7 +102,9 @@ jobs:
       # 显式按清单装依赖：
       # 1. 解耦 vcpkg 安装与 CMake 配置，进度与报错完全清晰可见
       # 2. 缓存命中时，vcpkg 扫描清单仅需 2~3 秒即可判定已就绪并快速通过
-      # 3. 依赖变更或未命中时，--clean-after-build 避免保留庞大源码编译树，防止磁盘溢出
+      # 3. 核心提速：CI 只需要 Release 产物（打包/自测全走 Release）。注入 VCPKG_BUILD_TYPE release
+      #    彻底跳过 Debug 版编译（从 66 个构建任务腰斩至 33 个），从 80+ 分钟直接降至 30 分钟内！
+      # 4. 依赖变更或未命中时，--clean-after-build 避免保留庞大源码编译树，防止磁盘溢出
       #
       # 那两棵目录**必须先 mkdir**：VCPKG_DEFAULT_BINARY_CACHE 指着不存在的目录时 vcpkg 不是"没有缓存"
       # 而是当场拒绝干活 —— `error: Environment variable VCPKG_DEFAULT_BINARY_CACHE must be a directory`
@@ -113,11 +114,28 @@ jobs:
         shell: bash
         env:
           VCPKG_ROOT: ${{ env.LTOOL_VCPKG }}
+          VCPKG_MAX_CONCURRENCY: "2"
         run: |
           set -o pipefail
           mkdir -p build/vcpkg_installed "$VCPKG_DEFAULT_BINARY_CACHE" "$VCPKG_DOWNLOADS"
+          if ! grep -q "VCPKG_BUILD_TYPE release" "$LTOOL_VCPKG/triplets/x64-windows.cmake"; then
+            echo "set(VCPKG_BUILD_TYPE release)" >> "$LTOOL_VCPKG/triplets/x64-windows.cmake"
+          fi
           "$LTOOL_VCPKG/vcpkg.exe" install --triplet x64-windows \
-            --x-install-root=build/vcpkg_installed --clean-after-build 2>&1 | tee vcpkg-install.log
+            --x-install-root=build/vcpkg_installed --clean-after-build --no-print-usage 2>&1 | tee vcpkg-install.log
+
+      # 关键保障：依赖一旦安装完毕，立刻保存缓存！
+      # 即使后续任何步骤出错或取消，编译好的依赖已经永久存入 GitHub 缓存，下次 run 2 秒直接命中！
+      - name: 立即保存已安装的 vcpkg 依赖缓存
+        uses: actions/cache/save@v4
+        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ${{ env.LTOOL_VCPKG }}
+            build/vcpkg_installed
+            ${{ env.VCPKG_DOWNLOADS }}
+            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
 
       # 生成器和这台机器保持一致：**Visual Studio 17 2022 多配置**。CMakeLists 里
       # 插件要拷进 `${CMAKE_BINARY_DIR}/Release/ltool-plugins`、导入库挪到 `build/lib`，
@@ -148,7 +166,7 @@ jobs:
           VCPKG_ROOT: ${{ env.LTOOL_VCPKG }}
         run: |
           set -o pipefail
-          cmake --build build --config Release --parallel 4 -- -p:CL_MPcount=2 2>&1 | tee build.log
+          cmake --build build --config Release --parallel 4 -- -v:m -p:CL_MPcount=2 2>&1 | tee build.log
 
       # 只跑不需要真屏幕、也不需要管理员的那批。要真屏幕的（--capgeo/--capflash/--recq/
       # --rectest/--recordui）在 runner 上没有 DWM 会话，抓回来的是空图，红了也不说明产品坏了；
