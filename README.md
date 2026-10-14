@@ -43,7 +43,7 @@ cmake --build build --config Release
 
 - 依赖走清单模式（`vcpkg.json`：`qtbase` + `libarchive` + `bit7z`）。加依赖只改这份 json 再重新 configure，
   别在仓库根裸跑 `vcpkg install`。
-- 产物在 `build\Release\`：`ltool.exe` 264KB + `ltoolcore.dll` 1.8MB + `ltool-plugins\*.dll` 12 个。
+- 产物在 `build\Release\`：`ltool.exe` 305KB + `ltoolcore.dll` 1.63MB + `ltool-plugins\*.dll` **15 个**。
 - 编译已经很快：全量重建 17.9 秒、改一个头 13.7 秒、什么都没改 2.5 秒。
 - 文件索引：常用目录实时监听（秒级）；全盘靠快照，管理员权限下用 USN 日志做增量（约 0.5 秒）。
 
@@ -61,7 +61,7 @@ cmake --build build --config Release
 powershell -File build\verify\deliver.ps1        # 构建 → 打包 → 停旧实例 → 静默装 → 逐文件比 SHA256 → 重起
 ```
 
-- 约 26 秒一圈。档位：默认 normal 22.45MB ｜ `-Final` 21.8MB（出正式包）｜ `-Quick` 26.9MB ｜ `-NoBuild` 跳过构建。
+- 约 27~32 秒一圈。档位：默认 normal 22.51MB（15 个插件 dll 都在包里）｜ `-Final` 21.8MB 那档是十二个 dll 时量的，没重测 ｜ `-Quick` 26.9MB ｜ `-NoBuild` 跳过构建。
 - 版本号只有一处：`ltool.iss` 的 `#define MyAppVersion`，读不到就直接 FATAL。
 - 交付判据是**逐个文件比 SHA256**（exe + core + 12 个插件）；单独跑一遍：`powershell -File build\verify\shaall.ps1`。
 - 装到哪：默认按用户装 `%LOCALAPPDATA%\Programs\ltool`，指定目录加 `/DIR="D:\software\ltool"`。
@@ -117,8 +117,8 @@ JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** /
 
 | 位置 | 是什么 |
 | --- | --- |
-| `ltool.exe`（264KB） | 热键、托盘、单实例、自测入口 |
-| `ltoolcore.dll`（1.8MB） | 主程序和插件**共用的一份**实现（`Utils` / `DiskScan` / `InfoRow` / `Archive` / `CaptureHistory` …） |
+| `ltool.exe`（305KB） | 热键、托盘、单实例、自测入口 |
+| `ltoolcore.dll`（1.63MB） | 主程序和插件**共用的一份**实现（`Utils` / `DiskScan` / `InfoRow` / `Archive` / `CaptureHistory` …） |
 | `ltool-plugins\ltool-<id>.dll` | 一个工具一个：本体 + 一层 `LToolPlugin` 壳 + 嵌在 dll 里的 `plugin.json` |
 
 - 契约只有一份：`src/ltool-plugin.h`（现在 API 3）—— `apiVersion / id / name / desc / keywords / createPage / feedText / actions / invoke / save / load`。
