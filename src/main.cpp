@@ -3,10 +3,7 @@
 #include "CaptureOverlay.h"
 #include "ConfigPage.h"
 #include "PinWindow.h"
-#include "RecProbe.h"
 #include "OcrBundle.h"
-#include "Recorder.h"
-#include "RecordUi.h"
 #include "QClipboard"
 #include "QMimeData"
 #include "QKeyEvent"
@@ -37,7 +34,6 @@
 #include "StartupAudit.h"
 #include "SearchWindow.h"
 #include "SettingsDialog.h"
-#include "ShellAction.h"
 #include "SilentInstallLog.h"
 #include "TaskScheduler.h"
 #include "UninstallPage.h"
@@ -53,6 +49,7 @@
 #include <QDirIterator>
 #include <QLabel>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QLineEdit>
 #include <QThread>
 #include <QPushButton>
@@ -88,7 +85,15 @@ namespace {
 
 constexpr WPARAM kHotkeyId = 1;
 constexpr WPARAM kCaptureId = 2;
+// F2 录屏。热键注册留在这层薄壳里（它必须是那个还能起得来的进程），按下之后把动作名
+// "record" 交给 PluginHost::invoke —— 2026-10-15 起，录屏本体在 plugins/record。
 constexpr WPARAM kRecordId = 3;
+
+// 资源管理器右键能进来的那几个旗标（ShellMenu 往注册表写的就是这份）。
+// 主程序只负责把"旗标去掉两个短横"当动作名转给插件，所以这张表**同时是 --plugintest 的判据**：
+// 少一个动作没人声明 = 右键点下去什么都不发生，那条最难查，不能靠人肉对齐两处写法。
+const char* const kShellFlags[] = { "--shred", "--fileinfo", "--whohas", "--extract",
+                                    "--extract-sub", "--compress-zip", "--compress-7z" };
 
 // 托盘图标的"安装进行中"动画帧：原图标右下角盖一小块深色圆，圆里转一段弧。
 // 预渲染好轮播，避免每次 tick 都重画一遍 base（托盘 setIcon 本身就够贵了）
@@ -280,142 +285,53 @@ int runFwProbe(const QStringList& args)
 
 // --uptime：无界面地把"软件"菜单那一行的两个页面各构造一次，量出卡顿在哪一段
 // --adscan：量一次"广告拦截每 5 秒在 GUI 线程上做的事"到底有多贵（无界面）
-// 跑某个插件自带的判据（插件里导出 extern "C" int ltoolPluginSelftest()）。
-// 页面代码搬进 DLL 之后主程序链接不到它内部的测试函数，只能这样点名要。
+// 跑某个插件自带的判据（插件里导出 extern "C" 的那个函数，名字由调用方点名）。
+// 页面/动作代码搬进 DLL 之后主程序链接不到它内部的测试函数，只能这样要符号。
 // 找不到符号**必须算失败**，不能当通过 —— 否则"插件没加载起来"会伪装成"测试全绿"。
-int runPluginSelftest(const QString& id, const char* symbol = "ltoolPluginSelftest")
+//
+// arg / ms / text：判据入口的签名不止一种，按那面旗标原来的写法给 ——
+//   None            → int()                    （disk / user 那一类，只返回失败数）
+//   Ms              → int(int)                 （--recprobe 的毫秒、--rectest/--recordui 的秒）
+//   MsAndText       → int(int, const char*)    （--memloop 的轮数 + 「宽x高」）
+// flag：非空 = 判据**自己**已经打了最后那行 "<flag>: 失败 N 项"（record 那几条旗标就是这么写的），
+//        这儿不能再打一遍（同一次跑出两个失败数就没法看了）；空 = 按老样子用插件 id 补那一行。
+enum class SelftestArg { None, Ms, MsAndText };
+
+int runPluginSelftest(const QString& id, const char* symbol = "ltoolPluginSelftest",
+                      SelftestArg arg = SelftestArg::None, int ms = 0,
+                      const QString& text = QString(), const char* flag = nullptr)
 {
-    using Fn = int (*)();
-    const auto fn = reinterpret_cast<Fn>(PluginHost::entry(id, symbol));
-    if (!fn) {
+    void* raw = PluginHost::entry(id, symbol);
+    if (!raw) {
+        // "插件根本没起来"和"起来了但没导出这个符号"是两种坏法，分开说才有人能照着修
+        if (!PluginHost::plugin(id))
+            std::printf("FAIL %s：插件没能加载（%s 里没有能用的 ltool-%s.dll —— 安装包少文件了？）\n",
+                        id.toUtf8().constData(),
+                        PluginHost::pluginsDir().toUtf8().constData(),
+                        id.toUtf8().constData());
         std::printf("FAIL %s：没有可用的判据入口（插件没加载起来，或没导出 %s）\n",
                     id.toUtf8().constData(), symbol);
-        std::printf("%s: 失败 1 项\n", id.toUtf8().constData());
+        std::printf("%s: 失败 1 项\n", flag ? flag : id.toUtf8().constData());
+        std::fflush(stdout);
         return 1;
     }
-    const int bad = fn();
-    std::printf("%s: 失败 %d 项\n", id.toUtf8().constData(), bad);
-    std::fflush(stdout);
+    int bad = 0;
+    switch (arg) {
+    case SelftestArg::None:
+        bad = reinterpret_cast<int (*)()>(raw)();
+        break;
+    case SelftestArg::Ms:
+        bad = reinterpret_cast<int (*)(int)>(raw)(ms);
+        break;
+    case SelftestArg::MsAndText:
+        bad = reinterpret_cast<int (*)(int, const char*)>(raw)(ms, text.toUtf8().constData());
+        break;
+    }
+    if (!flag) {
+        std::printf("%s: 失败 %d 项\n", id.toUtf8().constData(), bad);
+        std::fflush(stdout);
+    }
     return bad == 0 ? 0 : 1;
-}
-
-// --recq 用：把那张自制的卡录一小段，然后把产物读回来数一遍。
-// 判据全在返回值里，比较由调用方做 —— 这样"缩小"和"画质"两组用的是同一条录制路径，
-// 不会一边测真编码器、另一边测我手搓的期望值。
-// 卡片图案：上半白 / 下半黑 / 左沿一条黑带（朝向判据照 --rectest 那条教训：
-// 上下左右都对称的图案，翻了也量不出来）。noise=true 时中间那条带每个 tick 换一次随机块，
-// 让码率真的有事可做 —— 大片静止色块下"超清"和"流畅"能编出一样大的文件，测不出档位生效。
-struct RecRun {
-    int w = 0, h = 0;
-    qint64 frames = 0;
-    qint64 bytes = 0;
-    bool topBright = false;     // 解出来的第 0 行确实比末行亮（缩完朝向还对）
-    QString err;
-};
-
-QString sizeText(const QSize& s)
-{
-    return QStringLiteral("%1x%2").arg(s.width()).arg(s.height());
-}
-
-RecRun recordCardRun(int id, int cw, int ch, int maxWidth, double bpp, int ms, bool noise)
-{
-    RecRun out;
-    QWidget* card = new QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint);
-    card->resize(cw, ch);
-    auto* topHalf = new QLabel(card);
-    topHalf->setGeometry(0, 0, cw, ch / 2);
-    topHalf->setStyleSheet(QStringLiteral("background:#ffffff;"));
-    auto* botHalf = new QLabel(card);
-    botHalf->setGeometry(0, ch / 2, cw, ch - ch / 2);
-    botHalf->setStyleSheet(QStringLiteral("background:#000000;"));
-    auto* stripe = new QLabel(card);
-    stripe->setGeometry(0, 0, cw / 8, ch / 2);
-    stripe->setStyleSheet(QStringLiteral("background:#000000;"));
-    auto* lab = new QLabel(QStringLiteral("0"), card);
-    lab->setGeometry(cw - 96, ch - 46, 94, 44);   // 右下角每 30ms 换一个数：不重绘 WGC 一帧也不给
-    lab->setAlignment(Qt::AlignCenter);
-    lab->setStyleSheet(QStringLiteral("background:#000000;color:#e8ebf2;font-size:26px;"));
-    QLabel* blocks = nullptr;
-    if (noise) {
-        blocks = new QLabel(card);
-        blocks->setGeometry(0, ch / 3, cw, ch / 3);
-        blocks->setScaledContents(true);
-    }
-    const QRect avail = QGuiApplication::primaryScreen()->availableGeometry();
-    card->move(avail.right() - cw - 12, avail.bottom() - ch - 12);
-    card->setAttribute(Qt::WA_ShowWithoutActivating);
-    card->show();
-    QCoreApplication::processEvents();
-
-    int tick = 0;
-    QTimer anim;
-    QObject::connect(&anim, &QTimer::timeout, card, [&] {
-        lab->setText(QString::number(++tick));
-        if (blocks) {         // 逐像素随机灰噪点放大到整条带：高，编码器必须真花码率才行
-            // （以前是 24x12 的大块，放大后太平滑，两档码率编出来只差 7% —— 那条断言
-            //   测的其实是内容，不是档位）
-            QImage img(cw / 3, ch / 6, QImage::Format_RGB32);
-            for (int y = 0; y < img.height(); ++y) {
-                auto* row = reinterpret_cast<QRgb*>(img.scanLine(y));
-                for (int x = 0; x < img.width(); ++x)
-                    row[x] = QColor(QRandomGenerator::global()->bounded(256)).rgb();
-            }
-            blocks->setPixmap(QPixmap::fromImage(img));
-        }
-    });
-    anim.start(30);
-
-    const QString path = QDir::tempPath() + QStringLiteral("/ltool-recq-%1.mp4").arg(id);
-    QFile::remove(path);
-    Recorder rec;
-    Recorder::Options o;
-    o.fps = 15;
-    o.maxWidth = maxWidth;
-    const QSize enc = Recorder::encodedSize(cw, ch, maxWidth);
-    o.videoBitrateKbps = Recorder::bitrateKbps(bpp, enc.width(), enc.height(), o.fps);
-    QString err;
-    if (!rec.start(WId(card->winId()), o, path, &err)) {
-        out.err = err.isEmpty() ? QStringLiteral("没录起来") : err;
-        anim.stop();
-        card->close();
-        card->deleteLater();
-        QFile::remove(path);
-        return out;
-    }
-    const qint64 until = QDateTime::currentMSecsSinceEpoch() + ms;
-    while (QDateTime::currentMSecsSinceEpoch() < until) {
-        QCoreApplication::processEvents();
-        QThread::msleep(10);
-    }
-    rec.stop();
-    anim.stop();
-    for (int i = 0; i < 30; ++i)
-        QCoreApplication::processEvents();
-    card->close();
-    card->deleteLater();
-
-    const Recorder::Mp4Info info = Recorder::inspectMp4(path);
-    out.w = info.w;
-    out.h = info.h;
-    out.frames = info.frames;
-    out.bytes = info.bytes;
-    if (!info.ok)
-        out.err = QStringLiteral("文件读不回来：%1").arg(info.error);
-    const Recorder::LumaGrid g = Recorder::inspectLuma(path, 8);
-    if (!g.ok) {
-        if (out.err.isEmpty())
-            out.err = QStringLiteral("亮度网格解不出来：%1").arg(g.error);
-    } else {
-        double top = 0, bot = 0;
-        for (int c = 0; c < g.n; ++c) {
-            top += g.at(0, c);
-            bot += g.at(g.n - 1, c);
-        }
-        out.topBright = top > bot;
-    }
-    QFile::remove(path);
-    return out;
 }
 
 int runAdScan()
@@ -780,10 +696,11 @@ int main(int argc, char* argv[])
             if (!ok)
                 ++bad;
         };
-        // 九个自带工具现在全是 dll 插件。这张名单是"装齐了没有"的判据：
+        // 十一个自带工具现在全是 dll 插件。这张名单是"装齐了没有"的判据：
         // 少一个就是安装包少了文件，或者那个 dll 没通过检查 —— 别让它在界面上悄悄少一张卡。
         static const char* const kTools[] = { "repair", "ads", "disk", "network", "registry",
-                                              "startup", "user", "json", "base64" };
+                                              "startup", "user", "json", "base64", "shell",
+                                              "record" };
         const QDir dir(PluginHost::pluginsDir());
         std::printf("INFO 插件目录：%s\n", dir.absolutePath().toUtf8().constData());
         const auto& metas = PluginHost::scan();
@@ -813,6 +730,10 @@ int main(int argc, char* argv[])
                   QStringLiteral("%1/%2/%3").arg(p->name(), p->desc())
                       .arg(p->keywords().size()),
                   QStringLiteral("%1/%2/%3").arg(m->name, m->desc).arg(m->keywords.size()));
+            // 动作也是两处写法（API 3）：门口挂的牌和实例自己认的必须同一份。
+            // 路由最终看实例那份（见 PluginHost::invoke），所以这条红了 = 主程序会找不到它。
+            check((id + "：plugin.json 的 Actions 与实例自报的一致").toUtf8().constData(),
+                  m->actions.join(QLatin1Char(',')), p->actions().join(QLatin1Char(',')));
             QString err;
             QWidget* page = PluginHost::page(id, nullptr, &err);
             has((id + "：createPage 给出一张页（" + err + "）").toUtf8().constData(), page != nullptr);
@@ -842,6 +763,29 @@ int main(int argc, char* argv[])
         // 插件自带的判据：resolve 得到符号才算这条链通
         has("disk 插件带着自己的判据入口", PluginHost::selftestEntry(QStringLiteral("disk")) != nullptr);
         has("user 插件带着自己的判据入口", PluginHost::selftestEntry(QStringLiteral("user")) != nullptr);
+        // 动作路由（API 3 新加的）：**一条都不真去执行** —— 右键那些动作会弹窗、会解压、会粉碎文件。
+        // 这里只验"找得到人"这一半：主程序那张 verb 表里每个旗标都必须有人声明接它。
+        for (const char* f : kShellFlags) {
+            const QString action = QString::fromLatin1(f).mid(2);
+            check((QStringLiteral("右键动作 %1 有人接（谁）").arg(action)).toUtf8().constData(),
+                  PluginHost::actionOwner(action), QStringLiteral("shell"));
+        }
+        check("没人声明的动作老实返回空（不是随便抓一个插件顶上）",
+              PluginHost::actionOwner(QStringLiteral("compress-lzx")), QString());
+        // F2 那一档（2026-10-15 录屏本体进了 plugins/record）：热键还在这层薄壳里，
+        // 动作名 "record" 必须有人在门口挂着牌子。这条红了 = 按 F2 什么都没发生，
+        // 而"按了没反应"是这程序里最难查的一个形状，所以它和上面那七条同权重。
+        check("热键动作 record 有人接（谁）",
+              PluginHost::actionOwner(QStringLiteral("record")), QStringLiteral("record"));
+        // 录屏的判据也跟着进了插件：符号点名不到 = 那面旗会红（这里只 resolve，一次都不跑 ——
+        // 那五条全都要真屏幕，跑起来就是十几秒外加往屏幕上贴窗口）。
+        has("record 插件导出 --recq 的判据入口",
+            PluginHost::entry(QStringLiteral("record"), "ltoolRecqSelftest") != nullptr);
+        QString routedTo;
+        check("invoke 一个没人接的动作 = false + 说不出是谁",
+              !PluginHost::invoke(QStringLiteral("compress-lzx"), { QStringLiteral("x.zip") }, &routedTo)
+              && routedTo.isEmpty() ? QStringLiteral("yes") : QStringLiteral("no"),
+              QStringLiteral("yes"));
         // 搜索框那一档：工具那一节要出得来，而且不能像「计划任务」那次一样把整页独占掉
         SearchWindow w;
         auto* input = w.findChild<QLineEdit*>(QStringLiteral("input"));
@@ -877,7 +821,7 @@ int main(int argc, char* argv[])
             input->clear();
             settle();
         }
-        // 卡片墙：九个工具现在全靠插件目录，卡片数必须等于"通过检查的插件数"，
+        // 卡片墙：这十一个工具现在全靠插件目录，卡片数必须等于"通过检查的插件数"，
         // 而且每张卡都要能在布局里走到（数 findChild 不等于界面可见 —— 配置页那栏
         // 就是这么隐身的，2026-10-12 他报的）。这条替掉了原来那两条"内嵌槽位 0..N-1"。
         ToolsPage wall;
@@ -912,9 +856,9 @@ int main(int argc, char* argv[])
         check("卡片数 = 通过检查的插件数", QString::number(cards), QString::number(okCount));
         check("每张卡都真的摆在布局里（不是只 new 出来）", QString::number(reachable),
               QString::number(cards));
-        check("九个工具都在卡片墙上", QString::number(cards), QStringLiteral("9"));
+        check("十一个工具都在卡片墙上", QString::number(cards), QStringLiteral("11"));
         // 卡片墙的几何：离屏 resize 之后布局会算，不用 show（show 就把设置窗拍到他桌面上）。
-        // 这条盯的是"九张卡摆得开吗"—— 卡片来源换成插件目录之后，这是新Shape。
+        // 这条盯的是"这十一张卡摆得开吗"—— 卡片来源换成插件目录之后，这是新Shape。
         // WA_DontShowOnScreen：走完整的 show/布局激活路径，但不往屏幕上贴一个像素、
         // 也不抢焦点。裸 resize() 不够 —— 没 show 过的顶层窗口布局根本不算，
         // 第一版就是这么量出"九张卡全在 (0,0,0,0)"，那是探针坏了不是卡片坏了。
@@ -2157,130 +2101,14 @@ int main(int argc, char* argv[])
     // + "录一段指定尺寸的窗口"，每一步采 私有字节/工作集/句柄数。
     // 私有字节随轮数线性涨 = 真泄漏；涨一两轮就封顶 = 分配器留着页不还操作系统（那不是泄漏）。
     // 夹具和产物都在 %TEMP%\ltool-memloop 里，跑完删掉。
+    // 2026-10-15：录屏本体进了 plugins/record，这一条量的是"录一整场泄多少"，判据跟着
+    // Recorder 走（导出符号 ltoolMemloopRun），这儿只剩读命令行 + 点名要符号。
     if (args.contains("--memloop")) {
         const QString rArg = args.mid(args.indexOf("--memloop") + 1).value(0);
         const int rounds = rArg.isEmpty() ? 3 : qBound(1, rArg.toInt(), 12);
         const QString sizeSpec = args.mid(args.indexOf("--memloop") + 2).value(0);
-        int cw = 1280, ch = 800;
-        if (sizeSpec.contains(QLatin1Char('x'))) {
-            cw = sizeSpec.section(QLatin1Char('x'), 0, 0).toInt();
-            ch = sizeSpec.section(QLatin1Char('x'), 1, 1).toInt();
-        }
-        if (cw < 64 || ch < 64) {
-            cw = 1280;
-            ch = 800;
-        }
-        struct Snap {
-            quint64 priv = 0;
-            quint64 ws = 0;
-            quint32 handles = 0;
-        };
-        const auto snap = [] {
-            PROCESS_MEMORY_COUNTERS_EX pmc {};
-            pmc.cb = sizeof(pmc);
-            K32GetProcessMemoryInfo(GetCurrentProcess(),
-                                    reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc));
-            DWORD h = 0;
-            GetProcessHandleCount(GetCurrentProcess(), &h);
-            return Snap { quint64(pmc.PrivateUsage), quint64(pmc.WorkingSetSize), h };
-        };
-        const auto mb = [](quint64 bytes) { return double(bytes) / 1048576.0; };
-        const auto delta = [mb](quint64 now, quint64 before) { return mb(now) - mb(before); };
-
-        const QString root = QDir::tempPath() + "/ltool-memloop";
-        QDir(root).removeRecursively();
-        QDir().mkpath(root + "/src");
-        {   // 32MB 伪随机字节：随机数压不动，这样"解压出来的量"和包大小对得上
-            quint64 s = 88172645463325252ULL;
-            QByteArray chunk(1 << 20, '\0');
-            for (int f = 0; f < 2; ++f) {
-                QFile o(root + QString("/src/big%1.bin").arg(f));
-                if (!o.open(QIODevice::WriteOnly | QIODevice::Truncate))
-                    continue;
-                for (int i = 0; i < 16; ++i) {
-                    for (int b = 0; b < chunk.size(); ++b) {
-                        s ^= s << 13;
-                        s ^= s >> 7;
-                        s ^= s << 17;
-                        chunk[b] = char(int(s & 0xff));
-                    }
-                    o.write(chunk);
-                }
-            }
-        }
-        const QString zipPath = root + "/pack.zip";
-        const Archive::Result mk = Archive::compress({ root + "/src" }, zipPath, false, nullptr,
-                                                     nullptr);
-        std::printf("INFO 夹具：make ok=%d err=%s 包=%.1fMB\n", mk.ok ? 1 : 0,
-                    mk.error.toUtf8().constData(), mb(QFileInfo(zipPath).size()));
-
-        QWidget* card = new QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint);
-        card->resize(cw, ch);
-        auto* lab = new QLabel(QStringLiteral("0"), card);
-        lab->setGeometry(cw - 96, ch - 46, 94, 44);
-        lab->setStyleSheet(QStringLiteral("background:#000000;color:#e8ebf2;font-size:26px;"));
-        const QRect avail = QGuiApplication::primaryScreen()->availableGeometry();
-        card->move(avail.right() - cw - 12, avail.bottom() - ch - 12);
-        card->setAttribute(Qt::WA_ShowWithoutActivating);
-        card->show();
-        int tick = 0;
-        QTimer anim;
-        QObject::connect(&anim, &QTimer::timeout, card, [&] { lab->setText(QString::number(++tick)); });
-        anim.start(30);
-        QCoreApplication::processEvents();
-
-        Recorder rec;                 // 和产品一样：一个 Recorder 从头用到尾
-        Recorder::Options o;
-        o.fps = 15;
-        const Snap base = snap();
-        std::printf("INFO 起始 私有=%.1fMB 工作集=%.1fMB 句柄=%u（卡片 %dx%d，一帧 RGBA=%.1fMB）\n",
-                    mb(base.priv), mb(base.ws), base.handles, cw, ch,
-                    mb(quint64(cw - cw % 2) * (ch - ch % 2) * 4));
-        for (int i = 1; i <= rounds; ++i) {
-            const Snap a = snap();
-            const QString outDir = root + QString("/x%1").arg(i);
-            const Archive::Result ex = Archive::extract(zipPath, outDir, nullptr, nullptr);
-            const Snap b = snap();
-            std::printf("轮 %d  解压完：私有 %+0.1fMB 句柄 %+d（解出 %lldMB）\n", i,
-                        delta(b.priv, a.priv),
-                        int(b.handles) - int(a.handles),
-                        long long(ex.bytes / 1048576));
-            const QString vid = root + QString("/r%1.mp4").arg(i);
-            QFile::remove(vid);
-            QString err;
-            const bool started = rec.start(card->winId(), o, vid, &err);
-            int frames = 0;
-            if (started) {
-                QElapsedTimer w;
-                w.start();
-                while (w.elapsed() < 2000) {
-                    QCoreApplication::processEvents();
-                    QThread::msleep(20);
-                }
-                rec.stop();
-                frames = rec.framesCaptured();
-            }
-            for (int k = 0; k < 15; ++k) {      // 让收尾的释放都跑到
-                QCoreApplication::processEvents();
-                QThread::msleep(20);
-            }
-            const Snap c = snap();
-            std::printf("      录 %d 帧：私有 %+0.1fMB 句柄 %+lld | 收尾后私有=%0.1f 工作集=%0.1f 句柄=%u err=%s\n",
-                        frames, delta(c.priv, b.priv),
-                        long long(c.handles) - long long(b.handles), mb(c.priv), mb(c.ws), c.handles,
-                        err.toUtf8().constData());
-            QDir(outDir).removeRecursively();
-            QFile::remove(vid);
-        }
-        const Snap z = snap();
-        std::printf("INFO 结束 私有=%.1fMB（%d 轮净涨 %+0.1fMB，每轮 %+0.2fMB）工作集=%.1fMB 句柄=%u\n",
-                    mb(z.priv), rounds, delta(z.priv, base.priv),
-                    (mb(z.priv) - mb(base.priv)) / rounds, mb(z.ws), z.handles);
-        anim.stop();
-        delete card;
-        QDir(root).removeRecursively();
-        std::fflush(stdout);
-        return 0;
+        return runPluginSelftest(QStringLiteral("record"), "ltoolMemloopRun",
+                                 SelftestArg::MsAndText, rounds, sizeSpec, "memloop");
     }
 
     // --pathcfg：验配置页那两行"存放目录"真的管用。APPDATA 已挪到 %TEMP%\ltool-pathcfg
@@ -2502,636 +2330,45 @@ int main(int argc, char* argv[])
 
     // --recprobe [观察毫秒]：录屏之前先量机器（有没有 H.264/AAC 编码器、MP4 写得出吗、
     // Win11 的按窗口取帧能不能用、一帧拷到 CPU 要多久）。会弹一个自己的小窗动 1 秒多，
-    // 不碰用户其它窗口。
+    // 不碰用户其它窗口。RecProbe.cpp 现在也在 plugins/record 里编，符号叫 ltoolRecprobeRun。
     if (args.contains("--recprobe")) {
         const QString arg = args.mid(args.indexOf("--recprobe") + 1).value(0);
         const int observeMs = arg.isEmpty() ? 1500 : arg.toInt();
-        const QString rep = RecProbe::run(observeMs);
-        std::printf("%s\n", rep.toUtf8().constData());
-        std::fflush(stdout);
-        return 0;
+        return runPluginSelftest(QStringLiteral("record"), "ltoolRecprobeRun",
+                                 SelftestArg::Ms, observeMs, QString(), "recprobe");
     }
 
 
     // --recq：录屏那两个新选择（画面大小 / 画质）到底进没进编码器。
     // 全部拿真编码器量：录自制卡 → 把 mp4 解回来说话。目标窗口是自己造的、
-    // 摆在屏幕右下角、不抢焦点，不碰用户桌面上任何东西。
-    if (args.contains("--recq")) {
-        int bad = 0;
-        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
-            const bool ok = got == want;
-            if (!ok)
-                ++bad;
-            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
-                        got.toUtf8().constData(), want.toUtf8().constData());
-        };
-        const auto has = [&bad](const char* name, bool ok) {
-            std::printf("%s %s\n", ok ? "PASS" : "FAIL", name);
-            if (!ok)
-                ++bad;
-        };
-        // 先量算法本身（这几条不用录）
-        check("不缩：2560x1440 原样", sizeText(Recorder::encodedSize(2560, 1440, 0)),
-              QStringLiteral("2560x1440"));
-        check("长边≤1280：等比到 1280x720", sizeText(Recorder::encodedSize(2560, 1440, 1280)),
-              QStringLiteral("1280x720"));
-        check("奇数先取偶再缩：1281x721 ≤640 → 640x360", sizeText(Recorder::encodedSize(1281, 721, 640)),
-              QStringLiteral("640x360"));
-        check("只缩不放大：1920x1080 要 ≤2560 还是 1920x1080",
-              sizeText(Recorder::encodedSize(1920, 1080, 2560)), QStringLiteral("1920x1080"));
-        check("结果永远是偶数（H.264 拒奇数画幅）",
-              sizeText(Recorder::encodedSize(999, 555, 333)), QStringLiteral("332x184"));
-        // 码率按**编码后**画幅算：同一档 bpp，缩一半面积就该给一半不到
-        const int kFull = Recorder::bitrateKbps(0.145, 2560, 1440, 15);
-        const int kHalf = Recorder::bitrateKbps(0.145, 1280, 720, 15);
-        std::printf("INFO 标准档码率：2560x1440=%d kbps，1280x720=%d kbps\n", kFull, kHalf);
-        check("标准档在 1440p15 上就是以前那个 8000", QString::number(kFull / 1000 * 1000),
-              QStringLiteral("8000"));
-        has("缩了以后码率跟着降（不然是白花一倍的钱）", kHalf * 2 < kFull * 3);
+    // 摆在屏幕右下角、不抢焦点，不碰用户桌面上任何东西。判据本体在 plugins/record。
+    if (args.contains("--recq"))
+        return runPluginSelftest(QStringLiteral("record"), "ltoolRecqSelftest",
+                                 SelftestArg::None, 0, QString(), "recq");
 
-        // 再拿编码器量三局：原始/标准、≤320/标准、原始/超清 vs 原始/流畅（带噪声）
-        const RecRun full = recordCardRun(1, 640, 400, 0, 0.145, 2500, false);
-        // 变量名别叫 small：Windows 的 rpcndr.h 里 `#define small char`，
-        // 写它会编成 "const RecRun char = ..."（本机实测撞过）
-        const RecRun shrunk = recordCardRun(2, 640, 400, 320, 0.145, 2500, false);
-        std::printf("INFO 三局的错：%s / %s\n", full.err.toUtf8().constData(),
-                    shrunk.err.toUtf8().constData());
-        check("不缩那局：文件画幅就是卡片取偶", QString("%1x%2").arg(full.w).arg(full.h),
-              QStringLiteral("640x400"));
-        check("选 ≤320 那局：文件画幅真的缩到了 320x200", QString("%1x%2").arg(shrunk.w).arg(shrunk.h),
-              QStringLiteral("320x200"));
-        std::printf("INFO 帧数：原始 %lld，缩小 %lld\n", full.frames, shrunk.frames);
-        has("两局都解得出帧（不是只写出一个空壳文件）",
-            full.frames > 10 && shrunk.frames > 10);
-        has("缩小那局朝向还是正的（上亮下暗）", shrunk.topBright);
-        std::printf("INFO 同内容同长度：原始 %lld 字节，缩小 %lld 字节\n", full.bytes, shrunk.bytes);
-        has("缩小那局文件真的更小", shrunk.bytes < full.bytes);
-
-        const int lowKbps = Recorder::bitrateKbps(0.060, 640, 400, 15);
-        const int highKbps = Recorder::bitrateKbps(0.400, 640, 400, 15);
-        const RecRun low = recordCardRun(3, 640, 400, 0, 0.060, 2500, true);
-        const RecRun high = recordCardRun(4, 640, 400, 0, 0.400, 2500, true);
-        std::printf("INFO 噪声画面：流畅 %lld 字节，超清 %lld 字节\n", low.bytes, high.bytes);
-        std::printf("INFO 两档比值 %.0f%%\n", 100.0 * double(high.bytes) / double(low.bytes));
-        // 这台机器的 MF 编码器把 MF_MT_AVG_BITRATE 当**上限**用（实测：内容不够复杂时
-        // 它不会硬凑到目标码率）。所以"档位进去了"的判据不是"文件大一倍"，而是
-        // "低那一档贴着它自己的上限"—— 差 15% 以内说明那个数真的交给了编码器。
-        // 这台机器的 MF 编码器把 MF_MT_AVG_BITRATE 当**参考**而不是硬上限
-        // （低档目标 400kbps，实测那 2.5 秒写出 ~900kbps；高档目标 1536kbps 实测 ~1180kbps）。
-        // 所以判据不能写"贴着上限±15%"（我第一版就是这么写的，当场红），要写能站住的：
-        // 同一份内容、同一时长，档位调高之后文件必须**明显不变小**（实测两遍 +26% / +35%）。
-        std::printf("INFO 流畅 %lld 字节（目标 %d kbps）、超清 %lld 字节（目标 %d kbps）\n",
-                    low.bytes, lowKbps, high.bytes, highKbps);
-        has("换到超清这一档，同内容下文件明显变大（档位真的进了编码器）",
-            high.bytes > low.bytes * 110 / 100);
-        has("两局噪声都录成了", low.frames > 10 && high.frames > 10);
-
-        std::printf("recq: 失败 %d 项\n", bad);
-        std::fflush(stdout);
-        return bad == 0 ? 0 : 1;
-    }
-
-    // --rectest [秒] [宽x高]：验一遍"只录某个窗口 → mp4 → 再读回来数帧"。
+    // --rectest [秒]：验一遍"只录某个窗口 → mp4 → 再读回来数帧"，外加第二路"录整块屏幕"。
     // 目标窗口是自己造的一张每 30ms 换一个数字的卡片，不碰用户桌面上任何东西；
     // 判据不是"文件存在"，而是拿 SourceReader 把文件解回来数出 N 帧、且 N 和采集到的帧数一致。
-    // 尺寸可以指定：录 MAA 时编码器拒了 RGB32（0xc00d36b4），要用奇数/大尺寸把那一条钉死。
+    // 本体在 plugins/record/recordplugin.cpp（Recorder 就在那儿编，测试跟着实现走）。
+    // 可选的「宽x高」用来钉"奇数尺寸被 H.264 拒"那一条 —— 导出符号收 (int, const char*)，
+    // 解析在插件里那一个 cardSize()（--memloop 的画幅参数走同一条）。
     if (args.contains("--rectest")) {
         const QString a = args.mid(args.indexOf("--rectest") + 1).value(0);
         const int secs = a.isEmpty() ? 4 : qBound(2, a.toInt(), 30);
         const QString sizeSpec = args.mid(args.indexOf("--rectest") + 2).value(0);
-        int cw = 640, ch = 400;
-        if (sizeSpec.contains(QLatin1Char('x'))) {
-            cw = sizeSpec.section(QLatin1Char('x'), 0, 0).toInt();
-            ch = sizeSpec.section(QLatin1Char('x'), 1, 1).toInt();
-        }
-        if (cw < 64 || ch < 64)
-            cw = ch = 640;
-        int bad = 0;
-        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
-            const bool ok = got == want;
-            if (!ok)
-                ++bad;
-            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
-                        got.toUtf8().constData(), want.toUtf8().constData());
-        };
-        const QString path = QDir::tempPath() + "/ltool-rectest.mp4";
-        QFile::remove(path);
-
-        QWidget* card = new QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint);
-        card->resize(cw, ch);
-        // 图案必须上下左右都不对称：以前是一张"居中跳数字"的深色卡，
-        // 画面翻过来的时候网格长得一模一样，朝向这种错根本抓不到（用户报的"录出来是倒的"）。
-        // 上半白、下半黑、左沿抹一条黑带 → 解回来的亮度网格能同时判上下和左右。
-        auto* topHalf = new QLabel(card);
-        topHalf->setGeometry(0, 0, cw, ch / 2);
-        topHalf->setStyleSheet(QStringLiteral("background:#ffffff;"));
-        auto* botHalf = new QLabel(card);
-        botHalf->setGeometry(0, ch / 2, cw, ch - ch / 2);
-        botHalf->setStyleSheet(QStringLiteral("background:#000000;"));
-        auto* stripe = new QLabel(card);
-        stripe->setGeometry(0, 0, cw / 8, ch / 2);
-        stripe->setStyleSheet(QStringLiteral("background:#000000;"));
-        auto* lab = new QLabel(QStringLiteral("0"), card);
-        lab->setGeometry(cw - 96, ch - 46, 94, 44);   // 右下角跳动：不重绘的话 WGC 一帧也不给
-        lab->setAlignment(Qt::AlignCenter);
-        lab->setStyleSheet(QStringLiteral("background:#000000;color:#e8ebf2;font-size:26px;"));
-        // 必须真在屏幕上：完全在显示器外的窗口 Qt 直接跳过重绘，WGC 就一帧也不给（实测只出 1 帧）。
-        // 挑右下角，且不抢焦点，尽量不打扰正在用机器的人。
-        {
-            const QRect avail = QGuiApplication::primaryScreen()->availableGeometry();
-            card->move(avail.right() - cw - 12, avail.bottom() - ch - 12);
-        }
-        card->setAttribute(Qt::WA_ShowWithoutActivating);
-        card->show();
-        QCoreApplication::processEvents();
-
-        int tick = 0;
-        QTimer anim;
-        QObject::connect(&anim, &QTimer::timeout, card, [&] { lab->setText(QString::number(++tick)); });
-        anim.start(30);
-
-        Recorder rec;
-        Recorder::Options o;
-        o.fps = 15;
-        o.videoBitrateKbps = 8000;
-        QString err;
-        const bool started = rec.start(card->winId(), o, path, &err);
-        std::printf("INFO start=%d err=%s\n", started ? 1 : 0, err.toUtf8().constData());
-        if (started) {
-            QElapsedTimer wall;
-            wall.start();
-            while (wall.elapsed() < secs * 1000LL) {
-                QCoreApplication::processEvents();
-                QThread::msleep(20);
-            }
-            anim.stop();
-            const qint64 wantMs = wall.elapsed();
-            rec.stop();
-            check("录制没有报错", rec.errorText(), QString());
-            const int frames = rec.framesCaptured();
-            std::printf("INFO 采到 %d 帧 / %lldms（约 %.1f fps）\n", frames, wantMs,
-                        frames * 1000.0 / std::max<qint64>(1, wantMs));
-            check("帧数够（至少 8fps 的量）", frames >= secs * 8 ? "yes" : "no", "yes");
-            const Recorder::Mp4Info mp4 = Recorder::inspectMp4(path);
-            std::printf("INFO 读回: %lld 帧 / %lldms / %lld 字节 / 音轨=%d err=%s\n",
-                        long long(mp4.frames), long long(mp4.durationMs), long long(mp4.bytes),
-                        mp4.hasAudio ? 1 : 0, mp4.error.toUtf8().constData());
-            check("读回来没报错", mp4.error, QString());
-            // 读回来的帧数可以比写进去的多：SourceReader 会按流声明的 15fps 补帧（窗口静止时
-            // WGC 不给帧，我这边不凑帧），所以这里判的是"不少、且不离谱地多"。
-            check("解出来的帧数不少于采集的", mp4.frames >= frames ? "yes" : "no", "yes");
-            check("补帧没失控", mp4.frames <= frames * 3 / 2 + 10 ? "yes" : "no", "yes");
-            check("时长和录的秒数对得上",
-                  qAbs(mp4.durationMs - wantMs) < wantMs / 4 ? "yes" : "no", "yes");
-            check("默认不录声", mp4.hasAudio ? "yes" : "no", "no");
-            check("文件不是空壳", mp4.bytes > 2000 ? "yes" : "no", "yes");
-            // ---- 朝向：把文件解一帧出来看亮度网格（NV12 的 Y 平面第 0 行 = 画面上沿）----
-            const Recorder::LumaGrid lg = Recorder::inspectLuma(path, 8);
-            std::printf("INFO 亮度网格 %dx%d（帧 %dx%d pitch=%ld）err=%s\n", lg.n, lg.n, lg.w,
-                        lg.h, lg.pitch, lg.error.toUtf8().constData());
-            if (lg.ok) {
-                static const char kRamp[] = " .:-=+*#%@";
-                for (int r = 0; r < lg.n; ++r) {
-                    std::printf("INFO |");
-                    for (int c = 0; c < lg.n; ++c) {
-                        const int idx = qBound(0, int(lg.at(r, c) * 9 / 255.0), 9);
-                        std::printf("%c", kRamp[idx]);
-                    }
-                    std::printf("|  %d\n", int(lg.at(r, 0)));
-                }
-            }
-            const auto meanRows = [&lg](int from, int to, int c0, int c1) {
-                double s = 0.0;
-                int k = 0;
-                for (int r = from; r <= to; ++r)
-                    for (int c = c0; c <= c1; ++c) {
-                        s += lg.at(r, c);
-                        ++k;
-                    }
-                return k ? s / k : 0.0;
-            };
-            const double topMean = meanRows(1, 2, 2, lg.n - 1);
-            const double botMean = meanRows(lg.n - 3, lg.n - 2, 0, lg.n - 1);
-            std::printf("INFO 上排均亮=%.0f 下排=%.0f 左上=%.0f 右上=%.0f\n", topMean, botMean,
-                        lg.at(1, 0), lg.at(1, lg.n - 1));
-            check("画面没上下颠倒（白的在上、黑的在下）",
-                  lg.ok && topMean > botMean + 60 ? "yes" : "no", "yes");
-            check("画面没左右镜像（左沿那条黑带还在左边）",
-                  lg.ok && lg.at(1, lg.n - 1) > lg.at(1, 0) + 60 ? "yes" : "no", "yes");
-        } else {
-            ++bad;
-        }
-        // ---- 第二路：录整块屏幕（F2 选择器最上面那一条）。上面那张卡还在每 30ms 换一个数字，
-        //      所以"屏幕一定有变化"是确定的，不用去合成鼠标移动。
-        //      朝向不在这里重验：编码端 stride/直拷那一路两种模式共用，窗口那一路已经验过。----
-        {
-            const HMONITOR mon = MonitorFromPoint(POINT { 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
-            MONITORINFO mi {};
-            mi.cbSize = sizeof(mi);
-            int mw = 0, mh = 0;
-            if (mon && GetMonitorInfoW(mon, &mi)) {
-                mw = mi.rcMonitor.right - mi.rcMonitor.left;
-                mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
-            }
-            const QString mpath = QDir::tempPath() + "/ltool-rectest-screen.mp4";
-            QFile::remove(mpath);
-            Recorder mrec;
-            Recorder::Options mo;
-            mo.fps = 15;
-            QString merr;
-            const bool mstarted = mrec.start(WId(mon), mo, mpath, &merr, true);
-            std::printf("INFO 录屏幕 start=%d err=%s 屏幕=%dx%d\n", mstarted ? 1 : 0,
-                        merr.toUtf8().constData(), mw, mh);
-            check("录整块屏幕能开起来", mstarted ? "yes" : "no", "yes");
-            if (mstarted) {
-                check("录屏幕时 running() 是真的", mrec.running() ? "yes" : "no", "yes");
-                QElapsedTimer w2;
-                w2.start();
-                while (w2.elapsed() < 1500) {
-                    QCoreApplication::processEvents();   // 让卡片的 QTimer 跑起来，屏幕才有变化
-                    QThread::msleep(10);
-                }
-                const qint64 recMs = w2.elapsed();
-                mrec.stop();
-                const int mf = mrec.framesCaptured();
-                std::printf("INFO 录屏幕采到 %d 帧 err=%s\n", mf,
-                            mrec.errorText().toUtf8().constData());
-                check("录屏幕采到帧了", mf > 0 ? "yes" : "no", "yes");
-                check("录屏幕全程没报错", mrec.errorText(), QString());
-                check("录屏幕收尾后 running() 回 false", mrec.running() ? "yes" : "no", "no");
-                const Recorder::Mp4Info mm = Recorder::inspectMp4(mpath);
-                std::printf("INFO 录屏幕读回: %lld 帧 / %lldms / %dx%d / %lld 字节\n",
-                            long long(mm.frames), long long(mm.durationMs), mm.w, mm.h,
-                            long long(mm.bytes));
-                check("录屏幕的画幅=这块屏幕的物理尺寸（H.264 只吃偶数）",
-                      QStringLiteral("%1x%2").arg(mm.w).arg(mm.h),
-                      QStringLiteral("%1x%2").arg(mw - mw % 2).arg(mh - mh % 2));
-                check("录屏幕的时长对得上",
-                      qAbs(mm.durationMs - recMs) < recMs / 2 + 500 ? "yes" : "no", "yes");
-            }
-            QFile::remove(mpath);
-        }
-        delete card;
-        std::printf("rectest: 失败 %d 项\n", bad);
-        std::fflush(stdout);
-        return bad == 0 ? 0 : 1;
+        return runPluginSelftest(QStringLiteral("record"), "ltoolRectestRun",
+                                 SelftestArg::MsAndText, secs, sizeSpec, "rectest");
     }
 
     // --recordui [秒]：验 F2 那套界面的链条（选窗口的列表有没有内容、悬浮条会不会计数、
     // 点了停止之后文件能不能解回帧）。按钮是用 click() 程序化按的，不合成鼠标，不抢焦点。
+    // 2026-10-15：判据跟着 RecordUi 一起搬进 plugins/record（那边导出的符号就叫
+    // ltoolRecorduiRun），主程序只剩"读命令行 + 点名要符号"这一步。
     if (args.contains("--recordui")) {
         const QString a = args.mid(args.indexOf("--recordui") + 1).value(0);
         const int secs = a.isEmpty() ? 3 : qBound(2, a.toInt(), 20);
-        int bad = 0;
-        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
-            const bool ok = got == want;
-            if (!ok)
-                ++bad;
-            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
-                        got.toUtf8().constData(), want.toUtf8().constData());
-        };
-        const auto has = [](const QString& s, const char* needle) {
-            return s.contains(QString::fromUtf8(needle)) ? QStringLiteral("yes") : QStringLiteral("no");
-        };
-
-        WindowPicker picker;
-        auto* plist = picker.findChild<QListWidget*>(QStringLiteral("list"));
-        // 新加的两颗下拉框（画质 / 画面）。这两条盯的是"改了到不到配置"：
-        // 选择窗每次按 F2 都重建，不落盘的话用户下次按 F2 就全回默认档。
-        {
-            auto* q = picker.findChild<QComboBox*>(QStringLiteral("recQuality"));
-            auto* w = picker.findChild<QComboBox*>(QStringLiteral("recMaxWidth"));
-            QSet<const QWidget*> laid;
-            std::function<void(QLayout*)> walk = [&](QLayout* l) {
-                if (!l)
-                    return;
-                for (int i = 0; i < l->count(); ++i) {
-                    QLayoutItem* it = l->itemAt(i);
-                    if (!it)
-                        continue;
-                    if (QWidget* cw = it->widget()) {
-                        laid.insert(cw);
-                        walk(cw->layout());
-                    } else if (QLayout* sub = it->layout())
-                        walk(sub);
-                }
-            };
-            walk(picker.layout());
-            check("选择窗有画质和画面两颗下拉框",
-                  QStringLiteral("%1/%2").arg(q != nullptr ? 1 : 0).arg(w != nullptr ? 1 : 0),
-                  QStringLiteral("1/1"));
-            check("两颗下拉框都在布局里（不是只 new 出来）",
-                  QStringLiteral("%1/%2").arg(laid.contains(q) ? 1 : 0).arg(laid.contains(w) ? 1 : 0),
-                  QStringLiteral("1/1"));
-            check("四档画质 / 四种画面", QStringLiteral("%1/%2").arg(q->count()).arg(w->count()),
-                  QStringLiteral("4/4"));
-            // 初始值必须来自配置（缺省=标准 / 原始）：这是"回填和读取同源"的判据
-            QSettings st(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
-            const int savedQ = st.value(QStringLiteral("ui/recQuality"), 1).toInt();
-            const int savedW = st.value(QStringLiteral("ui/recMaxWidth"), 0).toInt();
-            check("下拉框当前档 == 配置里存的档",
-                  QStringLiteral("%1/%2").arg(q->currentIndex()).arg(w->currentData().toInt()),
-                  QStringLiteral("%1/%2").arg(savedQ).arg(savedW));
-            // 程序化改档（不合成鼠标）之后必须立刻落盘
-            const int origQ = q->currentIndex(), origW = w->currentData().toInt();
-            q->setCurrentIndex(3);
-            w->setCurrentIndex(2);
-            st.sync();
-            QSettings st2(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
-            check("改了画质/画面立刻写进配置",
-                  QStringLiteral("%1/%2").arg(st2.value(QStringLiteral("ui/recQuality"), -1).toInt())
-                      .arg(st2.value(QStringLiteral("ui/recMaxWidth"), -1).toInt()),
-                  QStringLiteral("3/1280"));
-            // 再建一个选择窗（模拟下一次按 F2）：必须回填成刚选的那档
-            WindowPicker again;
-            auto* q2 = again.findChild<QComboBox*>(QStringLiteral("recQuality"));
-            auto* w2 = again.findChild<QComboBox*>(QStringLiteral("recMaxWidth"));
-            check("下一次打开选择窗还是刚选那两档",
-                  QStringLiteral("%1/%2").arg(q2->currentIndex()).arg(w2->currentData().toInt()),
-                  QStringLiteral("3/1280"));
-            // 收尾：把用户原来的档还回去（这条测试跑在他的真实配置上）
-            q->setCurrentIndex(origQ);
-            w->setCurrentIndex(0);   // 先退回不缩，再按原来的值找回去
-            for (int i = 0; i < w->count(); ++i)
-                if (w->itemData(i).toInt() == origW)
-                    w->setCurrentIndex(i);
-            st2.sync();
-            QSettings st3(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
-            check("跑完把用户原来的档还回去了",
-                  QStringLiteral("%1/%2").arg(st3.value(QStringLiteral("ui/recQuality"), -1).toInt())
-                      .arg(st3.value(QStringLiteral("ui/recMaxWidth"), -1).toInt()),
-                  QStringLiteral("%1/%2").arg(origQ).arg(origW));
-        }
-        // 右上角那颗「✕」：这窗没标题栏，Esc / 失焦 / 再按 F2 都是"看不见的退路"，
-        // 界面上得有一个落点。判据走布局可达性而不是 findChild —— 后者只能证明
-        // 控件被构造过，证明不了它摆在了页面上（配置页那一栏刚在这上面栽过）。
-        const auto inLayoutOf = [](QWidget* root, QWidget* w) {
-            bool found = false;
-            std::function<void(QLayout*)> walk = [&](QLayout* l) {
-                if (!l || found)
-                    return;
-                for (int i = 0; i < l->count(); ++i) {
-                    QLayoutItem* it = l->itemAt(i);
-                    if (!it)
-                        continue;
-                    if (QWidget* cw = it->widget()) {
-                        if (cw == w) {
-                            found = true;
-                            return;
-                        }
-                        walk(cw->layout());
-                    } else if (QLayout* sub = it->layout())
-                        walk(sub);
-                }
-            };
-            walk(root->layout());
-            return found;
-        };
-        auto* pclose = picker.findChild<QPushButton*>(QStringLiteral("close"));
-        check("选择窗右上角有关闭按钮", pclose && pclose->text() == QStringLiteral("\u2715")
-                  && pclose->isVisibleTo(&picker) ? "yes" : "no", "yes");
-        check("关闭按钮真的摆在布局里", pclose && inLayoutOf(&picker, pclose) ? "yes" : "no", "yes");
-        std::printf("INFO 选择器列了 %d 个窗口\n", plist ? plist->count() : -1);
-        check("选择器列出了窗口", plist && plist->count() > 2 ? "yes" : "no", "yes");
-        // 整块屏幕那条必须排在最上面，并且带着"这条是屏幕不是窗口"的标志位
-        // （录的时候靠它决定走 CreateForMonitor 还是 CreateForWindow）
-        auto* first = plist ? plist->item(0) : nullptr;
-        auto* second = plist && plist->count() > 1 ? plist->item(1) : nullptr;
-        std::printf("INFO 第一条：%s\n", first ? first->text().toUtf8().constData() : "");
-        check("第一条是整个屏幕", first && first->text().startsWith(QStringLiteral("整个屏幕")) ? "yes" : "no", "yes");
-        check("第一条带屏幕标志", first && first->data(Qt::UserRole + 2).toBool() ? "yes" : "no", "yes");
-        check("第二条是窗口（不带屏幕标志）", second && !second->data(Qt::UserRole + 2).toBool() ? "yes" : "no", "yes");
-
-        // 目标窗口：右上角一张每 30ms 换一个数字的小卡，不抢焦点
-        QWidget* card = new QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint);
-        card->resize(360, 240);
-        auto* lab = new QLabel(QStringLiteral("0"), card);
-        lab->setGeometry(0, 0, 360, 240);
-        lab->setAlignment(Qt::AlignCenter);
-        lab->setStyleSheet("background:#1d2026;color:#e8ebf2;font-size:30px;");
-        const QRect avail = QGuiApplication::primaryScreen()->availableGeometry();
-        card->move(avail.left() + 20, avail.top() + 20);
-        card->setAttribute(Qt::WA_ShowWithoutActivating);
-        card->show();
-        int tick = 0;
-        QTimer anim;
-        QObject::connect(&anim, &QTimer::timeout, card, [&] { lab->setText(QString::number(++tick)); });
-        anim.start(30);
-        QCoreApplication::processEvents();
-
-        const QString path = QDir::tempPath() + "/ltool-recordui.mp4";
-        QFile::remove(path);
-        Recorder rec;
-        Recorder::Options o;
-        o.fps = 15;
-        QString err;
-        const bool started = rec.start(card->winId(), o, path, &err);
-        std::printf("INFO start=%d err=%s\n", started ? 1 : 0, err.toUtf8().constData());
-        if (started) {
-            RecordBar bar(&rec, path);
-            bar.show();
-            auto* text = bar.findChild<QLabel*>(QStringLiteral("text"));
-            auto* stop = bar.findChild<QPushButton*>(QStringLiteral("stop"));
-            QElapsedTimer wall;
-            wall.start();
-            while (wall.elapsed() < secs * 1000LL) {
-                QCoreApplication::processEvents();
-                QThread::msleep(20);
-            }
-            const QString midText = text ? text->text() : QString();
-            std::printf("INFO 条上写的：%s\n", midText.toUtf8().constData());
-            check("悬浮条在计数（有秒数和帧数）",
-                  midText.contains(QStringLiteral(":")) && midText.contains(QStringLiteral("帧")) ? "yes" : "no",
-                  "yes");
-            stop->click();                       // 程序化按"停止"
-            QCoreApplication::processEvents();
-            const QString endText = text ? text->text() : QString();
-            std::printf("INFO 停止后写的：%s\n", endText.toUtf8().constData());
-            check("停止后报的是保存成功", has(endText, "已保存"), "yes");
-            check("按钮变成打开所在目录", stop->text(), QStringLiteral("打开所在目录"));
-            const Recorder::Mp4Info mp4 = Recorder::inspectMp4(path);
-            std::printf("INFO 读回: %lld 帧 / %lldms / %lld 字节\n", long long(mp4.frames),
-                        long long(mp4.durationMs), long long(mp4.bytes));
-            check("文件能解出帧", mp4.frames > 0 ? "yes" : "no", "yes");
-            bar.close();
-
-            // ---- 「不要了」那一局：停下并且把文件删掉，别在录像目录里留废 MP4 ----
-            const QString pathX = QDir::tempPath() + "/ltool-recordui-x.mp4";
-            QFile::remove(pathX);
-            QString errX;
-            if (rec.start(card->winId(), o, pathX, &errX)) {
-                RecordBar barX(&rec, pathX);
-                barX.show();
-                auto* textX = barX.findChild<QLabel*>(QStringLiteral("text"));
-                auto* cancel = barX.findChild<QPushButton*>(QStringLiteral("cancel"));
-                check("悬浮条上有「不要了」", cancel ? "yes" : "no", "yes");
-                for (int i = 0; i < 30 && cancel; ++i) {
-                    QCoreApplication::processEvents();
-                    QThread::msleep(20);
-                }
-                cancel->click();
-                QCoreApplication::processEvents();
-                std::printf("INFO 取消后写的：%s\n", textX ? textX->text().toUtf8().constData() : "");
-                check("取消之后条上说实话（已取消，没保存）",
-                      textX && textX->text().contains(QStringLiteral("已取消")) ? "yes" : "no", "yes");
-                check("取消之后文件真的不在了", QFile::exists(pathX) ? "还在" : "已删", "已删");
-                barX.close();
-            } else {
-                std::printf("FAIL 取消那一局起不来：%s\n", errX.toUtf8().constData());
-                ++bad;
-            }
-
-            // ---- 选择窗的退路：Esc、点到别处（失焦）、再按一次 F2 ----
-            picker.show();
-            QCoreApplication::processEvents();
-            const bool stayed = picker.isVisible();
-            std::printf("INFO 选择窗 show 之后还在=%d（不在=失焦自动收起也生效）\n", stayed ? 1 : 0);
-            if (stayed) {
-                QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
-                QApplication::sendEvent(plist, &esc);     // 从列表里按 Esc（焦点在子控件上）
-                QCoreApplication::processEvents();
-                check("Esc 收得起选择窗", picker.isVisible() ? "还开着" : "已收起", "已收起");
-            }
-            // 失焦收起：直接给它派一个 WindowDeactivate（不合成鼠标，不动他的桌面）
-            picker.show();
-            QCoreApplication::processEvents();
-            QEvent de(QEvent::WindowDeactivate);
-            QApplication::sendEvent(&picker, &de);
-            QCoreApplication::processEvents();
-            check("点到别处（失焦）会自动收起", picker.isVisible() ? "还开着" : "已收起", "已收起");
-            // 那颗「✕」按下去要真的收得起（click() 是程序化的按，不合成鼠标、不抢焦点）
-            picker.show();
-            QCoreApplication::processEvents();
-            if (pclose) {
-                pclose->click();
-                QCoreApplication::processEvents();
-                check("点「✕」收得起选择窗", picker.isVisible() ? "还开着" : "已收起", "已收起");
-            }
-            picker.hide();
-            // F2 那一档走的是全局那个 picker，不是上面这个局部对象，所以按顶层窗口找它
-            const auto openPicker = [] {
-                for (QWidget* w : QApplication::topLevelWidgets())
-                    if (auto* p = qobject_cast<WindowPicker*>(w))
-                        if (p->isVisible())
-                            return p;
-                return static_cast<WindowPicker*>(nullptr);
-            };
-            RecordUi::startViaPicker();
-            QCoreApplication::processEvents();
-            const bool opened = openPicker() != nullptr;
-            check("F2 能把选择窗开起来", opened ? "yes" : "no", "yes");
-            if (opened) {
-                RecordUi::startViaPicker();               // 开着的时候再按一次 F2 = 取消
-                QCoreApplication::processEvents();
-                check("再按一次 F2 收得起选择窗", openPicker() ? "还开着" : "已收起", "已收起");
-            }
-
-            // ---- 第二局：中途改大小；第三局：紧接着再开一次 ----
-            // 已实测：MP4 的画幅改不了（1280x801 这类奇数尺寸会被 H.264 拒：0xc00d36b4），
-            //   所以目标窗口改了大小这一局必须收尾；"改大小之后 WGC 到底还在不在出帧"没定论，
-            //   下面每 60ms 打一次帧数，跑一次就有数据。
-            //   第三局才是这次用户报的 bug 的正身："录失败过一次，F2 就再也按不动了" ——
-            //   自己收尾的那一局会把 m_running 卡在 true，下一局必须照样能起来。
-            const QString logPath = Utils::dataDir() + "/log.txt";
-            qint64 logMark = QFileInfo(logPath).size();
-            const QString path2 = QDir::tempPath() + "/ltool-recordui2.mp4";
-            QFile::remove(path2);
-            QString err2;
-            if (rec.start(card->winId(), o, path2, &err2)) {
-                RecordBar bar2(&rec, path2);
-                bar2.show();
-                QCoreApplication::processEvents();
-                // 这里必须泵事件：目标窗口的数字是靠 QTimer 换的，不泵事件它就不重画，
-                // WGC 自然一帧都不给 —— 上一版拿 msleep(900) 测出"只有 1 帧"，是测试自己的坑，不是产品。
-                for (int i = 0; i < 45; ++i) {
-                    QCoreApplication::processEvents();
-                    QThread::msleep(20);
-                }
-                std::printf("INFO 改大小前 %d 帧\n", rec.framesCaptured());
-                check("改大小之前已经录到的帧保住了（第二局前半段）",
-                      rec.framesCaptured() > 5 ? "yes" : "no", "yes");
-                card->resize(420, 300);            // 改大小：看门狗应当收尾
-                std::printf("INFO 改大小那一瞬 %d 帧\n", rec.framesCaptured());
-                for (int i = 0; i < 20; ++i) {     // 每 60ms 看一次帧数还涨不涨（涨=还在出帧）
-                    QCoreApplication::processEvents();
-                    QThread::msleep(60);
-                    std::printf("INFO +%dms 帧=%d done=%d err=%s\n", (i + 1) * 60,
-                                rec.framesCaptured(), rec.isDone() ? 1 : 0,
-                                rec.errorText().toUtf8().constData());
-                    if (rec.isDone())
-                        break;
-                }
-                // 收尾是 worker 线程写的，条上的话是 200ms 定时器写的 —— 必须真的把事件泵起来
-                for (int i = 0; i < 60 && rec.running(); ++i) {
-                    QCoreApplication::processEvents();
-                    QThread::msleep(20);
-                }
-                for (int i = 0; i < 25; ++i) {
-                    QCoreApplication::processEvents();
-                    QThread::msleep(20);
-                }
-                check("改大小会收尾并说清楚", rec.errorText().contains(QStringLiteral("改了大小")) ? "yes" : "no",
-                      "yes");
-                check("收尾后 running() 变回 false（F2 能再用）", rec.running() ? "yes" : "no", "no");
-                std::printf("INFO 收尾时 %d 帧，err=%s\n", rec.framesCaptured(),
-                            rec.errorText().toUtf8().constData());
-                // 条上写的是"已录下的都在文件里"——那就真的把文件解一遍，别让它撒谎
-                const Recorder::Mp4Info mp42 = Recorder::inspectMp4(path2);
-                std::printf("INFO 第二局读回: %lld 帧 / %lldms / %lld 字节\n", long long(mp42.frames),
-                            long long(mp42.durationMs), long long(mp42.bytes));
-                check("半路收尾的文件能解出帧（没录成的那半截没毁掉整段）",
-                      mp42.frames > 0 && mp42.bytes > 1024 ? "yes" : "no", "yes");
-                auto* t2 = bar2.findChild<QLabel*>(QStringLiteral("text"));
-                check("条上说了没录成", t2 && t2->text().contains(QStringLiteral("没录成")) ? "yes" : "no",
-                      "yes");
-                QFile lg(logPath);
-                if (lg.open(QIODevice::ReadOnly | QIODevice::Append)) {
-                    lg.seek(logMark);
-                    // 日志里是 "record failed: <原因> path=<文件>"，路径在标记后面，
-                    // 所以必须按行匹配，不能拿 indexOf 之后的 20 个字符去比前缀
-                    const QStringList lines = QString::fromUtf8(lg.readAll()).split('\n');
-                    int seen = 0;
-                    for (const QString& ln : lines) {
-                        if (ln.contains(QStringLiteral("record failed"))
-                            && ln.contains(QStringLiteral("ltool-recordui2.mp4")))
-                            ++seen;
-                    }
-                    std::printf("INFO 这一局自己收尾写的日志行数：%d\n", seen);
-                    check("一次失败只写一条日志", seen == 1 ? "yes" : "no", "yes");
-                    lg.close();
-                }
-                bar2.close();
-
-                // 第三局：上一局是工作线程自己收尾的 —— 这正是"F2 失灵"那条路
-                const QString path3 = QDir::tempPath() + "/ltool-recordui3.mp4";
-                QFile::remove(path3);
-                QString err3;
-                const bool third = rec.start(card->winId(), o, path3, &err3);
-                std::printf("INFO 第三局 start=%d err=%s\n", third ? 1 : 0,
-                            err3.toUtf8().constData());
-                check("自己收尾之后还能再开一局（F2 活过来了）", third ? "yes" : "no", "yes");
-                if (third) {
-                    for (int i = 0; i < 25; ++i) {
-                        QCoreApplication::processEvents();
-                        QThread::msleep(20);
-                    }
-                    rec.stop();
-                    check("第三局也真的在录", rec.framesCaptured() > 2 ? "yes" : "no", "yes");
-                    std::printf("INFO 第三局 %d 帧 / %lld 字节\n", rec.framesCaptured(),
-                                long long(QFileInfo(path3).size()));
-                }
-                QFile::remove(path3);
-            } else {
-                check("第二局能起来", err2, QString());
-            }
-        } else {
-            ++bad;
-        }
-        anim.stop();
-        delete card;
-        std::printf("recordui: 失败 %d 项\n", bad);
-        std::fflush(stdout);
-        return bad == 0 ? 0 : 1;
+        return runPluginSelftest(QStringLiteral("record"), "ltoolRecorduiRun",
+                                 SelftestArg::Ms, secs, QString(), "recordui");
     }
 
     // --ocrpanel <图片>：把"提取文字"结果窗真开一次（不经过截图遮罩），用来验识别→回填这条链
@@ -3198,11 +2435,28 @@ int main(int argc, char* argv[])
 
     // 资源管理器右键菜单进来的动作：这是另起的一个进程，得先于单实例守卫处理，
     // 否则它只会把主窗口叫醒然后自己退出。
-    for (const char* f : { "--shred", "--fileinfo", "--whohas", "--extract", "--extract-sub",
-                             "--compress-zip", "--compress-7z" }) {
-        if (args.contains(QLatin1String(f))) {
-            return ShellAction::run(QString::fromLatin1(f), args.mid(args.indexOf(QLatin1String(f)) + 1).value(0));
-        }
+    //
+    // 2026-10-15：窗口本体搬进 plugins/shell 了（用户拍的板：入口留在主程序，按下之后转发）。
+    // 这儿只剩"旗标 → 动作名"这一手，主程序不再链接占用分析/粉碎/解压/压缩那些界面。
+    // **转不出去必须把话讲明白并给非 0 退出码** —— 右键点一下什么都不发生是最难查的形状。
+    for (const char* f : kShellFlags) {
+        if (!args.contains(QLatin1String(f)))
+            continue;
+        const QString path = args.mid(args.indexOf(QLatin1String(f)) + 1).value(0);
+        const QString action = QString::fromLatin1(f).mid(2);      // 去掉那两个短横
+        QString who;
+        if (PluginHost::invoke(action, { path }, &who))
+            return 0;
+        const QString why = who.isEmpty()
+            ? QStringLiteral("没装接这个动作的插件（ltool-plugins 里是不是缺 ltool-shell.dll）")
+            : QStringLiteral("%1 接了但没干成").arg(who);
+        std::printf("FAIL 右键动作 %s：%s 路径=%s\n", action.toUtf8().constData(),
+                    why.toUtf8().constData(), path.toUtf8().constData());
+        std::fflush(stdout);
+        Utils::log(QStringLiteral("shellmenu: %1 没人接：%2").arg(action, why));
+        QMessageBox::warning(nullptr, QStringLiteral("ltool"),
+                             QStringLiteral("这个右键动作做不了：%1").arg(why));
+        return 1;
     }
 
     // 单实例：第二个实例唤醒已运行的窗口后退出
@@ -3256,9 +2510,24 @@ int main(int argc, char* argv[])
     HotkeyFilter filter([&](WPARAM id) {
         if (id == kCaptureId)
             CaptureOverlay::start();
-        else if (id == kRecordId)
-            RecordUi::startViaPicker();
-        else
+        else if (id == kRecordId) {
+            // F2 录屏：本体在 plugins/record（2026-10-15 搬过去的），这层壳只把动作名递过去。
+            // **没人接的时候绝不弹模态框** —— 那会盖在用户正做的事情上面（2026-10-15 右键那一路
+            // 就是这么被他撞上的）。说实话分三层：日志（事后能查）、托盘气泡（当下能看见）、
+            // stderr（从命令行起着的时候能看见）。谁 空 = 根本没插件声明接这个动作。
+            QString who;
+            if (!PluginHost::invoke(QStringLiteral("record"), {}, &who)) {
+                const QString why = who.isEmpty()
+                    ? QStringLiteral("没装接 record 这个动作的插件（ltool-plugins 里是不是缺 ltool-record.dll）")
+                    : QStringLiteral("%1 接了但没干成").arg(who);
+                Utils::log(QStringLiteral("F2 没人接：%1").arg(why));
+                std::fprintf(stderr, "F2 record: %s\n", why.toUtf8().constData());
+                std::fflush(stderr);
+                if (trayPtr)
+                    trayPtr->showMessage(QStringLiteral("F2 录屏"), why,
+                                         QSystemTrayIcon::Warning, 5000);
+            }
+        } else
             win.toggleVisible();
     });
     app.installNativeEventFilter(&filter);

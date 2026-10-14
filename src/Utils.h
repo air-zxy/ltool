@@ -5,7 +5,7 @@
 #include <QIcon>
 
 // 单实例用的本地套接字名字。右键动作（解压/压缩）是一次性进程，干完活把托盘气泡
-// 交给常驻实例去举，也走这条通道 —— 见 ShellAction.cpp 的 trayNote()。
+// 交给常驻实例去举，也走这条通道 —— 见 plugins/shell/shellaction.cpp 的 trayNote()。
 inline constexpr const wchar_t kInstanceKey[] = L"ltool.instance";
 
 namespace Utils {

@@ -1,5 +1,4 @@
 #pragma once
-#include "core-api.h"
 
 #include <QWidget>
 
@@ -11,15 +10,24 @@ class Recorder;
 //  WindowPicker = 列出"整个屏幕"+ 桌面上看得见的窗口，选一个要录的（不弹就不知道该录谁）
 //  RecordBar    = 录制中挂在屏幕上的小条：红点 + 计时 + 帧数 + 停止
 // 二者都只是 Recorder 的壳，编码/取帧全在 Recorder 里。
+//
+// 2026-10-15：这一层（连同 Recorder / RecProbe）从 ltoolcore.dll 搬进了 plugins/record，
+// 只有那个插件用它们，主程序只认动作名 "record"。原来 WindowPicker 上的 LTOOL_CORE_API
+// 是为了让 src/main.cpp 能点名这个类型才贴的，现在跨不到边界了，宏和 core-api.h 一起删。
 namespace RecordUi {
 
 // F2 的入口：弹选择列表，选完就开录（已经在录时什么都不做）
 void startViaPicker();
 bool isRecording();
 
+// 给插件那张状态页说实话用的两句：当前配置的画质档 / 画面档
+//（就是选择窗里那两颗下拉框存进 config.ini 的值，档位表只有一份 —— 见 RecordUi.cpp）
+QString qualityText();
+QString maxWidthText();
+
 } // namespace RecordUi
 
-class LTOOL_CORE_API WindowPicker : public QWidget {
+class WindowPicker : public QWidget {
     Q_OBJECT
 public:
     explicit WindowPicker(QWidget* parent = nullptr);

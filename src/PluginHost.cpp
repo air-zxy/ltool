@@ -78,6 +78,9 @@ const QVector<Meta>& scan()
         const QJsonArray ks = meta.value(QLatin1String("Keywords")).toArray();
         for (const QJsonValue& v : ks)
             m.keywords << v.toString();
+        const QJsonArray as = meta.value(QLatin1String("Actions")).toArray();
+        for (const QJsonValue& v : as)
+            m.actions << v.toString();
         // 卡片图标的颜色：plugin.json 里 "Color":"87,160,40"。没写就别整张卡一个色 ——
         // 按 id 派生一个色相，九个工具摆在一起还是分得开。
         const QString rgb = str(meta, "Color");
@@ -95,8 +98,8 @@ const QVector<Meta>& scan()
                           .arg(m.api).arg(LTOOL_PLUGIN_API_VERSION);
         g_metas.append(m);
         if (m.ok())
-            Utils::log(QStringLiteral("plugin: 看到 %1 (%2) 关键词=%3")
-                           .arg(m.name, m.id, m.keywords.join(",")));
+            Utils::log(QStringLiteral("plugin: 看到 %1 (%2) 关键词=%3 动作=%4")
+                           .arg(m.name, m.id, m.keywords.join(","), m.actions.join(",")));
         else
             Utils::log(QStringLiteral("plugin: 拒绝 %1：%2").arg(path, m.error));
     }
@@ -173,6 +176,45 @@ bool feed(const QString& id, const QString& text)
 {
     LToolPlugin* p = plugin(id);
     return p && p->feedText(text);
+}
+
+QString actionOwner(const QString& action)
+{
+    for (const Meta& m : scan())
+        if (m.ok() && m.actions.contains(action))
+            return m.id;
+    return {};
+}
+
+bool invoke(const QString& action, const QStringList& args, QString* who)
+{
+    // 元数据里那份 "Actions" 只是"哪家店门口写着做这个活"（不用装载就能查），
+    // 真正接不接**以实例自己报的 actions() 为准** —— 两边不一致就是插件自己乱写，
+    // 记一行、接着找下一家。
+    for (const Meta& m : scan()) {
+        if (!m.ok() || !m.actions.contains(action))
+            continue;
+        LToolPlugin* p = plugin(m.id);       // 起不来它自己已经把原因写进日志
+        if (!p)
+            continue;
+        if (!p->actions().contains(action)) {
+            Utils::log(QStringLiteral("plugin: %1 元数据说接 %2，实例自己不认（不路由给它）")
+                           .arg(m.id, action));
+            continue;
+        }
+        if (p->invoke(action, args)) {
+            if (who)
+                *who = m.id;
+            Utils::log(QStringLiteral("plugin: 动作 %1 → %2（参数 %3）")
+                           .arg(action, m.id, args.join(QLatin1Char(';'))));
+            return true;
+        }
+        if (who)
+            *who = m.id;                     // 接了但没干成：调用方要说"是它做的、失败了"
+        Utils::log(QStringLiteral("plugin: %1 接了 %2 但返回失败").arg(m.id, action));
+    }
+    Utils::log(QStringLiteral("plugin: 没人接动作 %1（谁装了什么见上面那几行）").arg(action));
+    return false;
 }
 
 void* entry(const QString& id, const char* symbol)

@@ -2,7 +2,7 @@
  "Id": "json",
  "Name": "JSON 格式化",
  "Desc": "可折叠树 + 自动换行，文本区可直接改",
- "Api": 2,
+ "Api": 3,
  "Keywords": [
   "json",
   "格式化",

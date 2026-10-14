@@ -60,7 +60,10 @@ add_custom_target(appicon DEPENDS ${ICON_FILE})
 # 代码只能有一份，否则同一个后台状态会出现两份（界面里关了广告拦截、主程序那份还在拦）。
 # 边界是按引用查出来的：AdBlocker 主程序在后台跑、DevEnv/SilentInstallLog 被配置页/语言页/
 # 软件页/设置窗用、RegClean 与 SysTools 被搜索框用、FileTools 被搜索框和广告页用、
-# InfoRow 被卸载页用 —— 这些都进 core；只有那 9 个工具页往插件里搬。
+# InfoRow 被卸载页用 —— 这些都进 core；那 10 个工具页 + 右键动作 + F2 录屏都在插件里。
+# （2026-10-15：Recorder/RecordUi/RecProbe 也从 core 搬进了 plugins/record —— 录屏只有
+#  那一个插件用，主程序现在只认动作名 "record"，所以 core 里不再编它，
+#  WindowPicker 上那个 LTOOL_CORE_API 也跟着删了。）
 #
 # 导出方式用 WINDOWS_EXPORT_ALL_SYMBOLS（CMake 扫 obj 自动生成 .def），而不是给
 # 每个函数贴 __declspec：本项目跨界的几乎全是自由函数和类成员，自动导出够用；
@@ -100,7 +103,6 @@ qt_add_library(ltoolcore SHARED
     src/InfoRow.cpp
     src/UninstallPage.cpp
     src/ShellMenu.cpp
-    src/ShellAction.cpp
     src/FileOps.cpp
     src/Archives.cpp
     src/SevenZip.cpp
@@ -108,9 +110,6 @@ qt_add_library(ltoolcore SHARED
     src/OcrPanel.cpp
     src/OcrBundle.cpp
     src/OcrPp.cpp
-    src/RecProbe.cpp
-    src/Recorder.cpp
-    src/RecordUi.cpp
     src/AboutPage.cpp
     src/ConfigPage.cpp
     src/SettingsDialog.cpp
@@ -129,7 +128,7 @@ target_compile_definitions(ltoolcore PUBLIC LTOOL_VERSION="${LTOOL_VERSION_STRIN
 # ---- 预编译头 ----
 # 53 个 TU 每个都要啃同一批 Qt 头（QApplication/QWidget/QtConcurrent 展开就是几万行），
 # /MP 只能并行"各自啃一遍"，PCH 才是根本不啃。内容见 src/pch.h（故意不含 windows.h）。
-# 挂在 INTERFACE 上：exe 和九个插件都复用 core 编好的那一份，不用每个目标各啃一遍。
+# 挂在 INTERFACE 上：exe 和十一个插件都复用 core 编好的那一份，不用每个目标各啃一遍。
 target_precompile_headers(ltoolcore INTERFACE src/pch.h)
 
 find_package(LibArchive REQUIRED)
@@ -233,7 +232,7 @@ add_dependencies(ltool appicon)
 target_link_libraries(ltool PRIVATE ltoolcore)
 ltool_target_setup(ltool)
 
-# ---- 工具插件：九个各一个 dll，产出后拷进 exe 旁边的 ltool-plugins\ ----
+# ---- 工具插件：十一个各一个 dll，产出后拷进 exe 旁边的 ltool-plugins\ ----
 #
 # 产物先落在 Release 树**外面**（plugin-build）：Qt 的插件部署会往目标的输出目录倒依赖，
 # 放进 build\Release 里会被 ltool.iss 那条 `build\Release\*` 一起收进安装包（实测多 58MB）。
@@ -270,12 +269,21 @@ ltool_add_tool(user UserPlugin          plugins/user/UserAccount.cpp plugins/use
                                                       plugins/user/userselftest.cpp)
 ltool_add_tool(json JsonPlugin          plugins/json/JsonTool.cpp plugins/json/jsonplugin.cpp)
 ltool_add_tool(base64 Base64Plugin      plugins/base64/Base64Tool.cpp plugins/base64/base64plugin.cpp)
+# 第一个「动作型」插件：右键那几件事（占用分析/粉碎/解压/压缩）。verb 表还在主程序的
+# ShellMenu 里 —— 入口留在主程序，按下之后转成动作名交给插件，这是用户拍的板。
+ltool_add_tool(shell ShellPlugin         plugins/shell/shellaction.cpp plugins/shell/shellplugin.cpp)
+# 第二个「动作型」插件：F2 录屏。Recorder（WGC 取帧 + MF 编码）/ RecordUi（选择窗 + 悬浮条）/
+# RecProbe（可行性探针）三样从 src 搬了进来，五套判据（--recprobe/--recq/--rectest/--recordui/
+# --memloop）也跟着搬成 extern "C" 导出符号 —— 主程序按名字点名要（见 src/main.cpp 的
+# runPluginSelftest）。
+ltool_add_tool(record RecordPlugin       plugins/record/Recorder.cpp plugins/record/RecordUi.cpp
+                                           plugins/record/RecProbe.cpp plugins/record/recordplugin.cpp)
 
 # 交付闭环是 `cmake --build --target ltool`（只编主程序那一棵）。插件目标只依赖 core，
 # 不在 ltool 的依赖图上 —— 不点名挂上去，改完页面不重编，ISCC 照旧把**上一个 dll**
 # 打进安装包，装出来的还是旧的（构建那一段照样报绿）。
 add_dependencies(ltool ltool-repair ltool-ads ltool-disk ltool-network ltool-registry
-                        ltool-startup ltool-user ltool-json ltool-base64)
+                        ltool-startup ltool-user ltool-json ltool-base64 ltool-shell ltool-record)
 
 # ---- Qt 运行库部署：把 exe 所需的 Qt DLL / platform 插件复制到输出目录，
 #      避免 "no Qt platform plugin could be initialized" ----

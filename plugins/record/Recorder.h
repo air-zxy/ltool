@@ -16,6 +16,10 @@
 //
 // 采集/拷贝/编码全都在这一个工作线程里做：D3D11 的 immediate context 和 sink writer
 // 都只认创建它们的线程，跨线程要开 DEBUG 层，不值得。
+//
+// 2026-10-15：整个录屏那一路（Recorder / RecordUi / RecProbe 和它们的判据）从 ltoolcore.dll
+// 搬进了 plugins/record —— 主程序现在只认动作名 "record"，不再点名这个类，
+// 所以这里从来没有也不需要 LTOOL_CORE_API。
 class Recorder : public QObject {
     Q_OBJECT
 public:

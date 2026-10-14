@@ -116,6 +116,12 @@ const QualityPreset kQualities[] = {
 const int kQualityCount = int(sizeof(kQualities) / sizeof(kQualities[0]));
 // 长边上限档位（存在 ui/recMaxWidth 里的是这个数，0 = 不缩）
 const int kWidthCaps[] = { 0, 1920, 1280, 854 };
+// 那一档显示成什么字：下拉框里那四行和插件状态页上那句「画面档」都由它生成 ——
+// 档位表只有一份，字面量抄两遍迟早对不上。
+QString widthCapText(int cap)
+{
+    return cap > 0 ? QStringLiteral("长边 ≤ %1").arg(cap) : QStringLiteral("原始（不缩）");
+}
 
 int recQualityIndex()
 {
@@ -246,10 +252,8 @@ WindowPicker::WindowPicker(QWidget* parent)
     quality->setCurrentIndex(recQualityIndex());
     auto* width = new QComboBox(this);
     width->setObjectName(QStringLiteral("recMaxWidth"));
-    width->addItem(QStringLiteral("原始（不缩）"), 0);
-    width->addItem(QStringLiteral("长边 ≤ 1920"), 1920);
-    width->addItem(QStringLiteral("长边 ≤ 1280"), 1280);
-    width->addItem(QStringLiteral("长边 ≤ 854"), 854);
+    for (int cap : kWidthCaps)
+        width->addItem(widthCapText(cap), cap);
     width->setToolTip(QStringLiteral("缩的是编码画幅（面积平均，不是隔行取样）。选小一点文件能小好几倍，代价是字不那么锐。"));
     {
         const int want = recMaxWidth();
@@ -578,6 +582,16 @@ void startViaPicker()
 bool isRecording()
 {
     return g_rec && g_rec->running();
+}
+
+QString qualityText()
+{
+    return QString::fromUtf8(kQualities[recQualityIndex()].name);
+}
+
+QString maxWidthText()
+{
+    return widthCapText(recMaxWidth());
 }
 
 } // namespace RecordUi

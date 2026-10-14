@@ -20,6 +20,7 @@ struct Meta {
     QString name;
     QString desc;
     QStringList keywords;
+    QStringList actions;  // plugin.json 里 "Actions"：这个插件声明它接哪些动作（商店/诊断用）
     QColor color;         // plugin.json 里的 "Color"（r,g,b），卡片图标用；没写就按 id 派生
     int api = 0;
     QString error;        // 非空 = 这个文件没通过检查，界面上要说人话
@@ -36,6 +37,14 @@ LToolPlugin* plugin(const QString& id);
 // 把一段文本递给那个工具的页（搜索框/剪贴板的"在工具里打开这段"）。
 // 页早建好缓存着，所以这里只是转手；插件没接住返回 false，调用方照常把页面打开。
 bool feed(const QString& id, const QString& text);
+
+// 动作路由（API 3）：热键/右键菜单这些入口留在主程序，按下之后把动作名+参数转给
+// **声明了接这个动作的插件**。谁(action, who) 回哪个插件接的（没找到时给你写日志用）。
+// 找不到 = 返回 false 并且把话讲明白，调用方必须让界面/托盘说实话，
+// 不能静默 —— "按了 F1 什么都没发生"最难查，就是因为下面的人静默吞了。
+bool invoke(const QString& action, const QStringList& args, QString* who = nullptr);
+// 哪个插件接这个动作（不装载，只看元数据声明；没有返回空）。界面上"这个功能由 X 提供"用它。
+QString actionOwner(const QString& action);
 
 // 插件自己带的判据入口（extern "C" 导出），没有返回 nullptr。
 // 页面代码搬进插件之后主程序链接不到它内部的测试函数，只能按名字点名要。

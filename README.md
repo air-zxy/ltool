@@ -185,11 +185,11 @@ installer\ltool-<版本>-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 - `cmd`：检测命令（是否存在 + 输出版本）
 - `wingetId`：缺失时 Enter 触发的 winget 包（可省略，配 `note` 纯提示）
 
-## 工具插件（DLL）—— 九个自带工具就是这套机制跑出来的
+## 工具插件（DLL）—— 十一个自带工具就是这套机制跑出来的
 
 设置 → 工具那一面的卡片墙**完全由插件目录决定**：`<exe 目录>\ltool-plugins\*.dll`。
-现在的九个（DLL 修复 / 广告弹窗 / 磁盘清理 / 网络 / 注册表分析 / 开机启动分析 /
-Windows 用户名 / JSON 格式化 / Base64 编解码）和第三方插件走同一条路，主程序里没有"内置工具"特判。
+现在的十个（DLL 修复 / 广告弹窗 / 磁盘清理 / 网络 / 注册表分析 / 开机启动分析 /
+Windows 用户名 / JSON 格式化 / Base64 编解码 / **右键动作** / **录屏**）和第三方插件走同一条路，主程序里没有"内置工具"特判。
 
 | 目录 | 是什么 |
 | --- | --- |
@@ -197,7 +197,28 @@ Windows 用户名 / JSON 格式化 / Base64 编解码）和第三方插件走同
 | `ltoolcore.dll`（2.6 MB） | 主程序和插件**共用的一份实现**：`Utils` / `DevEnv` / `SilentInstallLog` / `AdBlocker` / `RegClean` / `InfoRow` / `FileTools` / `SysTools` / `DiskScan` / `StartupAudit` + 启动器/设置窗那一整套界面 |
 | `ltool-plugins\ltool-<id>.dll` | 一个工具一个：页面本体 + 一层 `LToolPlugin` 壳 + 嵌在 dll 里的 `plugin.json` |
 
-`src/ltool-plugin.h` 是两边唯一的契约：`apiVersion / id / name / desc / keywords / createPage / feedText / save / load`。
+`src/ltool-plugin.h` 是两边唯一的契约：`apiVersion / id / name / desc / keywords / createPage / feedText / actions / invoke / save / load`。
+
+**API 3（2026-10-15）加的是「动作型插件」**：截图、录屏、解压/压缩、单文件占用分析这些东西**没有卡片页可开** ——
+用户按的是热键或资源管理器右键。拍板的切法是「**入口留在主程序，按下之后转发**」：
+`ShellMenu` 照旧往 HKCU 写那几条 verb（它决定"有哪些入口"），点进来起的一次性进程把旗标去掉两个短横当动作名，
+交给 `PluginHost::invoke(action, args)`；主程序**不再链接**那些窗口本体。
+`actions()` 报这个插件接哪些动作，plugin.json 里那份 `Actions` 只是"门口挂的牌"（不装载就能查，商店和日志用它）。
+
+- 路由最终以**实例自己报的** `actions()` 为准：牌上写了、代码没实现 → 记一行「元数据说接 X，实例自己不认」再找下一家。
+  `--plugintest` 把「主程序那张 verb 表 / 插件的分发表 / plugin.json 那块牌」三处对一遍，
+  所以「右键点下去什么都不发生」这条最难查的形状有判据。
+- **实现只有一张表**：`plugins/shell/shellaction.cpp` 里那个 `kVerbs[]` 既是分发也是 `implemented()`，
+  `actions()` 直接拿它，不再第二处抄一份。
+- **返回值只能有一个"失败"**: `ShellAction::kNotHandled`（这条动作我根本没实现）。
+  压缩包打不开、用户按了取消、窗口正常关闭 —— 那些**已经由弹窗/托盘/日志跟人说清了**，
+  主程序再盖一层「这个右键动作做不了」就是第二次报错。这条是我自己踩出来的：
+  第一版把 `invoke` 判成 `run(...) == 0`，而那条链的返回值本来就是窗口结果和错误码混在一起，
+  于是一次**成功的压缩**（包都生成了）被判成失败，还弹了个警告框到他屏幕上（2026-10-15 实测）。
+  修完之后同一条命令 `exit=0`、包正常生成、不弹任何东西。
+- **F2 录屏已经整条搬进 `plugins/record`**（2026-10-15）：`Recorder`(758) + `RecordUi`(583，含选窗那一张 `WindowPicker` 和悬浮条) + `RecProbe`(361) 都不再是 `ltoolcore.dll` 里的东西，`WindowPicker` 上那个 `LTOOL_CORE_API` 也跟着去掉了（它当初只是因为主程序的 `--recordui` 要 `qobject_cast` 它）。热键照旧由主程序注册（`RegisterHotKey(VK_F2)`），按下之后 `PluginHost::invoke("record")`；没人接的时候**只写日志 + 托盘**，不弹模态框（弹框那一次是上一轮的错误，已经改掉了）。跟着实现搬走的还有那五面旗标的判据本体：`--recprobe [ms]` `--recq` `--rectest [秒] [宽x高]` `--recordui [秒]` `--memloop [轮数] [宽x高]` —— 主程序只解析命令行、点名要导出符号 （`ltoolRecprobeRun` / `ltoolRecqSelftest` / `ltoolRectestRun` / `ltoolRecorduiRun` / `ltoolMemloopRun`），**符号找不到就算失败**（`--plugintest` 里有一条专门验 `ltoolRecqSelftest` 解析得到）。「宽x高」那条实测还在：同一秒数下 320x200 录出 7840 字节、500x301 → 9267、900x600 → 12178。画幅/奇偶那几条算法判据本来就在 `--recq` 里，一条没少。
+- 没人接住动作时主程序**必须说实话**：打印 `FAIL 右键动作 X：…` + 写日志 + 弹一句「做不了：没装接这个动作的插件」+ 退出码 1，
+  绝不静默。
 要点：
 
 - **画卡片只读元数据**（`QPluginLoader::metaData()`，`plugin.json` 的内容嵌在 `MetaData` 那一层下面），
