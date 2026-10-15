@@ -1729,6 +1729,11 @@ void SearchWindow::openContextMenu(const QPoint& globalPos)
 
     m_menu = new QMenu(this);
     m_menu->setAttribute(Qt::WA_DeleteOnClose);
+    m_menu->setStyleSheet(
+        "QMenu { background: #232429; border: 1px solid #33353d; border-radius: 8px; padding: 4px; color: #e8ebf2; font-size: 10pt; }"
+        "QMenu::item { padding: 6px 20px 6px 12px; border-radius: 6px; }"
+        "QMenu::item:selected { background: #3f6ae0; color: white; }"
+        "QMenu::separator { height: 1px; background: #33353d; margin: 4px 6px; }");
     connect(m_menu, &QMenu::aboutToHide, this, [this] {
         m_menu = nullptr;
         if (!isActiveWindow())

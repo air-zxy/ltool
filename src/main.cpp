@@ -2710,6 +2710,11 @@ int main(int argc, char* argv[])
     QSystemTrayIcon tray(Utils::appIcon());
     trayPtr = &tray;
     QMenu menu;
+    menu.setStyleSheet(
+        "QMenu { background: #232429; border: 1px solid #33353d; border-radius: 8px; padding: 4px; color: #e8ebf2; font-size: 10pt; }"
+        "QMenu::item { padding: 6px 20px 6px 12px; border-radius: 6px; }"
+        "QMenu::item:selected { background: #3f6ae0; color: white; }"
+        "QMenu::separator { height: 1px; background: #33353d; margin: 4px 6px; }");
     QAction* showAction = menu.addAction(QString("显示搜索框 (%1)").arg(hotkeyLabel));
     QObject::connect(showAction, &QAction::triggered, &win, &SearchWindow::showLauncher);
     updateMenuHotkey = [&] {

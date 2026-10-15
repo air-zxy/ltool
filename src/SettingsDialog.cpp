@@ -140,6 +140,37 @@ QListWidget::item { padding: 0 8px; border-radius: 6px; }
 QListWidget::item:selected { background: #3f6ae0; color: white; }
 QListWidget::item:hover:!selected { background: #2a2b31; }
 
+QListWidget#menuList {
+    font-size: 11pt;
+    font-weight: 500;
+}
+QListWidget#menuList::item {
+    padding: 0 10px;
+    border-radius: 8px;
+}
+
+QMenu {
+    background: #232429;
+    border: 1px solid #33353d;
+    border-radius: 8px;
+    padding: 4px;
+    color: #e8ebf2;
+    font-size: 10pt;
+}
+QMenu::item {
+    padding: 6px 20px 6px 12px;
+    border-radius: 6px;
+}
+QMenu::item:selected {
+    background: #3f6ae0;
+    color: white;
+}
+QMenu::separator {
+    height: 1px;
+    background: #33353d;
+    margin: 4px 6px;
+}
+
 QTabWidget::pane { border: none; background: transparent; }
 QTabBar::tab { background: #232429; color: #9aa3b2; border: 1px solid #2c2d34;
     padding: 7px 16px; margin-right: 4px; border-top-left-radius: 8px; border-top-right-radius: 8px; }
@@ -177,8 +208,9 @@ SettingsDialog::SettingsDialog(QWidget* parent)
 
     m_menu = new QListWidget(this);
     m_menu->setObjectName("menuList");
-    m_menu->setFixedWidth(150);
-    m_menu->setSpacing(4);              // 条目之间留缝，背景块不再首尾相接
+    m_menu->setFixedWidth(168);
+    m_menu->setIconSize(QSize(28, 28));
+    m_menu->setSpacing(5);              // 条目之间留缝，背景块不再首尾相接
     m_menu->setUniformItemSizes(true);
 
     struct MenuDef { const char* name; QColor color; bool bag; };
@@ -194,7 +226,7 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     for (const MenuDef& d : defs) {
         const QIcon icon = d.bag ? Utils::bagIcon(d.color) : Utils::letterIcon(d.name, d.color);
         auto* it = new QListWidgetItem(icon, d.name);
-        it->setSizeHint(QSize(150, 44));   // 行高由这里定，QSS 的 padding 不再撑破邻居
+        it->setSizeHint(QSize(168, 50));   // 行高由这里定，QSS 的 padding 不再撑破邻居
         m_menu->addItem(it);
     }
 

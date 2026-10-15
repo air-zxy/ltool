@@ -355,7 +355,7 @@ QIcon letterIcon(const QString& text, const QColor& color)
     QPixmap pm = tilePixmap(color);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
-    QFont f("Microsoft YaHei UI", 16);
+    QFont f("Microsoft YaHei UI", 18);
     f.setBold(true);
     p.setFont(f);
     p.setPen(Qt::white);
@@ -368,7 +368,7 @@ QIcon bagIcon(const QColor& color)
     QPixmap pm = tilePixmap(color);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(Qt::white, 2.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setPen(QPen(Qt::white, 2.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     p.setBrush(Qt::NoBrush);
     // 袋身：上口一条横线，两边往里收到底 —— 梯形比矩形更像"拎着的东西"
     QPainterPath body;
