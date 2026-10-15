@@ -46,4 +46,5 @@ private:
 
 protected:
     void showEvent(QShowEvent* e) override;
+    void reject() override;
 };

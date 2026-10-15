@@ -338,9 +338,16 @@ void SettingsDialog::showEvent(QShowEvent* e)
     HWND h = reinterpret_cast<HWND>(winId());
     BOOL dark = TRUE;
     DwmSetWindowAttribute(h, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-    // 明确取消置顶
+    // 明确取消置顶并激活展示在前台
     SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    SetForegroundWindow(h);
+}
+
+void SettingsDialog::reject()
+{
+    // 按 Esc 键等同于关闭窗口，确保触发 closeEvent 与 WA_DeleteOnClose 彻底析构
+    close();
 }
 
 void SettingsDialog::openAt(int menuRow, int tab, const QString& toolId)

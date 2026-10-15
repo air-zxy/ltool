@@ -13,6 +13,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
@@ -246,7 +247,7 @@ void WebsitesPage::addEntry()
     webs.append(e);
     WebShortcuts::saveWebs(webs);
     Utils::log(QString("webs: 新增 %1 (%2)").arg(e.name, e.keys.join(",")));
-    rebuild();
+    QTimer::singleShot(0, this, [this] { rebuild(); });
 }
 
 void WebsitesPage::editEntryAt(int index)
@@ -259,7 +260,7 @@ void WebsitesPage::editEntryAt(int index)
         return;
     webs[index] = e;
     WebShortcuts::saveWebs(webs);
-    rebuild();
+    QTimer::singleShot(0, this, [this] { rebuild(); });
 }
 
 void WebsitesPage::removeEntryAt(int index)
@@ -273,5 +274,5 @@ void WebsitesPage::removeEntryAt(int index)
         return;
     webs.removeAt(index);
     WebShortcuts::saveWebs(webs);
-    rebuild();
+    QTimer::singleShot(0, this, [this] { rebuild(); });
 }

@@ -401,16 +401,18 @@ void SearchWindow::watchAppDirs()
 
 void SearchWindow::openSettings()
 {
-    if (m_settingsDlg) {   // 已经开着就把它提到前面，不再开第二个
+    hide(); // 打开设置前先收起搜索框，不遮挡设置页
+    if (m_settingsDlg) {   // 已经开着就把它提到前面并激活还原
+        if (m_settingsDlg->isMinimized())
+            m_settingsDlg->showNormal();
+        m_settingsDlg->show();
         m_settingsDlg->raise();
         m_settingsDlg->activateWindow();
+        HWND h = reinterpret_cast<HWND>(m_settingsDlg->winId());
+        SetForegroundWindow(h);
         return;
     }
-    hide(); // 打开设置前先收起搜索框，不遮挡设置页
     m_settingsOpen = true;
-    // 不用 exec()：应用模态会让设置页开着时其它顶层窗口收不到鼠标事件 ——
-    // "开着设置页按 F1 截不了图"就是这么来的（浮层能显示，但拖不动）。
-    // 改成非模态，窗口销毁时再复位状态。不以置顶的启动器为父窗口，避免设置页继承置顶属性。
     auto* dlg = new SettingsDialog(nullptr);
     m_settingsDlg = dlg;
     dlg->setAttribute(Qt::WA_DeleteOnClose);
@@ -422,10 +424,10 @@ void SearchWindow::openSettings()
     dlg->show();
     dlg->raise();
     dlg->activateWindow();
+    HWND h = reinterpret_cast<HWND>(dlg->winId());
+    SetForegroundWindow(h);
 }
 
-// 托盘那两项和搜索框的结果行都走这条：弹设置页 → 工具页 → 展开那个插件的页。
-// 工具全搬进 DLL 插件之后，主程序里再没有 JsonTool/Base64Tool 这两个类可以 new 了。
 void SearchWindow::openSettingsPage(int menuRow)
 {
     openSettings();

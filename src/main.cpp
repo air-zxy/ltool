@@ -631,6 +631,14 @@ int main(int argc, char* argv[])
             break;
         }
     }
+    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep) -> LONG {
+        const DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
+        const PVOID addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
+        Utils::log(QStringLiteral("FATAL CRASH: code=0x%1 addr=%2")
+                       .arg(QString::number(code, 16).toUpper())
+                       .arg(reinterpret_cast<quintptr>(addr), 0, 16));
+        return EXCEPTION_CONTINUE_SEARCH;
+    });
     QApplication app(argc, argv);
     QApplication::setOrganizationName("ltool");
     QApplication::setApplicationName("ltool");
