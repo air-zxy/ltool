@@ -30,6 +30,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
   # 故意不叫 VCPKG_ROOT：ilammy/msvc-dev-cmd 会把 VCPKG_ROOT 导出成 VS 自带那份 vcpkg，
   # 后面用到它的 step 会静默换成系统树（表现为 toolchain 路径变成 Program Files 底下）。
   #
@@ -168,22 +170,9 @@ jobs:
           QT_PLUGIN_PATH: ${{ github.workspace }}/build/vcpkg_installed/x64-windows/Qt6/plugins
         run: |
           set -o pipefail
-          mkdir -p build/Release/platforms
-          cp build/vcpkg_installed/x64-windows/Qt6/plugins/platforms/qoffscreen.dll build/Release/platforms/ 2>/dev/null || true
           cmake --build build --config Release --parallel 4 -- -v:m -p:CL_MPcount=2 2>&1 | tee build.log
-
-      # 只跑不需要真屏幕、也不需要管理员的那批。要真屏幕的（--capgeo/--capflash/--recq/
-      # --rectest/--recordui）在 runner 上没有 DWM 会话，抓回来的是空图，红了也不说明产品坏了；
-      # --mfttest/--searchtime 要管理员才能开 USN 枚举。跳过的那些在这儿点名写出来，
-      # 别让"CI 绿"看起来像"这些也过了"。
-      #
-      # 自测走 offscreen 平台插件：runner 上能不能拿到窗口站不作保证，而这条判据要的只是
-      # "控件建得出来、布局算得对、点了有反应"。windeployqt 不会自动带 qoffscreen.dll（它是
-      # 给 Qt 自己的测试用的），所以从 vcpkg 树里借一颗进输出目录；ltool.iss 的 Excludes
-      # 点名排除它，**安装包永远收不到这颗测试专用的插件**。
-      - name: 借 offscreen 平台插件给自测
-        shell: bash
-        run: |
+          # 借 offscreen 平台插件给自测：windeployqt 不会自动带测试专用 qoffscreen.dll，从 vcpkg 树借一颗进输出目录
+          mkdir -p build/Release/platforms
           src=build/vcpkg_installed/x64-windows/Qt6/plugins/platforms/qoffscreen.dll
           if [ ! -f "$src" ]; then echo "::error::$src 不在 —— vcpkg 的 qtbase 没编出 offscreen 插件"; exit 1; fi
           cp "$src" build/Release/platforms/qoffscreen.dll
@@ -247,6 +236,12 @@ jobs:
                            "/c/Program Files/Inno Setup 6/ISCC.exe"; do
             if [ -f "$candidate" ]; then
               echo "ISCC=$(cygpath -w "$candidate")" >> "$GITHUB_ENV"
+              inno_dir=$(dirname "$candidate")
+              # Inno Setup 默认不带简体中文语言包，将仓库自带的语言包补进 Inno Setup 的 Languages 目录
+              if [ -f resources/ChineseSimplified.isl ]; then
+                cp resources/ChineseSimplified.isl "$inno_dir/Languages/"
+                echo "INFO: 已将 resources/ChineseSimplified.isl 安装至 Inno Setup Languages 目录"
+              fi
               exit 0
             fi
           done

@@ -2526,15 +2526,12 @@ int main(int argc, char* argv[])
 
     // 单实例：第二个实例唤醒已运行的窗口后退出
     //
-    // 但有两条判据必须**在事件循环里**跑（要等真屏幕抓一张图），派发点天生在这道守卫之后。
-    // 守卫先把它们转交给已运行的实例、当场 return 0，于是自测变成"0 字节输出 + 退出码 0"
-    // —— 看着像通过，其实一行都没跑（2026-10-14 撞见 --smoke 也是这个形状，已提到守卫之前）。
-    // 所以带这两面旗时必须自己起循环。
-    const bool inLoopSelftest = args.contains(QLatin1String("--capgeo"))
-                                || args.contains(QLatin1String("--capflash"))
-                                || args.contains(QLatin1String("--storenet"))
-                                || args.contains(QLatin1String("--storemulti"))
-                                || args.contains(QLatin1String("--uninst"));
+    // 但自测判据不能被单实例守卫转交给常驻实例（否则会变成"0 字节输出 + 退出码 0"的假绿形状）。
+    // 所有带 '--' 命令行旗标的调用（包括在事件循环内跑的 --capgeo/--capflash/--toggle/--settingspage 等），
+    // 均直接放行，不走单实例唤醒逻辑，避免后台常驻 ltool 时自测被静默吞掉。
+    const bool inLoopSelftest = std::any_of(args.cbegin() + 1, args.cend(), [](const QString& a) {
+        return a.startsWith(QLatin1String("--"));
+    });
     if (!inLoopSelftest) {
         QLocalSocket probe;
         probe.connectToServer(QString::fromWCharArray(kInstanceKey));
