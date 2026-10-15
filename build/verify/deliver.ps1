@@ -75,23 +75,26 @@ if ($bh -and $bh -eq $ih) { $verdict = 'MATCH ' + $bh.Substring(0, 12) }
 # 就是坏的，而且界面只给一句"加载不了这个库"—— 所以装完必须点名确认它在。
 if (-not (Test-Path 'D:\software\ltool\7zip.dll')) { $verdict += '  !!! 7zip.dll MISSING in install dir' }
 # ltoolcore.dll 是硬导入：缺了**根本不是"某个功能坏了"，是整个程序起不来**（实测把 build 那份
-# 藏掉，ltool.exe 直接 error while loading shared libraries）。九个工具 dll 少一个就是卡片墙
-# 少一张卡。两类都要点名，而且要按哈希比 —— 只看文件在不在，会放过"装了旧的一份"。
+# 藏掉，ltool.exe 直接 error while loading shared libraries）。所以它必须按哈希比 ——
+# 只看文件在不在，会放过"装了旧的一份"。
 $coreB = (Get-FileHash "$root\build\Release\ltoolcore.dll" -Algorithm SHA256).Hash
 $coreI = if (Test-Path 'D:\software\ltool\ltoolcore.dll') { (Get-FileHash 'D:\software\ltool\ltoolcore.dll' -Algorithm SHA256).Hash } else { '' }
 if ($coreB -ne $coreI) { $verdict += ('  !!! ltoolcore.dll 不对（build {0} inst {1}）' -f $coreB.Substring(0,8), $coreI.Substring(0,8)) }
-$plugins = @()
-if (Test-Path 'D:\software\ltool\ltool-plugins') {
-  $plugins = @(Get-ChildItem 'D:\software\ltool\ltool-plugins\*.dll' -ErrorAction SilentlyContinue)
+# 插件目录：从 c43b82f「开箱零插件」起，安装包**不再内建任何插件 dll**，只建一个空目录，
+# 运行时由插件商店按需拉。所以这里不能再拿本地构建去逐颗比哈希 —— 装好的那些是 CI 编的那份，
+# 天生和 build\Release 里的不一样，逐颗比只会天天红一条假故障。
+# 真正的不变量是：目录在不在（不在 = 包坏了，装完一个插件都放不进去）。
+$plugDir = 'D:\software\ltool\ltool-plugins'
+if (-not (Test-Path $plugDir)) { $verdict += '  !!! 装完没有 ltool-plugins 目录（零插件包也要建这个空目录）' }
+$installed = @(Get-ChildItem "$plugDir\*.dll" -ErrorAction SilentlyContinue)
+$built = @(Get-ChildItem "$root\build\Release\ltool-plugins\*.dll" -ErrorAction SilentlyContinue)
+$same = 0
+foreach ($i in $installed) {
+  $b = $built | Where-Object { $_.Name -eq $i.Name } | Select-Object -First 1
+  if ($b -and (Get-FileHash $i.FullName -Algorithm SHA256).Hash -eq (Get-FileHash $b.FullName -Algorithm SHA256).Hash) { $same++ }
 }
-$want = @(Get-ChildItem "$root\build\Release\ltool-plugins\*.dll" -ErrorAction SilentlyContinue)
-if ($plugins.Count -ne $want.Count) { $verdict += "  !!! 工具插件装了 $($plugins.Count) 个，构建里有 $($want.Count) 个" }
-foreach ($w in $want) {
-  $d = "D:\software\ltool\ltool-plugins\$($w.Name)"
-  if (-not (Test-Path $d) -or (Get-FileHash $d -Algorithm SHA256).Hash -ne (Get-FileHash $w.FullName -Algorithm SHA256).Hash) {
-    $verdict += "  !!! $($w.Name) 没装或和构建不一致"
-  }
-}
+$verdict += ('  plugins dir={0} 装着 {1} 颗（其中 {2} 颗和本机构建同一份，其余是商店拉的 CI 那份，本来就该不同）' -f `
+  (Test-Path $plugDir), $installed.Count, $same)
 Phase 'install' $sw $verdict
 
 Start-Process -FilePath 'D:\software\ltool\ltool.exe'

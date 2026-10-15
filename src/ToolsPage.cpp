@@ -21,6 +21,7 @@
 #include <QStackedWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QScrollArea>
 
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -104,12 +105,20 @@ public:
 
         topRow->addStretch(1);
 
+        // 可更新那颗卡片的标记：一个绿色向上箭头，钉在右上角。
+        // 箭头写 \u2191 而不是直接贴字符：这个文件里的中文要过好几道工具手，字面量丢过字符。
+        m_arrow = new QLabel(QStringLiteral("\u2191"), this);
+        m_arrow->setStyleSheet(QStringLiteral(
+            "color: #10b981; font-size: 14pt; font-weight: 700; background: transparent;"));
+        m_arrow->setVisible(false);
+        topRow->addWidget(m_arrow, 0, Qt::AlignVCenter);
+
         m_desc = new QLabel(desc, this);
         m_desc->setObjectName(QStringLiteral("muted"));
         m_desc->setWordWrap(true);
 
         auto* bottomRow = new QHBoxLayout;
-        bottomRow->setSpacing(6);
+        bottomRow->setSpacing(8);
         bottomRow->setContentsMargins(0, 0, 0, 0);
 
         m_state = new QLabel(this);
@@ -128,13 +137,14 @@ public:
         lay->addLayout(bottomRow);
     }
 
+    void setUpdateArrow(bool on) { if (m_arrow) m_arrow->setVisible(on); }
     QLabel* stateLabel() const { return m_state; }
     QPushButton* addButton(const QString& text, bool isPrimary = false)
     {
         auto* b = new QPushButton(text, this);
         b->setCursor(Qt::PointingHandCursor);
         b->setMinimumWidth(56);
-        b->setFixedHeight(28);
+        b->setFixedHeight(30);
         if (isPrimary) {
             b->setObjectName(QStringLiteral("cardBtnPrimary"));
             b->setStyleSheet(QStringLiteral(
@@ -188,6 +198,7 @@ protected:
 
 private:
     QLabel* m_desc = nullptr;
+    QLabel* m_arrow = nullptr;
     QLabel* m_state = nullptr;
     QHBoxLayout* m_foot = nullptr;
     std::function<void()> m_onClick;
@@ -393,7 +404,14 @@ QWidget* ToolsPage::buildGrid()
     }
     lay->addLayout(grid);
     lay->addStretch(1);
-    return page;
+
+    auto* scroll = new QScrollArea(this);
+    scroll->setObjectName(QStringLiteral("toolsScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(page);
+    return scroll;
 }
 
 // "卸了之后还能不能装回来"只有拉过清单才答得上来；没拉过就别假装有把握
@@ -412,7 +430,7 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
     QString stateWord = PluginStore::stateWord(r.state);
     if (!r.remote.version.isEmpty()) {
         if (r.state == PluginStore::State::Update)
-            stateWord = QStringLiteral("可更新至 v%1").arg(r.remote.version);
+            stateWord = QStringLiteral("可更新 v%1").arg(r.remote.version);
         else
             stateWord = QStringLiteral("%1 (v%2)").arg(stateWord, r.remote.version);
     }
@@ -429,12 +447,20 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
         } else {
             noteText = r.note;
         }
+    } else if (r.state == PluginStore::State::Update) {
+        // 「↑ 可更新」那颗绿箭头本身就是答复，不需要再把"本机 xxxx… ≠ 清单 yyyy…"那串写在脸上。
+        // 大小留着（他要看得见装的是多大一份），哈希对照挪进悬停。
+        noteText = PluginStore::humanSize(r.remote.bytes);
+        card->setToolTip(r.note);
     } else {
         noteText = r.note;
     }
+    card->setUpdateArrow(r.state == PluginStore::State::Update);
     card->stateLabel()->setText(noteText.isEmpty()
                                     ? stateWord
                                     : QStringLiteral("%1 · %2").arg(stateWord, noteText));
+    if (r.state == PluginStore::State::Update)
+        card->stateLabel()->setStyleSheet(QStringLiteral("color: #10b981; font-weight: 600;"));
 
     using S = PluginStore::State;
     const PluginStore::Entry e = r.remote;

@@ -61,7 +61,7 @@ cmake --build build --config Release
 powershell -File build\verify\deliver.ps1        # 构建 → 打包 → 停旧实例 → 静默装 → 逐文件比 SHA256 → 重起
 ```
 
-- 约 27~32 秒一圈。档位：默认 normal 22.51MB（15 个插件 dll 都在包里）｜ `-Final` 21.8MB 那档是十二个 dll 时量的，没重测 ｜ `-Quick` 26.9MB ｜ `-NoBuild` 跳过构建。
+- 约 20~25 秒一圈。档位：默认 normal **22.08MB**（1.0.x 起是「开箱零插件」包：里面一颗插件 dll 都没有，只建一个空 `ltool-plugins\`，插件由商店按需拉）｜ `-Final` 21.8MB 那档是十二个 dll 都在包里时量的，没重测 ｜ `-Quick` 26.9MB ｜ `-NoBuild` 跳过构建。
 - 版本号只有一处：`ltool.iss` 的 `#define MyAppVersion`，读不到就直接 FATAL。
 - 交付判据是**逐个文件比 SHA256**（exe + core + 12 个插件）；单独跑一遍：`powershell -File build\verify\shaall.ps1`。
 - 装到哪：默认按用户装 `%LOCALAPPDATA%\Programs\ltool`，指定目录加 `/DIR="D:\software\ltool"`。

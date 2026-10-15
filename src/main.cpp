@@ -890,6 +890,9 @@ int main(int argc, char* argv[])
                 if (QWidget* w = it->widget()) {
                     laidOut.insert(w);
                     walk(w->layout());
+                    if (auto* sc = qobject_cast<QScrollArea*>(w))
+                        if (sc->widget())
+                            walk(sc->widget()->layout());
                 } else if (QLayout* sub = it->layout())
                     walk(sub);
             }
@@ -3062,8 +3065,6 @@ int main(int argc, char* argv[])
                       QStringLiteral("画出 %1 / 说了 %2").arg(nowCards).arg(cards));
                 check("卡片数 = 清单条数 + 清单外那几个", cards == said + outside,
                       QStringLiteral("清单 %1 + 清单外 %2 = %3").arg(said).arg(outside).arg(cards));
-                check("没拉清单之前一颗「装」都没有（列的是目录，不是仓库）", installersBefore == 0,
-                      QStringLiteral("刷新前 %1 颗装/更新按钮").arg(installersBefore));
                 check("刷新前后是同一面列表（卡片数随目录/清单变，不是另开一屏）", nowCards >= cardsBefore,
                       QStringLiteral("刷新前 %1 / 刷新后 %2").arg(cardsBefore).arg(nowCards));
                 check("插件仓库那十二个都在清单里", said >= 12, QStringLiteral("清单 %1 条").arg(said));
@@ -3166,30 +3167,36 @@ int main(int argc, char* argv[])
                 }
                 check("本机装着的那几张都写出了自己的大小", sized == needSized,
                       QStringLiteral("有大小 %1 / 该有 %2（装着 %3 张）").arg(sized).arg(needSized).arg(nOnDisk));
-                // 按钮排在卡片最底下一行：顶边要在卡片里所有文字行之下，而且贴着卡片底边（留 14px 内边距）
-                int btns = 0, floating = 0;
-                QStringList floats;
+                // 原来这里有一条"操作按钮排在卡片最底下那一行"的像素判据，撤了：卡片三层布局
+                // （73b0bf1）把状态词和按钮放进同一行贴底，状态词换成两行时按钮在同一行里垂直
+                // 居中，"按钮底边比状态底边高几像素"是正常形状 —— 那条断言已经表达不了它想表达的事，
+                // 留着只会时不时红一条假故障。按钮该不该在，由上面「每张卡的按钮和自己那句状态对得上」盯。
+                // 可更新那几张：右上角一颗绿色 ↑ 就是答复，不许再把"本机 …≠ 清单 …"那串写在脸上。
+                // 箭头和不等号都用码点拼，不抄字面量（这个文件里中文丢过字符）。
+                const QString arrowGlyph = QString(QChar(0x2191));          // ↑
+                const QString neqGlyph = QString(QChar(0x2260));            // ≠
+                int upCards = 0, upNoArrow = 0, upVerbose = 0;
                 for (QFrame* card : page.findChildren<QFrame*>(QStringLiteral("row"))) {
-                    int textBottom = 0;
+                    QLabel* st = nullptr;
                     for (QLabel* l : card->findChildren<QLabel*>())
-                        textBottom = qMax(textBottom, l->mapTo(card, QPoint(0, 0)).y() + l->height());
-                    for (QPushButton* b : card->findChildren<QPushButton*>()) {
-                        if (!b->isVisible())
-                            continue;
-                        ++btns;
-                        const int top = b->mapTo(card, QPoint(0, 0)).y();
-                        const int bottom = top + b->height();
-                        if (top < textBottom || bottom < card->height() - 14) {
-                            ++floating;
-                            floats << QStringLiteral("「%1」顶=%2 文字底=%3 底=%4 卡高=%5")
-                                          .arg(b->text()).arg(top).arg(textBottom).arg(bottom).arg(card->height());
-                        }
-                    }
+                        if (l->property("shopState").toBool())
+                            st = l;
+                    if (!st || !st->text().startsWith(PluginStore::stateWord(PluginStore::State::Update)))
+                        continue;
+                    ++upCards;
+                    if (st->text().contains(neqGlyph))
+                        ++upVerbose;
+                    bool arrow = false;
+                    for (QLabel* l : card->findChildren<QLabel*>())
+                        if (l->text() == arrowGlyph && l->isVisible())
+                            arrow = true;
+                    if (!arrow)
+                        ++upNoArrow;
                 }
-                check("操作按钮排在卡片最底下（不和状态挤同一行）", btns > 0 && floating == 0,
-                      floats.isEmpty() ? QStringLiteral("%1 颗全在底部").arg(btns)
-                                       : QStringLiteral("%1/%2 颗不在底：%3").arg(floating).arg(btns)
-                                             .arg(floats.join(QStringLiteral("；"))));
+                check("可更新那几张卡不再写哈希对照那串文案", upVerbose == 0,
+                      QStringLiteral("%1 / %2 张还写着").arg(upVerbose).arg(upCards));
+                check("可更新那几张卡右上角有颗绿色向上箭头", upCards > 0 && upNoArrow == 0,
+                      QStringLiteral("可更新 %1 张，缺箭头 %2 张").arg(upCards).arg(upNoArrow));
                 int installers = 0, toggles = 0;
                 for (QPushButton* b : page.findChildren<QPushButton*>()) {
                     if (b->objectName() == QLatin1String("storeRefresh") || !b->isVisible())
@@ -3204,8 +3211,9 @@ int main(int argc, char* argv[])
                 check("禁用/启用按钮颗数 = 本机真装着的那几个", toggles == nOnDisk,
                       QStringLiteral("禁用/启用 %1 颗 / 装着 %2 张（能装 %3 张）")
                           .arg(toggles).arg(nOnDisk).arg(nMissing));
-                check("没拉清单之前这一面只列本机那几个，所以一颗「装」都没有", installersBefore == 0,
-                      QStringLiteral("刷新前 %1 颗").arg(installersBefore));
+                std::printf("INFO 刷新前那一面已经有 %d 颗装/更新按钮：清单有持久化缓存，启动就按缓存画"
+                            "（以前那条「没拉过就一颗都不给」的判据跟着 d9c9ed7 作废了）\n",
+                            installersBefore);
                 std::printf("INFO 拒收 %d 条（本仓库的 dist 现在是干净的）\n", rejected);
             }
             page.hide();

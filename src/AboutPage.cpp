@@ -296,7 +296,7 @@ void AboutPage::startCheck()
             else
                 why = QStringLiteral("%1%2").arg(reply->errorString(),
                                                  http ? QStringLiteral("（HTTP %1）").arg(http) : QString());
-            m_status->setText(QStringLiteral("没问到：%1。可以直接点「打开发布页」看。").arg(why));
+            m_status->setText(QStringLiteral("网络连接失败：%1。如使用代理请检查代理设置，或直接点「打开发布页」查看最新版本。").arg(why));
             Utils::log(QStringLiteral("update: 检查失败 http=%1 err=%2").arg(http)
                            .arg(reply->errorString()));
             return;
