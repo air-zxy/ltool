@@ -720,6 +720,12 @@ int main(int argc, char* argv[])
     if (args.contains("--username"))
         return runPluginSelftest(QStringLiteral("user"));
 
+    // --gridtest：「图片排版」那张板的判据（宫格数、拖进来收不收、换顺序是移动还是交换、
+    // 合成出来的尺寸和像素对不对）。全在 plugins/grid/gridselftest.cpp 里，主程序只点名。
+    // 合成只在临时目录里算，产出文件那条判据自己算路径自己删，不碰他的截图目录。
+    if (args.contains("--gridtest"))
+        return runPluginSelftest(QStringLiteral("grid"));
+
     // --plugintest：DLL 插件那条链从头到尾真跑一遍（这次是**真的 LoadLibrary**，
     // 但一次都不 show()，不碰他的桌面）。
     // 名字为什么不叫 --plugin：Qt 自己把 "--plugin" 当命令行选项吃掉了 ——
@@ -738,12 +744,12 @@ int main(int argc, char* argv[])
             if (!ok)
                 ++bad;
         };
-        // 十五个自带工具现在全是 dll 插件。这张名单是"装齐了没有"的判据：
-        // 少一个就是安装包少了文件，或者那个 dll 没通过检查 —— 别让它在界面上悄悄少一张卡。
+        // 十七个自带工具现在全是 dll 插件。这张名单是"都编出来了没有"的判据：
+        // 少一个就是那棵 dll 没通过检查 —— 别让它在界面上悄悄少一张卡。
         static const char* const kTools[] = { "repair", "ads", "disk", "network", "registry",
                                               "startup", "user", "json", "base64", "shell",
                                               "record", "capture", "software", "downloads",
-                                              "tasks", "language" };
+                                              "tasks", "grid", "language" };
         const QDir dir(PluginHost::pluginsDir());
         std::printf("INFO 插件目录：%s\n", dir.absolutePath().toUtf8().constData());
         const auto& metas = PluginHost::scan();
@@ -878,7 +884,7 @@ int main(int argc, char* argv[])
             input->clear();
             settle();
         }
-        // 卡片墙：这十五个现在全靠插件目录，卡片数必须等于"通过检查的插件数"，
+        // 卡片墙：这十七个现在全靠插件目录，卡片数必须等于"通过检查的插件数"，
         // 而且每张卡都要能在布局里走到（数 findChild 不等于界面可见 —— 配置页那栏
         // 就是这么隐身的，2026-10-12 他报的）。这条替掉了原来那两条"内嵌槽位 0..N-1"。
         ToolsPage wall;
@@ -918,7 +924,7 @@ int main(int argc, char* argv[])
               QString::number(cards));
         check("通过检查的插件卡片都在卡片墙上", QString::number(cards), QString::number(okCount));
         // 卡片墙的几何：离屏 resize 之后布局会算，不用 show（show 就把设置窗拍到他桌面上）。
-        // 这条盯的是"这十五张卡摆得开吗"。
+        // 这条盯的是"这十七张卡摆得开吗"。
         // WA_DontShowOnScreen：走完整的 show/布局激活路径，但不往屏幕上贴一个像素、
         // 也不抢焦点。裸 resize() 不够 —— 没 show 过的顶层窗口布局根本不算，
         // 第一版就是这么量出"九张卡全在 (0,0,0,0)"，那是探针坏了不是卡片坏了。
@@ -1747,6 +1753,12 @@ int main(int argc, char* argv[])
             // 但它是关键词「清理」的开头 —— 这条守的是"别把直达搞成搜不到"。
             const auto t4 = query(QStringLiteral("qingli"));
             check("取整不伤直达：qingli 还是直达磁盘清理", t4.first ? "yes" : "no", "yes");
+            // 新插件「图片排版」进的是同一张表（PluginHost::scan()），搜索框这边不该要特判。
+            // 这两条盯的就是"进商店列表 = 也进搜索"这条自动接上的链有没有断。
+            const auto t5 = query(QStringLiteral("paiban"));
+            check("全拼 paiban 直达「图片排版」（关键词「排版」开头）", t5.first ? "yes" : "no", "yes");
+            const auto t6 = query(QStringLiteral("gongge"));
+            check("全拼 gongge 直达「图片排版」（关键词「宫格」开头）", t6.first ? "yes" : "no", "yes");
             // 他报的第三件事：搜 `gg` 搜不到 Google。原因是「广告弹窗」的首字母也是 gg，
             // 工具直达那一节 return 得早，网站那节根本没机会跑。规则改成"显式网站关键字 >
             // 工具名首字母拼音"之后：gg 归 Google，广告弹窗还能靠整串首字母 ggdc 或 广告 到达。

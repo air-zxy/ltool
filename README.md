@@ -18,6 +18,7 @@ C++20 / Qt 6 / vcpkg + CMake，只跑 Windows。界面本体都是 DLL 插件，
 | 设置窗 | 左侧菜单只有四行：网站 / 插件商店 / 配置 / 关于。语言并进「配置」那一页的一节，软件、下载器、定时任务是商店里的卡片。 |
 | F1 截图 | 全屏框选、悬停吸附到窗口、标注、置顶、图上划词取字（`plugins/capture`）。 |
 | F2 录屏 | 录整块屏幕或某一个窗口，出普通 mp4，画质和画面两档可选（`plugins/record`）。 |
+| 图片排版 | 四宫 / 六宫 / 九宫：把图拖进格子、从一格拖到另一格换顺序、点右上角 ✕ 拿掉那一张、挑一个背景色，按「生成宫图」合成一张存进截图目录（`plugins/grid`）。 |
 | 修复 | 检测 .NET / VC++ / DirectX / UCRT，未装的一键 winget 安装。 |
 | 广告弹窗 | 按标题和进程扫弹窗，可关闭 / 结束进程 / 加拦截名单，勾了每 60 秒自动拦。 |
 | C盘清理 | 可清理位置 + 所选盘的占用分析（矩形树图）；边扫边出数，每个盘留着结果。 |
@@ -30,7 +31,7 @@ C++20 / Qt 6 / vcpkg + CMake，只跑 Windows。界面本体都是 DLL 插件，
 
 每一项的实测数字、无界面判据（`--capgeo` / `--recq` / `--diskui` 那些）和踩过的坑，
 整段挪到了文末的 **功能细节与实测** —— 门口这一张只说"是什么"。
-界面背后是十五个 DLL 插件共用一份 `ltoolcore.dll`，见「工具插件」那一节。
+界面背后是十七个 DLL 插件共用一份 `ltoolcore.dll`，见「工具插件」那一节。
 
 ## 构建
 
@@ -63,7 +64,7 @@ powershell -File build\verify\deliver.ps1        # 构建 → 打包 → 停旧�
 
 - 约 20~25 秒一圈。档位：默认 normal **22.08MB**（1.0.x 起是「开箱零插件」包：里面一颗插件 dll 都没有，只建一个空 `ltool-plugins\`，插件由商店按需拉）｜ `-Final` 21.8MB 那档是十二个 dll 都在包里时量的，没重测 ｜ `-Quick` 26.9MB ｜ `-NoBuild` 跳过构建。
 - 版本号只有一处：`ltool.iss` 的 `#define MyAppVersion`，读不到就直接 FATAL。
-- 交付判据是**逐个文件比 SHA256**（exe + core + 12 个插件）；单独跑一遍：`powershell -File build\verify\shaall.ps1`。
+- 交付判据是**逐个文件比 SHA256**（`ltool.exe` + `ltoolcore.dll` 两颗按哈希硬比；插件目录只报数 —— 零插件包里那颗 dll 都没有，装好的那些是商店拉的 CI 那份，和本机构建天生不同，逐颗比只会天天红一条假故障）；单独跑一遍：`powershell -File build\verify\shaall.ps1`。
 - 装到哪：默认按用户装 `%LOCALAPPDATA%\Programs\ltool`，指定目录加 `/DIR="D:\software\ltool"`。
 - 等价裸命令就三步：`cmake --build build --config Release` → `"D:\software\InnoSetup6\ISCC.exe" ltool.iss`
   → `installer\ltool-<版本>-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES`。
@@ -110,9 +111,9 @@ powershell -File build\verify\deliver.ps1        # 构建 → 打包 → 停旧�
 
 ## 插件
 
-十五个自带插件：DLL 修复 / 广告弹窗 / 磁盘清理 / 网络 / 注册表分析 / 开机启动分析 / Windows 用户名 /
-JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** / **软件** / **下载器** / **定时任务** ——
-第三方插件走同一条路，主程序里没有"内置工具"特判。后三张是 2026-10-15 从设置页菜单里搬进来的：
+十七个自带插件：DLL 修复 / 广告弹窗 / 磁盘清理 / 网络 / 注册表分析 / 开机启动分析 / Windows 用户名 /
+JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** / **软件** / **下载器** / **定时任务** / **语言** / **图片排版**（四宫/六宫/九宫）——
+第三方插件走同一条路，主程序里没有"内置工具"特判。其中软件 / 下载器 / 定时任务那三张是 2026-10-15 从设置页菜单里搬进来的：
 菜单只剩 网站 / 插件商店 / 配置 / 关于 四行，语言并进「配置」那一节。
 
 | 位置 | 是什么 |
@@ -140,7 +141,10 @@ JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** /
   指到自己的服务器就不套。配置页「插件镜像前缀」那一行可换；状态行会说出这次**实际走的是哪条、试了几次**。
 - `Api` 和主程序不等就拒装，并在界面上说清是哪一侧旧；元数据不齐也是点名说清楚，不默默少一张卡。
 - 加一个插件：`plugins/<id>/` 放 `plugin.json` + 源码 + 一层壳（照 `plugins/network/networkplugin.cpp` 抄），
-  再在 `CMakeLists.txt` 里 `ltool_add_tool(id IdPlugin 源文件…)` 加一行。卡片墙、搜索直达、商店全自动认它。
+  再在 `CMakeLists.txt` 里 `ltool_add_tool(id IdPlugin 源文件…)` 加一行，并把 `ltool-<id>` 补进下面那条
+  `add_dependencies(ltool ...)`（不点名挂上去，`--target ltool` 根本不编它，打包照旧装上一版 —— 2026-10-15
+  加 grid 时踩的就是这条），以及 `src/main.cpp` 里 `--plugintest` 那张 `kTools` 名单（少了它，dll 在目录里
+  也没人验）。卡片墙、搜索直达、商店全自动认它。
 - 第三方仓库：[mateo-ki/ltool_plugin](https://github.com/mateo-ki/ltool_plugin) —— 自带插件的源码 + 独立编 dll 的
   SDK 快照；SDK 由主仓库 `tools/make_sdk.py` 生成，`dist/index.json` 由它的 `tools/make_index.py` 生成。
   那边的 CI 定义在本仓库 `plugin-ci/`（`build.yml` + `ci/annotate-fail.sh`），改完拷进插件仓库的
@@ -151,7 +155,8 @@ JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** /
 | 旗标 | 验什么 |
 | --- | --- |
 | `--smoke` | 无界面一遍过：索引、目录、插件都在 |
-| `--plugintest` | 十五个插件逐个验 + 卡片墙张数与几何 + 动作路由（160 条） |
+| `--plugintest` | 十七个插件逐个验 + 卡片墙张数与几何 + 动作路由（176 条） |
+| `--gridtest` | 「图片排版」那张板：格数与列行、收图与拒收、拖动是挪还是换、✕ 只空那一格、合成尺寸与像素、板上预览和出图同一块构图（34 条，离屏） |
 | `--storetest` | 离线那半条链：解析清单、比本地、验哈希改名、**更新能盖掉已存在的那颗**、卸载与待删表、镜像→代理→直连的排法（60 条，不联网） |
 | `--storenet` | 真拉一次清单并离屏点「刷新清单」，逐张卡核对"状态词 ↔ 那颗按钮"，并验状态行说出走的是哪条，还量了「大小一律 MB」和「按钮排在卡片最底下一行」（17 条，**要联网，不进 CI**） |
 | `--storemulti [颗数]` | 连着点九颗「装/更新」再当场把卡片墙拆掉重排 —— 盯的就是"多点几下就闪退"那颗访问违例（回调打到已删的按钮；现在装是排队的，一次只飞一颗）。要联网，且会往运行目录真写 dll，所以 `build/verify/storemulti.ps1` 拿一份临时副本跑；不进 CI |
@@ -161,7 +166,7 @@ JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** /
 | `--recq` / `--recordui [秒]` | 录屏那两档真进了编码器 / F2 整条链 |
 | `--diskui` / `--diskbranch` | 磁盘页整条链 / 边扫边报的数和定稿树一致 |
 
-跑任何一面都**必须有输出**（空输出 + 退出码 0 就是假绿）。全部 34 面、连同各自量到的数字：
+跑任何一面都**必须有输出**（空输出 + 退出码 0 就是假绿）。全部 35 面、连同各自量到的数字：
 [docs/notes.md](docs/notes.md)。
 
 ## 配置与数据目录

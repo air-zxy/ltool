@@ -305,6 +305,8 @@ ltool_add_tool(downloads DownloadsPlugin plugins/downloads/DownloadsPage.cpp
                                          plugins/downloads/downloadsplugin.cpp)
 ltool_add_tool(tasks TasksPlugin         plugins/tasks/TasksPage.cpp
                                          plugins/tasks/tasksplugin.cpp)
+ltool_add_tool(grid GridPlugin           plugins/grid/GridBoard.cpp plugins/grid/GridPage.cpp
+                                         plugins/grid/gridplugin.cpp plugins/grid/gridselftest.cpp)
 ltool_add_tool(language LanguagePlugin   plugins/language/LanguagePage.cpp
                                          plugins/language/languageplugin.cpp)
 
@@ -313,7 +315,8 @@ ltool_add_tool(language LanguagePlugin   plugins/language/LanguagePage.cpp
 # 打进安装包，装出来的还是旧的（构建那一段照样报绿）。
 add_dependencies(ltool ltool-repair ltool-ads ltool-disk ltool-network ltool-registry
                         ltool-startup ltool-user ltool-json ltool-base64 ltool-shell ltool-record
-                        ltool-capture ltool-software ltool-downloads ltool-tasks ltool-language)
+                        ltool-capture ltool-software ltool-downloads ltool-tasks ltool-grid
+                        ltool-language)
 
 # ---- Qt 运行库部署：把 exe 所需的 Qt DLL / platform 插件复制到输出目录，
 #      避免 "no Qt platform plugin could be initialized" ----
