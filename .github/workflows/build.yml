@@ -193,18 +193,38 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
+          # 将磁盘分支自测根目录指向工作区目录，包含丰富多级子目录与真实文件，避免全盘枚举 C 盘海量系统/工具文件导致超时挂死
+          LTOOL_DISKBRANCH_DIR: ${{ github.workspace }}
         run: |
           cd build/Release        # VS 生成器的产物在 Release 子目录里（.iss 也按这条路径收包）
           fail=0
           for f in --smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --diskbranch; do
             echo "===== $f ====="
-            out=$(./ltool.exe "$f" 2>&1) || { echo "$out"; echo "::error::$f 退出码非 0"; fail=1; continue; }
+            log_file="$RUNNER_TEMP/test_${f//--/}.log"
+            # 避免 out=$(...) 吞掉实时输出导致假卡死，同时增加 120 秒超时熔断保护
+            if timeout 120s ./ltool.exe "$f" > "$log_file" 2>&1; then
+              rc=0
+            else
+              rc=$?
+            fi
+            cat "$log_file"
+            if [ $rc -ne 0 ]; then
+              echo "::error::$f 退出码非 0 (exit code: $rc)"
+              fail=1
+              continue
+            fi
             # 空输出必须算失败：这台机器上 --smoke 就以"0 字节 + 退出码 0"的形状哑过很久
             # （命令行被单实例守卫转交给已常驻的实例），有输出才证明它真跑了。
-            if [ -z "$out" ]; then echo "::error::$f 一行都没输出（这就是假绿的形状）"; fail=1; continue; fi
-            echo "$out" | tail -n 14
-            if echo "$out" | grep -q "失败"; then
-              echo "$out" | grep -E "失败 [1-9][0-9]* 项" && { echo "::error::$f 报了失败"; fail=1; }
+            if [ ! -s "$log_file" ]; then
+              echo "::error::$f 一行都没输出（这就是假绿的形状）"
+              fail=1
+              continue
+            fi
+            if grep -q "失败" "$log_file"; then
+              if grep -E "失败 [1-9][0-9]* 项" "$log_file"; then
+                echo "::error::$f 报了失败"
+                fail=1
+              fi
             fi
           done
           echo "===== --archivetest（造一个包再解回来）====="

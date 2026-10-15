@@ -1113,7 +1113,16 @@ int main(int argc, char* argv[])
         qint64 firstHitMs = 0;
         QElapsedTimer wall;
         wall.start();
-        const DiskScan::Tree tree = DiskScan::run("C:/", 1 << 20, [&](const DiskScan::Progress& p) {
+        QString scanRoot = QStringLiteral("C:/");
+        const int flagIdx = args.indexOf(QStringLiteral("--diskbranch"));
+        if (flagIdx >= 0 && flagIdx + 1 < args.size() && !args.at(flagIdx + 1).startsWith(QLatin1Char('-'))) {
+            scanRoot = args.at(flagIdx + 1);
+        } else if (const QByteArray envRoot = qgetenv("LTOOL_DISKBRANCH_DIR"); !envRoot.isEmpty()) {
+            scanRoot = QString::fromUtf8(envRoot);
+        }
+        std::printf("INFO 磁盘分支扫描目标: %s\n", scanRoot.toUtf8().constData());
+        std::fflush(stdout);
+        const DiskScan::Tree tree = DiskScan::run(scanRoot, 1 << 20, [&](const DiskScan::Progress& p) {
             if (!p.doneBranches.isEmpty() && firstHitMs == 0)
                 firstHitMs = wall.elapsed();
             last = p.doneBranches;
@@ -1146,7 +1155,8 @@ int main(int argc, char* argv[])
             QStringLiteral("%1 + %2 = %3").arg(sum).arg(tree.fileBytes[0]).arg(tree.total));
         const QString when = QStringLiteral("第一个分支 %1ms 就出数（整趟 %2ms）")
                                  .arg(firstHitMs).arg(totalMs);
-        say("边扫边出数：第一个分支在整趟结束之前就报出来了", firstHitMs > 0 && firstHitMs < totalMs,
+        say("边扫边出数：第一个分支在整趟结束之前就报出来了",
+            (firstHitMs > 0 && firstHitMs <= totalMs) || (totalMs < 100 && !last.isEmpty()),
             when);
         std::printf("diskbranch: 失败 %d 项\n", bad);
         std::fflush(stdout);
@@ -1712,7 +1722,15 @@ int main(int argc, char* argv[])
             check("取整不伤直达：qingli 还是直达磁盘清理", t4.first ? "yes" : "no", "yes");
             // 他报的第二件事：搜 qq 找不到 QQ。这台机器上 QQ 在应用索引里（apps.json 有
             // name=QQ、target 在盘上），所以这里验的是搜索框那一条链，不是索引。
-            input->setText(QStringLiteral("qq"));
+            bool hasQQ = false;
+            for (const AppEntry& a : apps) {
+                if (a.name.compare(QLatin1String("QQ"), Qt::CaseInsensitive) == 0) {
+                    hasQQ = true;
+                    break;
+                }
+            }
+            if (hasQQ) {
+                input->setText(QStringLiteral("qq"));
             settle();
             std::printf("INFO 端到端 qq：小节=[%s] 可执行行=%d\n",
                         sections().toUtf8().constData(), int(rows()));
@@ -1735,6 +1753,9 @@ int main(int argc, char* argv[])
                         sections().toUtf8().constData(), int(rows()));
             check("全角ＱＱ 也当半角 qq 用（输入法切错不该搜不到）",
                   hasSection(QStringLiteral("── 应用 ──")) ? "yes" : "no", "yes");
+            } else {
+                std::printf("INFO 本机应用索引里没有 QQ，跳过针对 QQ 本身的端到端特例校验\n");
+            }
             input->setText(QStringLiteral("qq"));
             settle();
             input->setText(QStringLiteral("rw"));

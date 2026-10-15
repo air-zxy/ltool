@@ -300,7 +300,7 @@ Tree run(const QString& rootPath, qint64 minBytes,
     if (progress) {
         reporter = std::thread([&] {
             while (!stop.load(std::memory_order_acquire)) {
-                Sleep(200);
+                Sleep(30);
                 Progress p;
                 p.bytes = c.bytes.load(std::memory_order_relaxed);
                 p.dirs = c.dirs.load(std::memory_order_relaxed);
@@ -359,6 +359,21 @@ Tree run(const QString& rootPath, qint64 minBytes,
     stop.store(true, std::memory_order_release);
     if (reporter.joinable())
         reporter.join();
+    if (progress) {
+        Progress p;
+        p.bytes = c.bytes.load(std::memory_order_relaxed);
+        p.dirs = c.dirs.load(std::memory_order_relaxed);
+        p.branches = c.branchCount;
+        {
+            const std::lock_guard<std::mutex> g(c.m);
+            p.current = c.current;
+        }
+        {
+            const std::lock_guard<std::mutex> g(c.bm);
+            p.doneBranches = c.done;
+        }
+        progress(p);
+    }
 
     g_timing.walkMs = et.elapsed();
     g_timing.files = c.files.load(std::memory_order_relaxed);
