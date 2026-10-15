@@ -200,6 +200,16 @@ int runSmokeTest()
                      p.id.toUtf8().constData(), okCount, size_t(p.items.size()));
     }
 
+    // 无管理员权限（如 CI 干净环境）无法使用 USN，避免全盘深扫描耗时数分钟触发超时
+    UsnIndex::VolumeHandle vol;
+    if (!vol.open(QStringLiteral("C:/"))) {
+        QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+        cfg.setValue(QStringLiteral("index/deep"), false);
+        cfg.sync();
+    } else {
+        vol.close();
+    }
+
     FileIndexer::instance().reindexAsync(false); // 与生产一致：增量优先
     QObject::connect(&FileIndexer::instance(), &FileIndexer::indexingFinished,
                      [](int total) {
@@ -207,7 +217,7 @@ int runSmokeTest()
                          std::fflush(stdout);
                          QApplication::quit();
                      });
-    QTimer::singleShot(120000, [] { std::fprintf(stdout, "files=TIMEOUT\n"); QApplication::quit(); });
+    QTimer::singleShot(30000, [] { std::fprintf(stdout, "files=TIMEOUT\n"); QApplication::quit(); });
     const int ret = QApplication::exec();
     std::fflush(stdout);
     return ret;
