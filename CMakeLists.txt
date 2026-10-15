@@ -45,13 +45,23 @@ qt_standard_project_setup()
 add_executable(genicon tools/genicon.cpp)
 target_link_libraries(genicon PRIVATE Qt6::Gui)
 set(ICON_FILE ${CMAKE_CURRENT_SOURCE_DIR}/resources/ltool.ico)
-add_custom_command(
-    OUTPUT ${ICON_FILE}
-    COMMAND $<TARGET_FILE:genicon> ${ICON_FILE}
-    DEPENDS genicon
-    COMMENT "genicon: 生成 ltool.ico"
-)
-add_custom_target(appicon DEPENDS ${ICON_FILE})
+if(NOT EXISTS "${ICON_FILE}")
+    add_custom_command(
+        OUTPUT ${ICON_FILE}
+        COMMAND ${CMAKE_COMMAND} -E env
+                "QT_QPA_PLATFORM=offscreen"
+                "QT_PLUGIN_PATH=${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/Qt6/plugins"
+                $<TARGET_FILE:genicon> ${ICON_FILE}
+        DEPENDS genicon
+        COMMENT "genicon: 生成 ltool.ico"
+        VERBATIM
+    )
+    add_custom_target(appicon DEPENDS ${ICON_FILE})
+else()
+    add_custom_target(appicon
+        COMMENT "ltool.ico 已在位，跳过重复生成"
+    )
+endif()
 
 # ============================================================================
 # ltoolcore.dll —— 主程序和 DLL 插件共用的一份实现

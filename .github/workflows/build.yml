@@ -164,8 +164,12 @@ jobs:
         shell: bash
         env:
           VCPKG_ROOT: ${{ env.LTOOL_VCPKG }}
+          QT_QPA_PLATFORM: offscreen
+          QT_PLUGIN_PATH: ${{ github.workspace }}/build/vcpkg_installed/x64-windows/Qt6/plugins
         run: |
           set -o pipefail
+          mkdir -p build/Release/platforms
+          cp build/vcpkg_installed/x64-windows/Qt6/plugins/platforms/qoffscreen.dll build/Release/platforms/ 2>/dev/null || true
           cmake --build build --config Release --parallel 4 -- -v:m -p:CL_MPcount=2 2>&1 | tee build.log
 
       # 只跑不需要真屏幕、也不需要管理员的那批。要真屏幕的（--capgeo/--capflash/--recq/

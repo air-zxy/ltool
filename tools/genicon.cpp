@@ -1,3 +1,6 @@
+#ifdef _WIN32
+#include <windows.h>
+#endif
 // 构建期图标生成器：产出 resources/ltool.ico（exe 与安装包共用这一份）
 //
 // 图标是画出来的，不是素材文件：圆角方块 + 左上→右下的蓝色渐变 + 白色 L。
@@ -71,6 +74,10 @@ void put32(QByteArray& a, quint32 v)
 
 int main(int argc, char** argv)
 {
+#ifdef _WIN32
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+#endif
+    qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);   // QPainter 画字要 QPA
     if (argc < 2) {
         std::fprintf(stderr, "用法: genicon <输出 .ico 路径>\n");
