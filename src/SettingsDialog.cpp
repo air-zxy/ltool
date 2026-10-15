@@ -218,10 +218,10 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     // 颜色沿用它们原来那一行的，一眼还认得出来。
     // 「插件商店」那一行画的是一颗袋子（其余三行是第一个字）：四个图标里它是唯一"能买东西"的那个。
     const MenuDef defs[] = {
-        {"网站", QColor(31, 141, 160), false},
-        {"插件商店", QColor(120, 130, 150), true},
-        {"配置", QColor(150, 150, 160), false},
-        {"关于", QColor(90, 100, 120), false},
+        {"网站", QColor(6, 182, 212), false},    // 活力青碧 (Cyan)：象征网络与探索
+        {"插件商店", QColor(249, 115, 22), true}, // 暖阳珊瑚橙 (Orange)：白色百宝袋在暖橙底上更鲜明
+        {"配置", QColor(59, 130, 246), false},   // 经典科技蓝 (Blue)：沉稳、专业的首选项控制
+        {"关于", QColor(168, 85, 247), false},   // 极光罗兰紫 (Purple)：高雅、醒目的版本与品牌
     };
     for (const MenuDef& d : defs) {
         const QIcon icon = d.bag ? Utils::bagIcon(d.color) : Utils::letterIcon(d.name, d.color);
