@@ -6,7 +6,11 @@
 #include <QColorDialog>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QDialog>
 #include <QDir>
+#include <QGuiApplication>
+#include <QPixmap>
+#include <QScreen>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -214,6 +218,75 @@ QImage GridPage::compose(int cellPx, int gap, const QColor& bg) const
     return out;
 }
 
+QString GridPage::previewCaption(const QImage& img) const
+{
+    // 弹框上面那行字说的是"存出去的那张"，不是屏上这块缩图 —— 两边数字不一样是应该的，
+    // 但必须写明白，不然人以为存下来也只有这么大。
+    return QStringLiteral("存出去的是 %1×%2 原尺寸（屏上这块是缩到放得下的样子），%3 格，背景 %4，落在 %5")
+        .arg(img.width()).arg(img.height()).arg(m_board->slotCount())
+        .arg(m_bg.name().toUpper()).arg(Utils::capturesDir());
+}
+
+// 弹框本体单独做成"造出来"而不是"弹出来"：判据要能在不 exec 的前提下检查那两颗按钮、
+// 那行字和那张缩图（离屏里 exec() 的返回值不作数，这条在卸载那一步已经栽过一次）。
+QDialog* GridPage::previewDialog(const QImage& img) const
+{
+    auto* box = new QDialog(const_cast<GridPage*>(this));
+    box->setObjectName(QStringLiteral("gridPreview"));
+    box->setWindowTitle(QStringLiteral("效果图：看过再存"));
+    auto* lay = new QVBoxLayout(box);
+    lay->setContentsMargins(12, 10, 12, 10);
+    lay->setSpacing(8);
+
+    auto* cap = new QLabel(previewCaption(img), box);
+    cap->setObjectName(QStringLiteral("gridPreviewCap"));
+    cap->setWordWrap(true);
+
+    const QRect avail = QGuiApplication::primaryScreen()->availableGeometry();
+    const int maxW = qMax(320, qMin(900, avail.width() - 260));
+    const int maxH = qMax(240, qMin(620, avail.height() - 260));
+    auto* shot = new QLabel(box);
+    shot->setObjectName(QStringLiteral("gridPreviewShot"));
+    shot->setAlignment(Qt::AlignCenter);
+    shot->setMinimumSize(maxW, maxH);
+    shot->setStyleSheet(QStringLiteral("background:#101114;border:1px solid #3a3c45;border-radius:6px;"));
+    QPixmap pm = QPixmap::fromImage(img);
+    // 只缩不放大：图本来就小（比如自测那张 150 见方）就按原尺寸摆，
+    // 放大出来的糊图会让人以为存出去的也是糊的。
+    if (pm.width() > maxW - 12 || pm.height() > maxH - 12)
+        pm = pm.scaled(maxW - 12, maxH - 12, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    shot->setPixmap(pm);
+
+    auto* btns = new QHBoxLayout;
+    btns->setSpacing(6);
+    btns->addStretch(1);
+    auto* cancel = new QPushButton(QStringLiteral("取消（不存）"), box);
+    cancel->setObjectName(QStringLiteral("gridCancel"));
+    cancel->setCursor(Qt::PointingHandCursor);
+    auto* save = new QPushButton(QStringLiteral("保存这张"), box);
+    save->setObjectName(QStringLiteral("gridSave"));
+    save->setCursor(Qt::PointingHandCursor);
+    save->setDefault(true);
+    connect(cancel, &QPushButton::clicked, box, &QDialog::reject);
+    connect(save, &QPushButton::clicked, box, &QDialog::accept);
+    btns->addWidget(cancel);
+    btns->addWidget(save);
+
+    lay->addWidget(cap);
+    lay->addWidget(shot, 1);
+    lay->addLayout(btns);
+    box->resize(maxW + 40, maxH + 140);
+    return box;
+}
+
+bool GridPage::confirmPreview(const QImage& img)
+{
+    QDialog* box = previewDialog(img);
+    const bool ok = box->exec() == QDialog::Accepted;
+    delete box;
+    return ok;
+}
+
 QString GridPage::generate()
 {
     if (m_board->filled() == 0) {
@@ -221,6 +294,17 @@ QString GridPage::generate()
         return QString();
     }
     const QImage img = compose(m_cellPx, kOutGap, m_bg);
+    const bool agreed = m_gate ? m_gate(img) : confirmPreview(img);
+    if (!agreed) {
+        // 取消就是取消：别写文件、别把"打开这张"点亮、别说成已生成
+        showStatus(QStringLiteral("没存 —— 你在效果图那一步按了取消。摆的还在，改完再按一次「生成宫图」。"));
+        return QString();
+    }
+    return saveComposed(img);
+}
+
+QString GridPage::saveComposed(const QImage& img)
+{
     const QString dir = Utils::capturesDir();
     QDir().mkpath(dir);
     const QString name = QStringLiteral("grid-%1-%2宫.png")

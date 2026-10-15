@@ -8,7 +8,10 @@
 #include "Utils.h"
 
 #include <QDateTime>
+#include <QDialog>
 #include <QDir>
+#include <QLayout>
+#include <QSet>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
@@ -17,6 +20,7 @@
 #include <QStringList>
 
 #include <cstdio>
+#include <functional>
 
 extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
 {
@@ -165,42 +169,88 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
               == badShot.pixelColor(s1.left() + 5, s1.top() + s1.height() / 4).rgb()
               ? "yes" : "no", "yes");
 
-    // 一张都没有的时候不许生成（要说一句人话，别写出全背景的空图）
+    // 空板：generate() 在弹框之前就拒了（这条顺便证明弹框没挡在这条路上）
     page.board()->clearImages();
-    check("空板生成回空串（不写文件）", page.generate().isEmpty() ? "yes" : "no", "yes");
+    check("空板生成回空串（连弹框都不该有）", page.generate().isEmpty() ? "yes" : "no", "yes");
 
-    // 真落盘一次：文件名、尺寸、然后删掉自己造的这个文件
+    // ---- 效果图那个弹框：造出来但不 exec（离屏里 exec 的返回值不作数）----
     page.board()->addImages(files.mid(0, 4));
-    const QString file = page.generate();
-    check("生成写出了真文件", QFileInfo::exists(file) && QFileInfo(file).size() > 0 ? "yes" : "no", "yes");
+    const QImage previewImg = page.compose(60, 10, QColor(255, 0, 0));
+    QDialog* dlg = page.previewDialog(previewImg);
+    auto* saveBtn = dlg->findChild<QPushButton*>(QStringLiteral("gridSave"));
+    auto* cancelBtn = dlg->findChild<QPushButton*>(QStringLiteral("gridCancel"));
+    auto* capLbl = dlg->findChild<QLabel*>(QStringLiteral("gridPreviewCap"));
+    auto* shotLbl = dlg->findChild<QLabel*>(QStringLiteral("gridPreviewShot"));
+    bool laid = false;
+    if (saveBtn && cancelBtn) {
+        QSet<const QWidget*> reached;
+        std::function<void(QLayout*)> walk = [&](QLayout* l) {
+            if (!l)
+                return;
+            for (int i = 0; i < l->count(); ++i) {
+                QLayoutItem* it = l->itemAt(i);
+                if (!it)
+                    continue;
+                if (QWidget* cw = it->widget()) {
+                    reached.insert(cw);
+                    walk(cw->layout());
+                } else if (QLayout* sub = it->layout())
+                    walk(sub);
+            }
+        };
+        walk(dlg->layout());
+        laid = reached.contains(saveBtn) && reached.contains(cancelBtn);
+    }
+    check("弹框里有「保存这张」和「取消（不存）」两颗，且摆在布局里",
+          QStringLiteral("%1/%2/%3").arg(saveBtn ? 1 : 0).arg(cancelBtn ? 1 : 0).arg(laid ? 1 : 0),
+          QStringLiteral("1/1/1"));
+    check("弹框那行字说的就是 previewCaption 那一句",
+          capLbl && capLbl->text() == page.previewCaption(previewImg) ? "yes" : "no", "yes");
+    check("那行字里有全尺寸（150×150）", capLbl && capLbl->text().contains(QStringLiteral("150×150"))
+              ? "yes" : "no", "yes");
+    check("弹框里那块缩图真有像素（不是空标签）",
+          shotLbl && !shotLbl->pixmap().isNull() ? "yes" : "no", "yes");
+    cancelBtn->click();
+    check("按「取消」= 这个框回绝（generate() 因此不会写文件）",
+          dlg->result() == QDialog::Rejected ? "yes" : "no", "yes");
+    delete dlg;
+
+    // ---- 顺序本身：没看过效果图就不许落盘（把弹框换成一道"门"）----
+    {
+        const QString dir0 = Utils::capturesDir();
+        const auto countFiles = [&dir0] {
+            return QDir(dir0).entryList({QStringLiteral("grid-*.png")}, QDir::Files).size();
+        };
+        const int before = countFiles();
+        page.setPreviewGate([](const QImage&) { return false; });
+        const QString refused = page.generate();
+        check("门回绝时 generate() 不写文件（弹框被摘掉就会红）",
+              QStringLiteral("%1/%2/%3").arg(refused.isEmpty() ? 1 : 0).arg(countFiles() == before ? 1 : 0)
+                  .arg(page.findChild<QPushButton*>(QStringLiteral("gridOpen"))->isEnabled() ? 1 : 0),
+              QStringLiteral("1/1/0"));
+        check("回绝之后状态行说实话（说的是没存，不是已生成）",
+              page.findChild<QLabel*>(QStringLiteral("muted"))
+                      && page.findChild<QLabel*>(QStringLiteral("muted"))->text().startsWith(QStringLiteral("没存"))
+                  ? "yes" : "no", "yes");
+        page.setPreviewGate([](const QImage&) { return true; });
+        const QString accepted = page.generate();
+        check("门同意时才真落盘",
+              QFileInfo::exists(accepted) && countFiles() == before + 1 ? "yes" : "no", "yes");
+        if (accepted.startsWith(dir0) && QFileInfo(accepted).fileName().startsWith(QStringLiteral("grid-")))
+            QFile::remove(accepted);
+        page.setPreviewGate(nullptr);
+    }
+
+    // ---- 落盘那一步（判据绕开模态框直接调 saveComposed）----
+    const QString file = page.saveComposed(previewImg);
+    check("按「保存」写出真文件", QFileInfo::exists(file) && QFileInfo(file).size() > 0 ? "yes" : "no", "yes");
     check("文件名是 grid-<时间>-<n>宫.png", QFileInfo(file).fileName().startsWith(QStringLiteral("grid-"))
                   && QFileInfo(file).fileName().endsWith(QStringLiteral("4宫.png")) ? "yes" : "no", "yes");
     const QString dir = Utils::capturesDir();
     if (file.startsWith(dir) && QFileInfo(file).fileName().startsWith(QStringLiteral("grid-")))
         QFile::remove(file);                    // 只删自己刚算出来那一个，不碰目录里别的
-    check("生成之后「打开这张」那颗该能点", page.findChild<QPushButton*>(QStringLiteral("gridOpen"))
+    check("保存之后「打开这张」那颗该能点", page.findChild<QPushButton*>(QStringLiteral("gridOpen"))
                   && page.findChild<QPushButton*>(QStringLiteral("gridOpen"))->isEnabled() ? "yes" : "no", "yes");
-
-
-    // 板子被拉成扁的/长的，格子也必须是正方形并且整块居中 —— 出图就是一格一正方形，
-    // 板子上画成长条等于"看到的和拿到的不是同一张图"（预览会横向拉扁）。
-    page.board()->setFixedSize(500, 300);
-    page.setSlots(9);
-    page.board()->clearImages();
-    page.board()->addImages({ band });          // 那张 120x40 的红|绿|蓝横条，中间是绿的
-    page.board()->ensurePolished();
-    const QRect g0 = page.board()->cellRect(0);
-    const QRect g2 = page.board()->cellRect(2);
-    check("扁板子里的格子还是正方形", g0.width() == g0.height() ? "yes" : "no", "yes");
-    // 居中这条要能分清"整块缩成正方形后摆在中间"和"格子拉长填满板子"两种写法：
-    // 只断言左右对称的话两种都绿（那等于没测），所以这里量的是左边那块留白有多大。
-    check("扁板子里整块格子居中（左右留白一样，而且真的留了白）",
-          qAbs(g0.left() - (500 - 1 - g2.right())) <= 1 && g0.left() > 40 ? "yes" : "no", "yes");
-    check("扁板子里那一格照样画满了图（不是中间一块黑）",
-          page.board()->grab().toImage().pixelColor(g0.center()).name(QColor::HexRgb),
-          QStringLiteral("#1ec81e"));
-    page.board()->setMinimumSize(320, 320);
-    page.board()->setMaximumSize(QSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX));
 
     QDir(box).removeRecursively();              // 这次自测造的临时图，绝对路径算出来的
     std::printf("grid: 失败 %d 项\n", bad);

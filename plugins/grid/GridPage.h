@@ -2,9 +2,12 @@
 
 #include <QColor>
 #include <QImage>
+#include <functional>
+#include <utility>
 #include <QWidget>
 
 class GridBoard;
+class QDialog;
 class QLabel;
 class QPushButton;
 
@@ -25,8 +28,23 @@ public:
     // 合成：每格 cellPx 像素、格子之间留 gap 像素、底色 bg。空格子只留底色。
     QImage compose(int cellPx, int gap, const QColor& bg) const;
 
-    // 生成并落盘，返回写出来的文件路径（失败回空串，话写在状态行里）。
+    // 「生成宫图」那颗：合成 → **先弹框把效果图给人过目** → 人按「保存」才落盘。
+    // 返回写出来的文件路径；一张都没有、或者人在弹框里按了取消，回空串（话写在状态行里）。
     QString generate();
+
+    // 弹框里那颗「保存」走的就是这一条。拆出来有两个理由：一是"看过了再写"这条顺序要在代码里
+    // 看得见，二是判据能绕开模态框直接验落盘那一步（离屏里 exec() 的返回值不作数）。
+    QString saveComposed(const QImage& img);
+    // 弹框上面那行字（尺寸 / 几宫 / 背景 / 落在哪个目录）—— 抽出来是因为它也得被断言。
+    QString previewCaption(const QImage& img) const;
+
+    // 弹框本体（造好但没弹）。判据拿它验"保存/取消两颗都在、那行字说的是全尺寸"。
+    QDialog* previewDialog(const QImage& img) const;
+
+    // 弹框那一步的"门"。默认就是弹框问人；判据把它换成直接同意 / 直接回绝，
+    // 这样**"没看过效果图就不许落盘"这条顺序本身**能被断言 —— 离屏里 exec() 不作数，
+    // 光测 saveComposed 的话，谁把弹框从 generate() 里删掉都还是全绿。
+    void setPreviewGate(std::function<bool(const QImage&)> gate) { m_gate = std::move(gate); }
 
     void setBackgroundColor(const QColor& c);
     QColor backgroundColor() const { return m_bg; }
@@ -36,6 +54,7 @@ signals:
     void generated(const QString& file);        // 自测拿它确认"真写出来了"
 
 private:
+    bool confirmPreview(const QImage& img);   // 弹那张效果图；返回"要不要存"
     void pickColor();
     void addFromFile();
     void showStatus(const QString& text);
@@ -48,5 +67,6 @@ private:
     QVector<QPushButton*> m_slotBtns;           // 索引 0/1/2 = 四/六/九
     QColor m_bg = Qt::white;
     int m_cellPx = 1080;
+    std::function<bool(const QImage&)> m_gate;
     QString m_lastFile;
 };
