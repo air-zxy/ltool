@@ -459,6 +459,23 @@ QString sha256Of(const QString& path)
     return QString::fromLatin1(h.result().toHex());
 }
 
+namespace {
+
+QStringList pendingList()
+{
+    QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+    return cfg.value(QStringLiteral("store/pendingRemove")).toStringList();
+}
+
+void setPendingList(const QStringList& v)
+{
+    QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+    cfg.setValue(QStringLiteral("store/pendingRemove"), v);
+    cfg.sync();
+}
+
+} // namespace
+
 QString finishDownload(const QString& partPath, const Entry& e, const QString& dir)
 {
     const QString got = sha256Of(partPath);
@@ -478,13 +495,24 @@ QString finishDownload(const QString& partPath, const Entry& e, const QString& d
                     .arg(QFileInfo(partPath).size()).arg(e.bytes);
     }
     const QString dest = local(dir) + QLatin1Char('/') + e.file;
-    // Windows 上 QFile::rename **不会覆盖已存在的目标**（Qt 直接返回失败），所以「更新」这一条
-    // 必须先把旧的那颗拿掉。以前没有这一步：12 颗"可更新"全在 rename 上撞死，
-    // 报的还是那句"被别的程序挡住（多半是杀毒）"—— 冤枉了杀软两个小时。
+    // Windows 上正在被当前进程使用的 DLL 无法删除，但允许在同目录下重命名。
+    // 如果直接删除旧 DLL 失败，说明当前进程正在占用它，此时重命名为 .old 并记录待删表，
+    // 新下载的 DLL 就能顺利覆盖到位！
     if (QFile::exists(dest) && !QFile::remove(dest)) {
-        QFile::remove(partPath);
-        return QStringLiteral("旧的 %1 换不掉（这个进程还在用它）—— 下好的那份先删掉了，"
-                              "重启 ltool 之后再点一次「更新」就行").arg(e.file);
+        const QString oldFile = dest + QStringLiteral(".old.%1").arg(QDateTime::currentMSecsSinceEpoch());
+        QFile::remove(oldFile);
+        if (QFile::rename(dest, oldFile)) {
+            QStringList p = pendingList();
+            const QString oldName = QFileInfo(oldFile).fileName();
+            if (!p.contains(oldName)) {
+                p << oldName;
+                setPendingList(p);
+            }
+        } else {
+            QFile::remove(partPath);
+            return QStringLiteral("旧的 %1 换不掉（可能被其它程序锁定）：%2")
+                        .arg(e.file, QFileInfo(dest).fileName());
+        }
     }
     QString err;
     if (!Utils::renameStaged(partPath, dest, &err))
@@ -493,21 +521,6 @@ QString finishDownload(const QString& partPath, const Entry& e, const QString& d
 }
 
 namespace {
-
-// 待删表就是配置里一个字符串列表。它存在的原因是"删不动"这个状态必须能跨进程活着：
-// 这一轮加载过的 dll 只有下次启动（还没加载它的时候）才真删得掉。
-QStringList pendingList()
-{
-    QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
-    return cfg.value(QStringLiteral("store/pendingRemove")).toStringList();
-}
-
-void setPendingList(const QStringList& v)
-{
-    QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
-    cfg.setValue(QStringLiteral("store/pendingRemove"), v);
-    cfg.sync();   // 后面新开的 QSettings 才读得到（产品里其他地方也是这个约定）
-}
 
 // 一个插件的两个文件名都清掉：活着的那个 + 被改名禁用的那个
 bool removeBoth(const QString& dir, const QString& file, bool* busy)

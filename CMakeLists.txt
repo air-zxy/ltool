@@ -97,7 +97,6 @@ qt_add_library(ltoolcore SHARED
     src/DevEnv.cpp
     src/DownloadManager.cpp
     src/TaskScheduler.cpp
-    src/LanguagePage.cpp
     src/WebsitesPage.cpp
     src/CaptureHistory.cpp
     src/InstallLogDialog.cpp
@@ -306,13 +305,15 @@ ltool_add_tool(downloads DownloadsPlugin plugins/downloads/DownloadsPage.cpp
                                          plugins/downloads/downloadsplugin.cpp)
 ltool_add_tool(tasks TasksPlugin         plugins/tasks/TasksPage.cpp
                                          plugins/tasks/tasksplugin.cpp)
+ltool_add_tool(language LanguagePlugin   plugins/language/LanguagePage.cpp
+                                         plugins/language/languageplugin.cpp)
 
 # 交付闭环是 `cmake --build --target ltool`（只编主程序那一棵）。插件目标只依赖 core，
 # 不在 ltool 的依赖图上 —— 不点名挂上去，改完页面不重编，ISCC 照旧把**上一个 dll**
 # 打进安装包，装出来的还是旧的（构建那一段照样报绿）。
 add_dependencies(ltool ltool-repair ltool-ads ltool-disk ltool-network ltool-registry
                         ltool-startup ltool-user ltool-json ltool-base64 ltool-shell ltool-record
-                        ltool-capture ltool-software ltool-downloads ltool-tasks)
+                        ltool-capture ltool-software ltool-downloads ltool-tasks ltool-language)
 
 # ---- Qt 运行库部署：把 exe 所需的 Qt DLL / platform 插件复制到输出目录，
 #      避免 "no Qt platform plugin could be initialized" ----

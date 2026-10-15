@@ -89,3 +89,6 @@ README (1).md
 build/verify/patch_*.py
 build/verify/add_*.py
 build/verify/*.sh
+
+__pycache__/
+*.pyc

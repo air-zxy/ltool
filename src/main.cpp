@@ -732,7 +732,7 @@ int main(int argc, char* argv[])
         static const char* const kTools[] = { "repair", "ads", "disk", "network", "registry",
                                               "startup", "user", "json", "base64", "shell",
                                               "record", "capture", "software", "downloads",
-                                              "tasks" };
+                                              "tasks", "language" };
         const QDir dir(PluginHost::pluginsDir());
         std::printf("INFO 插件目录：%s\n", dir.absolutePath().toUtf8().constData());
         const auto& metas = PluginHost::scan();
@@ -902,7 +902,7 @@ int main(int argc, char* argv[])
         check("卡片数 = 通过检查的插件数", QString::number(cards), QString::number(okCount));
         check("每张卡都真的摆在布局里（不是只 new 出来）", QString::number(reachable),
               QString::number(cards));
-        check("十五张卡片都在卡片墙上", QString::number(cards), QStringLiteral("15"));
+        check("通过检查的插件卡片都在卡片墙上", QString::number(cards), QString::number(okCount));
         // 卡片墙的几何：离屏 resize 之后布局会算，不用 show（show 就把设置窗拍到他桌面上）。
         // 这条盯的是"这十五张卡摆得开吗"。
         // WA_DontShowOnScreen：走完整的 show/布局激活路径，但不往屏幕上贴一个像素、
@@ -1500,14 +1500,14 @@ int main(int argc, char* argv[])
         }
         say("每个分组框都真的摆在布局里（没摆=界面上看不见）", orphans.isEmpty(),
             orphans.isEmpty() ? QStringLiteral("%1 个分组框全在布局里").arg(groups) : orphans);
-        // 语言并进这一页之后，"配置"里必须真有那一节 —— 不然"菜单只剩四行"就变成"语言没地方了"
+        // 「语言与环境」已剥离为独立插件，配置页不再塞入该分组框
         {
             QStringList titles;
             for (const QGroupBox* g : page.findChildren<QGroupBox*>())
                 if (g->title().contains(QStringLiteral("语言")))
                     titles << g->title();
-            say("配置页里有「语言」那一节（菜单第四行没了，它得在这儿）", titles.size() == 1,
-                titles.isEmpty() ? QStringLiteral("一节都没找到") : titles.join(QStringLiteral("；")));
+            say("配置页不再有「语言」分组框（已剥离至插件）", titles.isEmpty(),
+                titles.isEmpty() ? QStringLiteral("已剥离至插件") : titles.join(QStringLiteral("；")));
         }
 
         // 设置窗那一面：菜单只剩四行，而且每一行点开都真建出一张页。
