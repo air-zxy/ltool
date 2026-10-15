@@ -13,7 +13,9 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonDocument>
+#include <QGuiApplication>
 #include <QLabel>
+#include <QProgressBar>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -95,7 +97,7 @@ AboutPage::AboutPage(QWidget* parent)
         QStringLiteral("检查更新只发一个到 GitHub 的小请求；走不走代理看 配置 → 下载代理"
                        "（留空 = 不用代理，这台机器境内直连 github 经常整条挂死，那种情况填 "
                        "http://127.0.0.1:10808 一类本地代理）。"
-                       "下载交给内置下载器，进度在「下载器」那一页看。"), this);
+                       "下载通过内置引擎，可实时查看进度，下载完成后可直接安装。"), this);
     hint->setObjectName(QStringLiteral("tip"));
     hint->setWordWrap(true);
     lay->addWidget(hint);
@@ -104,6 +106,25 @@ AboutPage::AboutPage(QWidget* parent)
     m_status->setObjectName(QStringLiteral("updateStatus"));
     m_status->setWordWrap(true);
     lay->addWidget(m_status);
+
+    m_progress = new QProgressBar(this);
+    m_progress->setObjectName(QStringLiteral("downloadProgress"));
+    m_progress->setRange(0, 100);
+    m_progress->setValue(0);
+    m_progress->setTextVisible(false);
+    m_progress->setFixedHeight(8);
+    m_progress->setStyleSheet(QStringLiteral(
+        "QProgressBar { background: #1f2025; border: 1px solid #2c2d34; border-radius: 4px; }"
+        "QProgressBar::chunk { background: #3f6ae0; border-radius: 3px; }"
+    ));
+    m_progress->setVisible(false);
+    lay->addWidget(m_progress);
+
+    m_progressLabel = new QLabel(this);
+    m_progressLabel->setObjectName(QStringLiteral("progressLabel"));
+    m_progressLabel->setStyleSheet(QStringLiteral("color: #8b93a1; font-size: 8.5pt;"));
+    m_progressLabel->setVisible(false);
+    lay->addWidget(m_progressLabel);
 
     auto* btns = new QHBoxLayout;
     m_check = new QPushButton(QStringLiteral("检查更新"), this);
@@ -129,7 +150,9 @@ AboutPage::AboutPage(QWidget* parent)
         QDesktopServices::openUrl(QUrl(releasesPageUrl()));
     });
     connect(m_download, &QPushButton::clicked, this, [this] { startDownload(); });
-    connect(m_install, &QPushButton::clicked, this, [this] { installAndRestart(); });
+    connect(m_install, &QPushButton::clicked, this, [this] { installAndRestart(false); });
+    connect(&DownloadManager::instance(), &DownloadManager::changed,
+            this, &AboutPage::updateDownloadProgress);
 }
 
 QString AboutPage::currentVersion()
@@ -306,6 +329,7 @@ void AboutPage::startCheck()
         m_latestVersion = ver;
         m_assetUrl = assetUrl;
         m_assetName = assetName;
+        m_assetSize = assetSize;
 
         const int cmp = compareVersions(ver, currentVersion());
         m_lastCheck = QDateTime::currentDateTime();
@@ -319,10 +343,27 @@ void AboutPage::startCheck()
         if (cmp > 0) {
             m_status->setText(QStringLiteral("有新版：%1").arg(note));
             m_download->setEnabled(!assetUrl.isEmpty() && !assetName.isEmpty());
+            m_download->setText(QStringLiteral("下载新版"));
             Utils::log(QStringLiteral("update: 发现新版 %1（本机 %2）").arg(ver, currentVersion()));
+
+            if (!assetName.isEmpty()) {
+                const QString to = QDir(DownloadManager::instance().saveDir()).absoluteFilePath(assetName);
+                if (QFileInfo::exists(to) && QFileInfo(to).size() > 0
+                    && (assetSize <= 0 || qAbs(QFileInfo(to).size() - assetSize) < 1024)) {
+                    m_target = to;
+                    m_install->setEnabled(true);
+                    m_progress->setVisible(true);
+                    m_progress->setRange(0, 100);
+                    m_progress->setValue(100);
+                    m_progressLabel->setVisible(true);
+                    m_progressLabel->setText(QStringLiteral("安装包已在本地就绪（%1 MB），随时可点击「装并重启」")
+                                                 .arg(QFileInfo(to).size() / 1048576.0, 0, 'f', 1));
+                }
+            }
         } else {
             m_status->setText(QStringLiteral("已经是最新（或更高）：%1").arg(note));
             m_download->setEnabled(false);
+            m_download->setText(QStringLiteral("下载新版"));
             Utils::log(QStringLiteral("update: 最新 %1，本机 %2，不用动").arg(ver, currentVersion()));
         }
     });
@@ -336,20 +377,138 @@ void AboutPage::startDownload()
     }
     const QString dir = DownloadManager::instance().saveDir();
     const QString to = QDir(dir).absoluteFilePath(m_assetName);
+
+    // 检查本地是否已有下载好的完整安装包
     if (QFileInfo::exists(to)) {
-        m_status->setText(QStringLiteral("这个包已经在了：%1（要重装就点「装并重启」）").arg(to));
-        m_target = to;
-        m_install->setEnabled(true);
-        return;
+        const qint64 localSize = QFileInfo(to).size();
+        if (localSize > 0 && (m_assetSize <= 0 || qAbs(localSize - m_assetSize) < 1024)) {
+            m_target = to;
+            m_status->setText(QStringLiteral("安装包已就绪：%1").arg(to));
+            m_progress->setVisible(true);
+            m_progress->setRange(0, 100);
+            m_progress->setValue(100);
+            m_progressLabel->setVisible(true);
+            m_progressLabel->setText(QStringLiteral("安装包已下载完成（%1 MB）").arg(localSize / 1048576.0, 0, 'f', 1));
+            m_install->setEnabled(true);
+
+            if (QGuiApplication::platformName() != QLatin1String("offscreen")) {
+                const auto ans = QMessageBox::question(
+                    this, QStringLiteral("安装新版本"),
+                    QStringLiteral("本地已检测到完整的新版本安装包：%1\n\n是否立即开始安装并重启？")
+                        .arg(QFileInfo(to).fileName()),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+                if (ans == QMessageBox::Yes) {
+                    installAndRestart(true);
+                }
+            }
+            return;
+        }
     }
-    DownloadManager::instance().add(m_assetUrl, to);
+
+    m_installPrompted = false;
     m_target = to;
-    m_status->setText(QStringLiteral("已加进内置下载器：%1 —— 进度在「下载器」那一页看，"
-                                     "下完了回来点「装并重启」。").arg(to));
-    Utils::log(QStringLiteral("update: 已交给下载器 %1 → %2").arg(m_assetUrl, to));
+    m_progress->setVisible(true);
+    m_progress->setRange(0, 100);
+    m_progress->setValue(0);
+    m_progressLabel->setVisible(true);
+    m_progressLabel->setText(QStringLiteral("正在连接下载…"));
+    m_download->setEnabled(false);
+    m_download->setText(QStringLiteral("正在下载…"));
+    m_status->setText(QStringLiteral("正在下载新版安装包，下载完成后可直接安装。"));
+
+    const auto& tasks = DownloadManager::instance().tasks();
+    for (const auto& t : tasks) {
+        if (t.file == to || t.url == m_assetUrl) {
+            m_downloadTaskId = t.id;
+            if (t.status == QStringLiteral("已暂停") || t.status == QStringLiteral("失败")) {
+                DownloadManager::instance().resume(t.id);
+            }
+            updateDownloadProgress();
+            return;
+        }
+    }
+
+    DownloadManager::instance().add(m_assetUrl, to);
+    const auto& newTasks = DownloadManager::instance().tasks();
+    if (!newTasks.isEmpty()) {
+        m_downloadTaskId = newTasks.last().id;
+    }
+    Utils::log(QStringLiteral("update: 开始下载 %1 → %2").arg(m_assetUrl, to));
+    updateDownloadProgress();
 }
 
-void AboutPage::installAndRestart()
+void AboutPage::updateDownloadProgress()
+{
+    if (m_downloadTaskId.isEmpty())
+        return;
+
+    const auto& tasks = DownloadManager::instance().tasks();
+    const DownloadTask* currentTask = nullptr;
+    for (const auto& t : tasks) {
+        if (t.id == m_downloadTaskId) {
+            currentTask = &t;
+            break;
+        }
+    }
+
+    if (!currentTask)
+        return;
+
+    const QString status = currentTask->status;
+    const qint64 recv = currentTask->receivedTotal();
+    const qint64 total = currentTask->total > 0 ? currentTask->total : m_assetSize;
+
+    if (status == QStringLiteral("下载中") || status == QStringLiteral("等待")) {
+        m_progress->setVisible(true);
+        m_progressLabel->setVisible(true);
+        if (total > 0) {
+            const int percent = qBound(0, int(double(recv) / double(total) * 100.0), 100);
+            m_progress->setRange(0, 100);
+            m_progress->setValue(percent);
+            m_progressLabel->setText(QStringLiteral("下载进度：%1% (%2 MB / %3 MB)")
+                                         .arg(percent)
+                                         .arg(recv / 1048576.0, 0, 'f', 1)
+                                         .arg(total / 1048576.0, 0, 'f', 1));
+        } else {
+            m_progress->setRange(0, 0);
+            m_progressLabel->setText(QStringLiteral("正在下载：%1 MB")
+                                         .arg(recv / 1048576.0, 0, 'f', 1));
+        }
+    } else if (status == QStringLiteral("完成")) {
+        m_progress->setVisible(true);
+        m_progress->setRange(0, 100);
+        m_progress->setValue(100);
+        m_progressLabel->setVisible(true);
+        m_progressLabel->setText(QStringLiteral("下载完成！安装包已就绪。"));
+        m_status->setText(QStringLiteral("新版本安装包已下载完成，随时可点击「装并重启」进行安装。"));
+        m_download->setText(QStringLiteral("下载完成"));
+        m_download->setEnabled(false);
+        m_install->setEnabled(true);
+        m_target = currentTask->file;
+
+        if (!m_installPrompted && QGuiApplication::platformName() != QLatin1String("offscreen")) {
+            m_installPrompted = true;
+            const auto ans = QMessageBox::question(
+                this, QStringLiteral("安装新版本"),
+                QStringLiteral("新版本 %1 安装包已下载完成！\n\n是否立即退出并开始安装？\n（稍后安装也可以随时点击「装并重启」按钮）")
+                    .arg(m_latestVersion.isEmpty() ? QStringLiteral("") : m_latestVersion),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+            if (ans == QMessageBox::Yes) {
+                installAndRestart(true);
+            }
+        }
+    } else if (status == QStringLiteral("失败")) {
+        m_progress->setVisible(true);
+        m_progressLabel->setVisible(true);
+        m_progressLabel->setText(QStringLiteral("下载失败：%1").arg(
+            currentTask->error.isEmpty() ? QStringLiteral("网络连接中断") : currentTask->error));
+        m_status->setText(QStringLiteral("下载失败，请检查网络或代理后点击重试。"));
+        m_download->setText(QStringLiteral("重新下载"));
+        m_download->setEnabled(true);
+    }
+}
+
+void AboutPage::installAndRestart(bool bypassConfirm)
 {
     // 这一段会退出正在跑的 ltool，所以每一步都要他按下：先确认，再交出去。
     QString err;
@@ -364,16 +523,18 @@ void AboutPage::installAndRestart()
         Utils::log(QStringLiteral("update: 拒绝安装：%1").arg(err));
         return;
     }
-    const auto answer = QMessageBox::question(
-        this, QStringLiteral("装并重启"),
-        QStringLiteral("这会**先退出 ltool**，然后静默安装 %1 到 %2，装完自动重新打开。\n\n"
-                       "定时任务、正在跑的下载会被一起中断（下载器支持断点续传，回来能续）。"
-                       "确定吗？")
-            .arg(QFileInfo(m_target).fileName(), appDir),
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);      // 默认停在"不"
-    if (answer != QMessageBox::Yes) {
-        m_status->setText(QStringLiteral("没动。"));
-        return;
+    if (!bypassConfirm) {
+        const auto answer = QMessageBox::question(
+            this, QStringLiteral("装并重启"),
+            QStringLiteral("这会**先退出 ltool**，然后静默安装 %1 到 %2，装完自动重新打开。\n\n"
+                           "定时任务、正在跑的下载会被一起中断（下载器支持断点续传，回来能续）。"
+                           "确定吗？")
+                .arg(QFileInfo(m_target).fileName(), appDir),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);      // 默认停在"不"
+        if (answer != QMessageBox::Yes) {
+            m_status->setText(QStringLiteral("没动。"));
+            return;
+        }
     }
     const QString spath = QDir::tempPath()
         + QStringLiteral("/ltool-update-%1.ps1").arg(QCoreApplication::applicationPid());
@@ -383,7 +544,7 @@ void AboutPage::installAndRestart()
         return;
     }
     // PS 5.1 没有 BOM 就按 GBK 解码这个文件，路径里的中文会变乱码 —— 必须带上
-    f.write("\xEF\xBB\xBF");
+    f.write("ï»¿");
     f.write(script.toUtf8());
     f.close();
 

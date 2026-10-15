@@ -6,6 +6,7 @@
 
 class QLabel;
 class QPushButton;
+class QProgressBar;
 
 // 「关于」这一页说三件事：这台机器上装的是哪个版本、装在哪里、有哪些工具插件在跑；
 // 然后是「有没有新版」。
@@ -42,20 +43,28 @@ public:
     static QString updateScript(const QString& setupPath, const QString& appDir,
                                 qint64 pid, QString* err);
 
+private slots:
+    void updateDownloadProgress();
+
 private:
     void startCheck();
     void startDownload();
-    void installAndRestart();
+    void installAndRestart(bool bypassConfirm = false);
 
     QLabel* m_status = nullptr;
+    QProgressBar* m_progress = nullptr;
+    QLabel* m_progressLabel = nullptr;
     QPushButton* m_check = nullptr;
     QPushButton* m_download = nullptr;
     QPushButton* m_install = nullptr;
     QPushButton* m_page = nullptr;
     QString m_assetUrl;
     QString m_assetName;
+    qint64 m_assetSize = 0;
+    QString m_downloadTaskId;
     QString m_target;           // 下载完（或本来就存在）的安装包全路径
     QString m_latestVersion;
     QDateTime m_lastCheck;
     bool m_checking = false;    // 同一时刻只准有一个请求在问
+    bool m_installPrompted = false;
 };
