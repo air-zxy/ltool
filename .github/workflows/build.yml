@@ -182,16 +182,25 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
-          # 将磁盘分支自测根目录指向工作区目录，包含丰富多级子目录与真实文件，避免全盘枚举 C 盘海量系统/工具文件导致超时挂死
-          LTOOL_DISKBRANCH_DIR: ${{ github.workspace }}
         run: |
           cd build/Release        # VS 生成器的产物在 Release 子目录里（.iss 也按这条路径收包）
           fail=0
+          # 构造受控多级测试目录给 --diskbranch 使用，避免扫描包含万级文件的整工作区导致 CI 超时
+          mkdir -p "$RUNNER_TEMP/test_diskbranch/sub_a" "$RUNNER_TEMP/test_diskbranch/sub_b" "$RUNNER_TEMP/test_diskbranch/sub_c"
+          head -c 10000 /dev/urandom > "$RUNNER_TEMP/test_diskbranch/sub_a/a.bin"
+          head -c 20000 /dev/urandom > "$RUNNER_TEMP/test_diskbranch/sub_b/b.bin"
+          head -c 30000 /dev/urandom > "$RUNNER_TEMP/test_diskbranch/sub_c/c.bin"
+          head -c 5000 /dev/urandom > "$RUNNER_TEMP/test_diskbranch/root.bin"
+          export LTOOL_DISKBRANCH_DIR="$RUNNER_TEMP/test_diskbranch"
+
           for f in --smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --diskbranch; do
             echo "===== $f ====="
             log_file="$RUNNER_TEMP/test_${f//--/}.log"
-            # 避免 out=$(...) 吞掉实时输出导致假卡死，同时增加 120 秒超时熔断保护
-            if timeout 180s ./ltool.exe "$f" > "$log_file" 2>&1; then
+            cmd="./ltool.exe $f"
+            if [ "$f" = "--diskbranch" ]; then
+              cmd="./ltool.exe --diskbranch $RUNNER_TEMP/test_diskbranch"
+            fi
+            if timeout 60s $cmd > "$log_file" 2>&1; then
               rc=0
             else
               rc=$?
