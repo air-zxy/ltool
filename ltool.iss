@@ -3,7 +3,7 @@
 ; 产物: installer\ltool-{#MyAppVersion}-setup.exe（按用户安装到 %LOCALAPPDATA%\Programs\ltool，无需管理员）
 
 #define MyAppName "ltool"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "ltool"
 #define MyAppExeName "ltool.exe"
 
@@ -117,3 +117,4 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}
 SelectDirDesc=ltool 安装位置
 SelectDirLabel3=安装程序将把 ltool 安装到以下文件夹。
 WelcomeLabel2=这将安装 ltool——uTools 风格的快速启动器：%nAlt+Space 呼出搜索框，应用/文件/网站直达，开发环境与定时任务管理。
+
