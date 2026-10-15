@@ -10,9 +10,6 @@
 #include <QFile>
 #include <QFormLayout>
 #include <QFileInfo>
-#include <QJsonArray>
-#include <QJsonObject>
-#include <QJsonDocument>
 #include <QGuiApplication>
 #include <QLabel>
 #include <QProgressBar>
@@ -160,10 +157,23 @@ QString AboutPage::currentVersion()
     return QStringLiteral(LTOOL_VERSION);
 }
 
-QString AboutPage::latestApiUrl()
+// 安装包直链是按我们自己的命名推出来的（tag 和版本号一一对上），不用问 api。
+QString AboutPage::tagFromReleasesUrl(const QString& finalUrl)
 {
-    return QStringLiteral("https://api.github.com/repos/%1/%2/releases/latest")
-        .arg(QLatin1String(kRepoOwner), QLatin1String(kRepoName));
+    static const QString needle = QStringLiteral("/releases/tag/");
+    const int at = finalUrl.indexOf(needle);
+    return at < 0 ? QString() : finalUrl.mid(at + needle.size());
+}
+
+QString AboutPage::versionFromReleasesUrl(const QString& finalUrl)
+{
+    return versionFromTag(tagFromReleasesUrl(finalUrl));
+}
+
+QString AboutPage::downloadUrlFor(const QString& tag, const QString& version)
+{
+    return QStringLiteral("https://github.com/%1/%2/releases/download/%3/ltool-%4-setup.exe")
+        .arg(QLatin1String(kRepoOwner), QLatin1String(kRepoName), tag, version);
 }
 
 QString AboutPage::releasesPageUrl()
@@ -271,75 +281,52 @@ void AboutPage::startCheck()
     // 管理器挂在页上：页（连带设置窗）销毁时 reply 一起断，回调里再用 this 已经被 Qt 摘掉。
     auto* nam = new QNetworkAccessManager(this);
     DevEnv::applyProxy(nam);
-    QNetworkRequest req { QUrl(latestApiUrl()) };
-    req.setRawHeader("User-Agent", QByteArrayLiteral("ltool-updater"));   // 没 UA 的 API 请求直接 403
-    req.setRawHeader("Accept", QByteArrayLiteral("application/vnd.github+json"));
+    // 走**网页那一条**，不走 api.github.com：匿名 api 的额度是每台出口 IP 60 次/小时，
+    // 一台 NAT 后面多查几次就 403（他这次撞的就是 —— 而且是我拿脚本反复查 CI 把额度用光的）。
+    // /releases/latest 会 302 到 /releases/tag/vX.Y.Z，跟完重定向读最终地址就知道最新 tag，
+    // 这条路没有限流；安装包直链按我们自己的命名推出来，资产大小不预报（下载时自己报）。
+    QNetworkRequest req { QUrl(releasesPageUrl()) };
+    req.setRawHeader("User-Agent", QByteArrayLiteral("ltool-updater"));
     req.setTransferTimeout(20000);
     QNetworkReply* reply = nam->get(req);
     connect(reply, &QNetworkReply::finished, this, [this, reply, nam] {
         m_checking = false;
         m_check->setEnabled(true);
         const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const QByteArray body = reply->readAll();   // QNetworkReply 是 QIODevice，没有 data()
+        const QString finalUrl = reply->url().toString();
         reply->deleteLater();
         nam->deleteLater();
 
         if (reply->error() != QNetworkReply::NoError) {
-            // 失败要说清是哪一种：连不上 / 被拒 / 限流 / 还没发过版，在他机器上是四件不同的事
-            QString why;
-            if (http == 404)
-                why = QStringLiteral("这个仓库还没在 GitHub 上发过 Release（api 回 404）"
-                                     "—— 先发一版才有东西可比");
-            else if (http == 403 || http == 429)
-                why = QStringLiteral("github 拒绝了这次请求（HTTP %1，未登录的 api 限流是 60 次/小时）")
-                          .arg(http);
-            else
-                why = QStringLiteral("%1%2").arg(reply->errorString(),
-                                                 http ? QStringLiteral("（HTTP %1）").arg(http) : QString());
-            m_status->setText(QStringLiteral("网络连接失败：%1。如使用代理请检查代理设置，或直接点「打开发布页」查看最新版本。").arg(why));
-            Utils::log(QStringLiteral("update: 检查失败 http=%1 err=%2").arg(http)
-                           .arg(reply->errorString()));
+            const QString why = http == 404
+                ? QStringLiteral("这个仓库还没在 GitHub 上发过 Release（回 404）—— 先发一版才有东西可比")
+                : QStringLiteral("%1%2").arg(reply->errorString(),
+                                             http ? QStringLiteral("（HTTP %1）").arg(http) : QString());
+            m_status->setText(QStringLiteral("检查更新没走通：%1。可以直接点「打开发布页」看最新版本。").arg(why));
+            Utils::log(QStringLiteral("update: 检查失败 http=%1 err=%2").arg(http).arg(reply->errorString()));
             return;
         }
-        const QJsonObject o = QJsonDocument::fromJson(body).object();
-        const QString tag = o.value(QStringLiteral("tag_name")).toString();
+        // 最终地址必须是 .../releases/tag/<tag>：没跳过去就是"最新"这条没指到任何 release
+        const QString tag = tagFromReleasesUrl(finalUrl);
         const QString ver = versionFromTag(tag);
         if (ver.isEmpty()) {
-            m_status->setText(QStringLiteral("回复里没有能认的版本号（tag=%1）").arg(tag));
+            m_status->setText(QStringLiteral("tag 里认不出版本号（tag=%1）").arg(tag));
             Utils::log(QStringLiteral("update: tag 认不出版本：%1").arg(tag));
             return;
         }
-        const QString published =
-            o.value(QStringLiteral("published_at")).toString().left(10);
-        // 挑安装包：资产名里带 setup 的 .exe；一个都没有就只报版本号（别猜链接）
-        QString assetUrl, assetName;
-        qint64 assetSize = 0;
-        const QJsonArray assets = o.value(QStringLiteral("assets")).toArray();
-        for (const QJsonValue& v : assets) {
-            const QJsonObject a = v.toObject();
-            const QString name = a.value(QStringLiteral("name")).toString();
-            if (name.contains(QStringLiteral("setup"), Qt::CaseInsensitive)
-                && name.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive)) {
-                assetName = safeFileName(name);
-                assetUrl = a.value(QStringLiteral("browser_download_url")).toString();
-                assetSize = qint64(a.value(QStringLiteral("size")).toDouble());
-                break;
-            }
-        }
+        const QString assetName = QStringLiteral("ltool-%1-setup.exe").arg(ver);
+        const QString assetUrl = downloadUrlFor(tag, ver);
         m_latestVersion = ver;
         m_assetUrl = assetUrl;
         m_assetName = assetName;
-        m_assetSize = assetSize;
+        m_assetSize = 0;      // 网页那条给不出资产大小；下载时 DownloadManager 会报真实的
 
         const int cmp = compareVersions(ver, currentVersion());
         m_lastCheck = QDateTime::currentDateTime();
-        const QString note = QStringLiteral("最新 %1（发布 %2%3）· 本机 %4 · 上次检查 %5")
-                                 .arg(ver, published.isEmpty() ? QStringLiteral("?") : published,
-                                      assetSize ? QStringLiteral(" · %1 MB")
-                                                   .arg(assetSize / 1048576.0, 0, 'f', 1)
-                                                   : QString(),
-                                      currentVersion(),
-                                      m_lastCheck.toString("MM-dd hh:mm"));
+        // 以前这句里还有"发布 <日期>"和"· <大小> MB"，那是 api 才给的字段 —— 换成网页那条就没了，
+        // 宁可少说一项，也不为一行字把限流的那条路请回来。
+        const QString note = QStringLiteral("最新 %1（tag %2）· 本机 %3 · 上次检查 %4")
+                                 .arg(ver, tag, currentVersion(), m_lastCheck.toString("MM-dd hh:mm"));
         if (cmp > 0) {
             m_status->setText(QStringLiteral("有新版：%1").arg(note));
             m_download->setEnabled(!assetUrl.isEmpty() && !assetName.isEmpty());
@@ -349,7 +336,7 @@ void AboutPage::startCheck()
             if (!assetName.isEmpty()) {
                 const QString to = QDir(DownloadManager::instance().saveDir()).absoluteFilePath(assetName);
                 if (QFileInfo::exists(to) && QFileInfo(to).size() > 0
-                    && (assetSize <= 0 || qAbs(QFileInfo(to).size() - assetSize) < 1024)) {
+                    && (m_assetSize <= 0 || qAbs(QFileInfo(to).size() - m_assetSize) < 1024)) {
                     m_target = to;
                     m_install->setEnabled(true);
                     m_progress->setVisible(true);

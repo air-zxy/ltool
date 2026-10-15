@@ -38,6 +38,9 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QToolButton>
 #include <QLineEdit>
 #include <QThread>
@@ -971,8 +974,13 @@ int main(int argc, char* argv[])
         const QString ver = AboutPage::currentVersion();
         has(QStringLiteral("版本号长得对（x.y.z，预发可以带 -beta.N）: [%1]").arg(ver).toUtf8().constData(),
             QRegularExpression(QStringLiteral("^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.]+)?$")).match(ver).hasMatch());
-        check("latest 那条 API 地址", AboutPage::latestApiUrl(),
-              QStringLiteral("https://api.github.com/repos/mateo-ki/ltool/releases/latest"));
+        // 检查更新不再碰 api.github.com（匿名 60 次/小时的额度会被同一出口 IP 上的一切
+        // 脚本吃光，他这次看到的 403 就是这么来的）：这里钉的是"走网页那条 + 直链推得出来"。
+        check("最新那条走的是网页地址（不是限流的 api）", AboutPage::releasesPageUrl(),
+              QStringLiteral("https://github.com/mateo-ki/ltool/releases/latest"));
+        check("安装包直链按 tag + 版本号推得出来",
+              AboutPage::downloadUrlFor(QStringLiteral("v1.2.3"), QStringLiteral("1.2.3")),
+              QStringLiteral("https://github.com/mateo-ki/ltool/releases/download/v1.2.3/ltool-1.2.3-setup.exe"));
         check("给人点的发布页", AboutPage::releasesPageUrl(),
               QStringLiteral("https://github.com/mateo-ki/ltool/releases/latest"));
 
@@ -3216,6 +3224,30 @@ int main(int argc, char* argv[])
                             installersBefore);
                 std::printf("INFO 拒收 %d 条（本仓库的 dist 现在是干净的）\n", rejected);
             }
+            // 「检查更新」那条也真跑一遍：走 /releases/latest 的 302 读版本号，不碰限流的 api。
+            // 他刚看到的 403 就是 api 那条（匿名 60 次/小时，整台出口 IP 共享），这条判据盯住它别再回去。
+            {
+                auto* nam2 = new QNetworkAccessManager(&page);
+                DevEnv::applyProxy(nam2);
+                QNetworkRequest rq { QUrl(AboutPage::releasesPageUrl()) };
+                rq.setRawHeader("User-Agent", QByteArrayLiteral("ltool-updater"));
+                rq.setTransferTimeout(20000);
+                QNetworkReply* rp = nam2->get(rq);
+                for (int i = 0; i < 400 && !rp->isFinished(); ++i) {
+                    QCoreApplication::processEvents();
+                    QThread::msleep(50);
+                }
+                const int code = rp->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                const QString fin = rp->url().toString();
+                rp->deleteLater();
+                nam2->deleteLater();
+                const QString gotVer = AboutPage::versionFromReleasesUrl(fin);
+                check("检查更新走网页 302 就读得出最新版本（不碰限流的 api）", !gotVer.isEmpty(),
+                      QStringLiteral("HTTP %1 · 最终 %2 · 读到 %3")
+                          .arg(code).arg(fin.left(64),
+                                         gotVer.isEmpty() ? QStringLiteral("(没认出)") : gotVer));
+            }
+
             page.hide();
             std::printf("storenet: 失败 %d 项\n", storeNetBad);
             std::fflush(stdout);

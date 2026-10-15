@@ -29,7 +29,11 @@ public:
 
     // ---- 下面这些都是纯函数：不联网、不起进程，--about 逐条断言 ----
     static QString currentVersion();          // 编译期那个 LTOOL_VERSION
-    static QString latestApiUrl();            // GitHub API：最新一条 release
+    static QString downloadUrlFor(const QString& tag, const QString& version);   // 安装包那条直链
+    // 跟完 /releases/latest 的 302 之后，从最终地址里读版本号：.../releases/tag/<tag> → 版本号。
+    // 单独抽出来是因为离屏判据要拿真回复跑一遍这条解析，不想抄第二遍。
+    static QString tagFromReleasesUrl(const QString& finalUrl);    // .../releases/tag/<tag> → <tag>
+    static QString versionFromReleasesUrl(const QString& finalUrl);
     static QString releasesPageUrl();         // 给人用浏览器打开的那页
     // 逐段按数字比：1.10 必须大于 1.9（当字符串比就反了）；非数字段按 0 处理，不抛异常
     static int compareVersions(const QString& a, const QString& b);
