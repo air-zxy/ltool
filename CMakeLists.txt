@@ -282,6 +282,7 @@ ltool_add_tool(shell ShellPlugin         plugins/shell/shellaction.cpp plugins/s
 # --memloop）也跟着搬成 extern "C" 导出符号 —— 主程序按名字点名要（见 src/main.cpp 的
 # runPluginSelftest）。
 ltool_add_tool(record RecordPlugin       plugins/record/Recorder.cpp plugins/record/RecordUi.cpp
+                                           plugins/record/WindowPreview.cpp
                                            plugins/record/RecProbe.cpp plugins/record/recordplugin.cpp)
 # 第三个「动作型」插件：F1 截图。截图浮层 / 置顶窗 / 标注 / OCR 那一族七个文件从 src 搬了进来，
 # 十二套判据（--snaprect / --ocrtest / --ocrlayout / --pinpick / --ocrchain / --pintool / --pindel /
