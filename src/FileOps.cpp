@@ -180,7 +180,6 @@ Info info(const QString& path)
     out.attrs = a.join(QStringLiteral(" · "));
 
     // 实际占的簇：压缩/稀疏文件这个值才小于逻辑大小
-    LARGE_INTEGER alloc{};
     HANDLE h = CreateFileW(w.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (h != INVALID_HANDLE_VALUE) {
@@ -190,8 +189,6 @@ Info info(const QString& path)
         BY_HANDLE_FILE_INFORMATION bh{};
         if (GetFileInformationByHandle(h, &bh))
             out.hardLinks = int(bh.nNumberOfLinks);
-        if (GetFileSizeEx(h, &alloc))
-            ;                                  // 逻辑大小已经有了
         CloseHandle(h);
     }
     if (!out.isDir) {

@@ -8,9 +8,7 @@
 #include "PluginHost.h"
 #include "PluginStore.h"
 #include "AboutPage.h"
-#include <QComboBox>
 #include <QPixmap>
-#include <QRandomGenerator>
 #include <algorithm>
 #include <QPlainTextEdit>
 #include "ltool-plugin.h"

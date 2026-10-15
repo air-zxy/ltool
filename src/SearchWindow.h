@@ -10,9 +10,7 @@
 
 #include "AppScanner.h"
 #include "DevEnv.h"
-#include "SysTools.h"
 #include "RegClean.h"
-#include "WebShortcuts.h"
 
 class QLineEdit;
 class QListWidget;

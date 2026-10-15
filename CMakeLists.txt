@@ -124,6 +124,9 @@ set_target_properties(ltoolcore PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON
     # 导入库（1.7MB）挪出 Release 树：安装包按 build\Release\* 递归收走，躺在里面的
     # ltoolcore.lib/.exp 不是运行时文件，纯属被误打包
     ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/lib)
+if(MSVC)
+    target_link_options(ltoolcore PRIVATE "/IGNORE:4197")
+endif()
 # core-api.h 靠它决定是 dllexport 还是 dllimport（只有编 core 这一份目标定义）
 target_compile_definitions(ltoolcore PRIVATE LTOOL_CORE_BUILD)
 # 界面「关于」那一页显示的就是它（PUBLIC：exe 和插件都拿得到同一个串）。

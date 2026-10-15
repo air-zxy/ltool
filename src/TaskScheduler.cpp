@@ -1,7 +1,7 @@
 #include "TaskScheduler.h"
 #include "Utils.h"
 
-#include <QtConcurrent/QtConcurrentRun>
+#include <QThreadPool>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -246,7 +246,7 @@ QString TaskScheduler::runTask(const ScheduledTask& t, QString* err)
 
     // 编译放后台线程，避免阻塞调度线程
     const ScheduledTask task = t;
-    QtConcurrent::run([task, compiler, args, exe, logPath]() {
+    QThreadPool::globalInstance()->start([task, compiler, args, exe, logPath]() {
         QString cerr;
         if (!compile(compiler, args, &cerr)) {
             QFile log(logPath);

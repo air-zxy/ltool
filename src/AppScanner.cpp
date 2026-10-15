@@ -138,7 +138,7 @@ bool looksLikeHelper(const QString& exePath)
         QStringLiteral("x86"), QStringLiteral("x64"), QStringLiteral("i386"),
         QStringLiteral("arm64"), QStringLiteral("win32"), QStringLiteral("win64"),
     };
-    static const QRegularExpression versionDir(QStringLiteral("^v?[0-9]+(\.[0-9]+)+$"));
+    static const QRegularExpression versionDir(QStringLiteral(R"(^v?[0-9]+(\.[0-9]+)+$)"));
     const QStringList parts = QDir::fromNativeSeparators(exePath).toLower()
                                   .split(QLatin1Char('/'), Qt::SkipEmptyParts);
     for (int i = 0; i + 1 < parts.size(); ++i) {      // 最后一段是文件本身，名字归上面管

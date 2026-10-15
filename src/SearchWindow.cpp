@@ -7,10 +7,11 @@
 #include "FileTools.h"
 #include "FileIndexer.h"
 #include "SettingsDialog.h"
-#include "ToolsPage.h"
+#include "SysTools.h"
 #include "PluginHost.h"
 #include "Pinyin.h"
 #include "Utils.h"
+#include "WebShortcuts.h"
 
 #include <QtConcurrent/QtConcurrentRun>
 #include <QApplication>

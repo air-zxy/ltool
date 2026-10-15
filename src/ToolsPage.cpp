@@ -46,7 +46,7 @@ QColor colorOf(const QString& spec, const QString& id)
                 return c;
         }
     }
-    const uint seed = qHash(id);
+    const size_t seed = qHash(id);
     return QColor(90 + int(seed % 120), 90 + int((seed / 7) % 120), 110 + int((seed / 13) % 110));
 }
 
