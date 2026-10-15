@@ -42,6 +42,7 @@ QIcon cachedFileIcon(const QString& path);
 // 会卡在 DDE 握手上等回调（实测 729ms），启动器回车必须用这个。
 bool launch(const QString& path, const QString& params = {}, const QString& workingDir = {},
             bool async = false);
+bool launchAsAdmin(const QString& path, const QString& params = {}, const QString& workingDir = {});
 
 // 在资源管理器中定位文件
 void revealInExplorer(const QString& path);

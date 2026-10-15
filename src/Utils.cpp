@@ -153,6 +153,32 @@ QIcon cachedFileIcon(const QString& path)
     return icon;
 }
 
+bool launchAsAdmin(const QString& path, const QString& params, const QString& workingDir)
+{
+    if (path.isEmpty())
+        return false;
+    QString file = QDir::toNativeSeparators(path);
+    QString wd = workingDir;
+    if (wd.isEmpty())
+        wd = QFileInfo(path).absolutePath();
+    if (!QFileInfo(wd).isDir())
+        wd.clear();
+
+    SHELLEXECUTEINFOW sei = {};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_ASYNCOK;
+    sei.lpVerb = L"runas";
+    sei.lpFile = (LPCWSTR)file.utf16();
+    if (!params.isEmpty())
+        sei.lpParameters = (LPCWSTR)params.utf16();
+    if (!wd.isEmpty()) {
+        wd = QDir::toNativeSeparators(wd);
+        sei.lpDirectory = (LPCWSTR)wd.utf16();
+    }
+    sei.nShow = SW_SHOWNORMAL;
+    return ShellExecuteExW(&sei) != FALSE;
+}
+
 bool launch(const QString& path, const QString& params, const QString& workingDir, bool async)
 {
     if (path.isEmpty())

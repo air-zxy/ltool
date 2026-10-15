@@ -639,6 +639,24 @@ bool SearchWindow::eventFilter(QObject* obj, QEvent* e)
             // Ctrl+Enter 在剪贴板条目上多一步"顺手粘出去"
             if ((ke->modifiers() & Qt::ControlModifier) && pasteClipToPrevious())
                 return true;
+            // Ctrl+Shift+Enter 快捷以管理员身份启动应用
+            if ((ke->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier)) == (Qt::ControlModifier | Qt::ShiftModifier)) {
+                const int row = m_list->currentRow();
+                if (row >= 0) {
+                    const int idx = m_list->item(row)->data(Qt::UserRole).toInt();
+                    if (idx >= 0 && idx < m_results.size()) {
+                        const SearchResult& r = m_results[idx];
+                        if (r.kind == SearchResult::App) {
+                            const QString target = r.extra.isEmpty() ? r.target : r.extra;
+                            bumpUsage(target);
+                            saveUsage();
+                            hide();
+                            Utils::launchAsAdmin(target);
+                            return true;
+                        }
+                    }
+                }
+            }
             activateCurrent();
             return true;
         default:
@@ -1728,62 +1746,80 @@ void SearchWindow::openContextMenu(const QPoint& globalPos)
             hide();
     });
 
+    if (r.kind == SearchResult::App) {
+        const QString launchTarget = r.extra.isEmpty() ? r.target : r.extra;
+        const QString where = r.extra;
+        m_menu->addAction(QStringLiteral("以管理员身份启动"), this, [this, launchTarget] {
+            bumpUsage(launchTarget);
+            saveUsage();
+            hide();
+            Utils::launchAsAdmin(launchTarget);
+        });
+        m_menu->addSeparator();
+        m_menu->addAction(QStringLiteral("打开所在位置"), this, [where] { Utils::revealInExplorer(where); });
+        if (!r.target.isEmpty()) {
+            const QString dir = QFileInfo(r.target).absolutePath();
+            m_menu->addAction(QStringLiteral("把程序目录加入 PATH"), this, [this, dir] {
+                QString err;
+                const bool ok = EnvPath::addToUserPath(dir, &err);
+                m_hint->setText(ok ? QStringLiteral("已加入 PATH：%1").arg(dir) : err);
+            });
+        }
+        m_menu->addAction(QStringLiteral("复制路径"), this, [where] {
+            QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(where));
+        });
+    } else if (r.kind == SearchResult::File) {
+        const QString ext = QFileInfo(r.target).suffix().toLower();
+        if (ext == QLatin1String("exe") || ext == QLatin1String("bat") || ext == QLatin1String("cmd")) {
+            m_menu->addAction(QStringLiteral("以管理员身份启动"), this, [this, t = r.target] {
+                bumpUsage(QStringLiteral("file:") + t);
+                saveUsage();
+                hide();
+                Utils::launchAsAdmin(t);
+            });
+            m_menu->addSeparator();
+        }
+        m_menu->addAction(QStringLiteral("打开所在文件夹"), this, [t = r.target] {
+            Utils::revealInExplorer(t);
+        });
+        m_menu->addAction(QStringLiteral("复制路径"), this, [t = r.target] {
+            QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(t));
+        });
+    }
+
     const QString mainFile = (r.kind == SearchResult::App)
         ? (r.target.isEmpty() ? r.extra : r.target) : r.target;
     if ((r.kind == SearchResult::App || r.kind == SearchResult::File)
         && QFileInfo(mainFile).isFile()) {
         m_menu->addSeparator();
-        m_menu->addAction("解除占用", this, [this, mainFile] {
+        m_menu->addAction(QStringLiteral("解除占用"), this, [this, mainFile] {
             const auto locks = FileTools::findLocks(mainFile);
             if (locks.isEmpty()) {
-                QMessageBox::information(this, "ltool", "没有发现占用该文件的进程。");
+                QMessageBox::information(this, QStringLiteral("ltool"), QStringLiteral("没有发现占用该文件的进程。"));
                 return;
             }
             QStringList names;
             for (const auto& l : locks)
-                names.append(QString("%1 (pid %2)").arg(l.name).arg(l.pid));
-            if (QMessageBox::question(this, "解除占用",
-                    QString("以下进程正在占用：\n%1\n结束它们？").arg(names.join("\n")))
+                names.append(QStringLiteral("%1 (pid %2)").arg(l.name).arg(l.pid));
+            if (QMessageBox::question(this, QStringLiteral("解除占用"),
+                    QStringLiteral("以下进程正在占用：\n%1\n结束它们？").arg(names.join(QStringLiteral("\n"))))
                 == QMessageBox::Yes) {
                 const QString msg = FileTools::unlock(mainFile);
                 msg.isEmpty()
-                    ? QMessageBox::information(this, "ltool", "已全部结束。")
-                    : QMessageBox::warning(this, "ltool", msg);
+                    ? QMessageBox::information(this, QStringLiteral("ltool"), QStringLiteral("已全部结束。"))
+                    : QMessageBox::warning(this, QStringLiteral("ltool"), msg);
             }
         });
-        m_menu->addAction("文件粉碎", this, [this, mainFile] {
-            if (QMessageBox::warning(this, "文件粉碎",
-                    QString("将对文件进行三轮覆写并永久删除（不可恢复）：\n%1\n确定？")
+        m_menu->addAction(QStringLiteral("文件粉碎"), this, [this, mainFile] {
+            if (QMessageBox::warning(this, QStringLiteral("文件粉碎"),
+                    QStringLiteral("将对文件进行三轮覆写并永久删除（不可恢复）：\n%1\n确定？")
                         .arg(QDir::toNativeSeparators(mainFile)),
                     QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
                 return;
             const QString err = FileTools::shred(mainFile);
             err.isEmpty()
-                ? QMessageBox::information(this, "ltool", "文件已粉碎。")
-                : QMessageBox::warning(this, "ltool", err);
-        });
-    }
-
-    if (r.kind == SearchResult::App) {
-        const QString where = r.extra;
-        m_menu->addAction("打开所在位置", this, [where] { Utils::revealInExplorer(where); });
-        if (!r.target.isEmpty()) {
-            const QString dir = QFileInfo(r.target).absolutePath();
-            m_menu->addAction("把程序目录加入 PATH", this, [this, dir] {
-                QString err;
-                const bool ok = EnvPath::addToUserPath(dir, &err);
-                m_hint->setText(ok ? QString("已加入 PATH：%1").arg(dir) : err);
-            });
-        }
-        m_menu->addAction("复制路径", this, [where] {
-            QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(where));
-        });
-    } else if (r.kind == SearchResult::File) {
-        m_menu->addAction("打开所在文件夹", this, [t = r.target] {
-            Utils::revealInExplorer(t);
-        });
-        m_menu->addAction("复制路径", this, [t = r.target] {
-            QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(t));
+                ? QMessageBox::information(this, QStringLiteral("ltool"), QStringLiteral("文件已粉碎。"))
+                : QMessageBox::warning(this, QStringLiteral("ltool"), err);
         });
     }
     if (m_menu->isEmpty())
