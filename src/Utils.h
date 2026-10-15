@@ -75,6 +75,12 @@ void trimWorkingSet();
 // 当前进程工作集（MB），-1 = 读不到。诊断"唤出慢"用
 int workingSetMB();
 
+// 托盘上冒一句就走：不弹框、不抢焦点。优先把这句话交给**常驻实例**去举 —— 一次性进程
+// 要是为了"让气泡显示满 N 秒"而自己多活 N 秒，用户看到的就是"这件事要 N 秒"（右键解压
+// 实测 0.3 秒的活儿被那 5 秒拖成十几倍）。没有实例在跑才自己举。
+// 通道就是单实例那个 socket："note\t标题\t正文"。plugins/shell 和 plugins/linuxdo 都走这一条。
+void trayNote(const QString& title, const QString& msg, int msec = 5000);
+
 // 运行日志：追加一行到 %APPDATA%/ltool/log.txt
 void log(const QString& msg);
 

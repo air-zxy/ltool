@@ -22,6 +22,7 @@ struct Meta {
     QString version;
     QStringList keywords;
     QStringList actions;  // plugin.json 里 "Actions"：这个插件声明它接哪些动作（商店/诊断用）
+    bool wantsActivate = false;  // plugin.json 里 "Activate":true —— 它要在启动时就被叫起来干活
     QColor color;         // plugin.json 里的 "Color"（r,g,b），卡片图标用；没写就按 id 派生
     int api = 0;
     QString error;        // 非空 = 这个文件没通过检查，界面上要说人话
@@ -53,6 +54,14 @@ QString actionOwner(const QString& action);
 // 默认那个名字是快判据（跟着 --plugintest 一起跑）；慢的（要扫一整盘的）另起一个名字，
 // 免得把六套回归全拖成几十秒。
 void* entry(const QString& id, const char* symbol = "ltoolPluginSelftest");
+
+// 启动时把**挂了牌**的插件叫起来：plugin.json 里 "Activate":true 的那些，宿主按名字找它
+// 导出的 "ltoolPluginActivate"（extern "C"，不需要实例化 Qt 插件对象 —— 那等于把懒创建
+// 整个废掉），找到就叫。没挂牌的一个 dll 都不多装。返回叫起来几个，调用方只用来写日志。
+// 为什么不走接口虚函数：加虚函数会动 vtable，等于把 API 版本推进 4，
+// 而按 API 不等就拒装的规矩会把用户装好的每一颗插件全挡在门外。
+// 没导出那个符号却挂了牌 = 启动时点名报错（界面/日志都得说实话）。
+int startBackground();
 inline void* selftestEntry(const QString& id) { return entry(id); }
 
 } // namespace PluginHost

@@ -82,6 +82,7 @@ const QVector<Meta>& scan()
         const QJsonArray ks = meta.value(QLatin1String("Keywords")).toArray();
         for (const QJsonValue& v : ks)
             m.keywords << v.toString();
+        m.wantsActivate = meta.value(QLatin1String("Activate")).toBool();
         const QJsonArray as = meta.value(QLatin1String("Actions")).toArray();
         for (const QJsonValue& v : as)
             m.actions << v.toString();
@@ -239,13 +240,10 @@ bool invoke(const QString& action, const QStringList& args, QString* who)
     return false;
 }
 
-void* entry(const QString& id, const char* symbol)
+// 按 id 拿那份 QLibrary（对象留着不销毁 —— 析构会把引用计数放掉，
+// 下次再 resolve 就可能重新走一遍装载。Windows 按路径复用句柄，不会装第二遍）
+QLibrary* libFor(const QString& id)
 {
-    if (!plugin(id))       // 先真加载，符号只在已装载的 dll 上找得到
-        return nullptr;
-    // Qt6 把 QPluginLoader::resolve 删掉了，所以按同一个文件路径开一份 QLibrary：
-    // Windows 的 LoadLibrary 按路径复用模块句柄，这里不会把插件 dll 装第二遍。
-    // 对象留着不销毁 —— 析构会把引用计数放掉，下次再 resolve 就可能重新走一遍装载。
     static QHash<QString, QLibrary*> libs;
     QLibrary* lib = libs.value(id, nullptr);
     if (!lib) {
@@ -255,7 +253,36 @@ void* entry(const QString& id, const char* symbol)
         lib = new QLibrary(m->file);
         libs.insert(id, lib);
     }
-    return lib->resolve(symbol);
+    return lib;
+}
+
+void* entry(const QString& id, const char* symbol)
+{
+    if (!plugin(id))       // 先真加载，符号只在已装载的 dll 上找得到
+        return nullptr;
+    QLibrary* lib = libFor(id);
+    return lib ? lib->resolve(symbol) : nullptr;
+}
+
+int startBackground()
+{
+    int started = 0;
+    for (const Meta& m : scan()) {
+        if (!m.ok() || !m.wantsActivate || isDisabled(m.id))
+            continue;
+        QLibrary* lib = libFor(m.id);
+        auto fn = reinterpret_cast<void (*)()>(lib ? lib->resolve("ltoolPluginActivate") : nullptr);
+        if (!fn) {
+            // 挂了牌却没导出那个符号：这是插件自己写歪了，必须点名，不能静默少一个后台功能
+            Utils::log(QStringLiteral("plugin: %1 声明 Activate 但没导出 ltoolPluginActivate，"
+                                      "它后台的活儿没跑起来").arg(m.id));
+            continue;
+        }
+        fn();
+        ++started;
+        Utils::log(QStringLiteral("plugin: 激活 %1（它自己起了后台的活儿）").arg(m.id));
+    }
+    return started;
 }
 
 } // namespace PluginHost

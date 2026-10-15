@@ -607,7 +607,8 @@ int main(int argc, char* argv[])
     setlocale(LC_CTYPE, "");
     // --pindel 会真删 captures 目录里的往期截图，--ocrchain 要验"引擎还没下载"那条链（会真下 26MB），
     // --pathcfg 会写 config.ini 并建目录，--appdirs 会写 apps/roots 并扫盘，
-    // --storetest 会写 store/indexUrl 这一项（它就是验"配置里改了地址就跟着走"）：
+    // --storetest 会写 store/indexUrl 这一项（它就是验"配置里改了地址就跟着走"），
+    // --linuxdotest 会写 linuxdo/* 这一节（间隔、关键词、中转前缀、上次看到哪条）：
     // 这几种都把数据目录整个挪到临时目录再跑，碰不到用户真实的 %APPDATA%\ltool。
     // 必须在第一次 dataDir() 之前设好。
     for (int i = 1; i < argc; ++i) {
@@ -615,7 +616,8 @@ int main(int argc, char* argv[])
         if (a == QLatin1String("--pindel") || a == QLatin1String("--ocrchain")
             || a == QLatin1String("--pathcfg") || a == QLatin1String("--pintool")
             || a == QLatin1String("--appdirs") || a == QLatin1String("--cfgcheck")
-            || a == QLatin1String("--storetest")) {
+            || a == QLatin1String("--storetest") || a == QLatin1String("--linuxdotest")
+            || a == QLatin1String("--linuxdonet")) {
             const QString sandbox = QDir::tempPath() + "/" + a.mid(2);
             QDir(sandbox).removeRecursively();
             QDir().mkpath(sandbox);
@@ -726,6 +728,20 @@ int main(int argc, char* argv[])
     if (args.contains("--gridtest"))
         return runPluginSelftest(QStringLiteral("grid"));
 
+    // --linuxdotest：「linux.do 盯帖」那一路的判据（解析/命中/去重/前缀拼法/配置夹紧/
+    // 页面摆控件）。**一次网都不上、一个气泡都不弹** —— 真取回那条在 --linuxdonet。
+    // 它跑在沙箱 APPDATA 里（上面那串名单），因为这一路要写 linuxdo/* 那一节。
+    if (args.contains("--linuxdotest"))
+        return runPluginSelftest(QStringLiteral("linuxdo"));
+
+    // --linuxdonet [秒]：真去取一趟（联网，不进 CI）。上面那 33 条全是喂 fixture 的，
+    // 它们绿只能证明算法对，证明不了中转还活着 —— 这条才是"今天这条路通不通"。
+    if (args.contains("--linuxdonet")) {
+        const int secs = args.mid(args.indexOf(QStringLiteral("--linuxdonet")) + 1).value(0).toInt();
+        return runPluginSelftest(QStringLiteral("linuxdo"), "ltoolLinuxdoNetRun",
+                                 SelftestArg::Ms, secs > 0 ? secs : 60);
+    }
+
     // --plugintest：DLL 插件那条链从头到尾真跑一遍（这次是**真的 LoadLibrary**，
     // 但一次都不 show()，不碰他的桌面）。
     // 名字为什么不叫 --plugin：Qt 自己把 "--plugin" 当命令行选项吃掉了 ——
@@ -744,12 +760,12 @@ int main(int argc, char* argv[])
             if (!ok)
                 ++bad;
         };
-        // 十七个自带工具现在全是 dll 插件。这张名单是"都编出来了没有"的判据：
+        // 十八个自带工具现在全是 dll 插件。这张名单是"都编出来了没有"的判据：
         // 少一个就是那棵 dll 没通过检查 —— 别让它在界面上悄悄少一张卡。
         static const char* const kTools[] = { "repair", "ads", "disk", "network", "registry",
                                               "startup", "user", "json", "base64", "shell",
                                               "record", "capture", "software", "downloads",
-                                              "tasks", "grid", "language" };
+                                              "tasks", "grid", "language", "linuxdo" };
         const QDir dir(PluginHost::pluginsDir());
         std::printf("INFO 插件目录：%s\n", dir.absolutePath().toUtf8().constData());
         const auto& metas = PluginHost::scan();
@@ -810,6 +826,18 @@ int main(int argc, char* argv[])
         has("没实现 feedText 的工具老实返回 false（不假装收下了）",
             !PluginHost::feed(QStringLiteral("disk"), QStringLiteral("随便一段文本")));
         // 插件自带的判据：resolve 得到符号才算这条链通
+        // 挂牌和符号必须一起有：plugin.json 写 "Activate":true 而 dll 里没导出
+        // ltoolPluginActivate = 启动时它那句"我在后台跑着"是假的（startBackground 会点名报错，
+        // 但这条判据要更早、在交付时就拦住）。反过来导出了却没挂牌 = 主程序根本不会去叫它。
+        for (const char* idc : kTools) {
+            const PluginHost::Meta* m = PluginHost::meta(QLatin1String(idc));
+            if (!m || !m->ok())
+                continue;
+            void* fn = PluginHost::entry(QLatin1String(idc), "ltoolPluginActivate");
+            check((QStringLiteral("插件 %1 的 Activate 牌和它导出的符号一致").arg(idc)).toUtf8().constData(),
+                  QStringLiteral("%1/%2").arg(m->wantsActivate ? 1 : 0).arg(fn ? 1 : 0),
+                  m->wantsActivate ? QStringLiteral("1/1") : QStringLiteral("0/0"));
+        }
         has("disk 插件带着自己的判据入口", PluginHost::selftestEntry(QStringLiteral("disk")) != nullptr);
         has("user 插件带着自己的判据入口", PluginHost::selftestEntry(QStringLiteral("user")) != nullptr);
         // 动作路由（API 3 新加的）：**一条都不真去执行** —— 右键那些动作会弹窗、会解压、会粉碎文件。
@@ -884,7 +912,7 @@ int main(int argc, char* argv[])
             input->clear();
             settle();
         }
-        // 卡片墙：这十七个现在全靠插件目录，卡片数必须等于"通过检查的插件数"，
+        // 卡片墙：这十八个现在全靠插件目录，卡片数必须等于"通过检查的插件数"，
         // 而且每张卡都要能在布局里走到（数 findChild 不等于界面可见 —— 配置页那栏
         // 就是这么隐身的，2026-10-12 他报的）。这条替掉了原来那两条"内嵌槽位 0..N-1"。
         ToolsPage wall;
@@ -2899,6 +2927,9 @@ int main(int argc, char* argv[])
     // 广告弹窗拦截器：常驻，配置里勾了"自动拦截"就一直在跑 ——
     // 以前它是设置页里的一个 QTimer，页面一销毁就停，等于从来没真正生效过
     AdBlocker::instance().start();
+    // 挂了牌（plugin.json 的 "Activate"）的插件在这一步被叫起来：它们后台跑的东西
+    // 不靠页面活着 —— 页是点开卡片才建的。没人挂牌就是零成本（一个 dll 都不多装）。
+    PluginHost::startBackground();
     // 剪贴板历史：默认关闭，勾了才在后台收（见设置 → 配置 → 剪贴板）
     ClipboardStore::instance().start();
 

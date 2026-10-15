@@ -16,7 +16,11 @@
 #include <QMutexLocker>
 #include <QPainter>
 #include <QPainterPath>
+#include <QApplication>
+#include <QElapsedTimer>
+#include <QLocalSocket>
 #include <QStandardPaths>
+#include <QSystemTrayIcon>
 #include <QThread>
 
 #include <QSettings>
@@ -308,6 +312,34 @@ QString fileVersion(const QString& exePath)
         .arg(LOWORD(ffi->dwFileVersionMS))
         .arg(HIWORD(ffi->dwFileVersionLS))
         .arg(LOWORD(ffi->dwFileVersionLS));
+}
+
+void trayNote(const QString& title, const QString& msg, int msec)
+{
+    {
+        QLocalSocket probe;
+        probe.connectToServer(QString::fromWCharArray(kInstanceKey));
+        if (probe.waitForConnected(200)) {
+            probe.write("note\t" + title.toUtf8() + '\t' + msg.toUtf8() + "\n");
+            probe.waitForBytesWritten(200);
+            probe.disconnectFromServer();
+            return;
+        }
+    }
+    if (!QSystemTrayIcon::isSystemTrayAvailable())
+        return;
+    QSystemTrayIcon tray;
+    if (!QApplication::windowIcon().isNull())
+        tray.setIcon(QApplication::windowIcon());
+    tray.show();
+    tray.showMessage(title, msg, QSystemTrayIcon::Information, msec);
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < msec) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        QThread::msleep(20);
+    }
+    tray.hide();
 }
 
 void log(const QString& msg)
