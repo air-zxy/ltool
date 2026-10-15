@@ -80,6 +80,8 @@ build/verify/*.out
 build/verify/*_report.txt
 # 安装包产物（21MB，每次交付都重打），只留源码
 installer/
+# tools/make_sdk.py 铺出来的 SDK 快照目录（发版产物，不进仓库）
+sdk-out/
 out/
 *.user
 .vs/
