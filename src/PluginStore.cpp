@@ -264,6 +264,7 @@ QVector<Entry> parseIndex(const QByteArray& json, QStringList* problems)
         e.color = o.value(QStringLiteral("color")).toString();
         e.bytes = qint64(o.value(QStringLiteral("bytes")).toDouble());
         e.api = o.value(QStringLiteral("api")).toInt();
+        e.version = o.value(QStringLiteral("version")).toString().trimmed();
         for (const QJsonValue& k : o.value(QStringLiteral("keywords")).toArray())
             e.keywords << k.toString();
         for (const QJsonValue& a : o.value(QStringLiteral("actions")).toArray())

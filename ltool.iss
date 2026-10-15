@@ -1,4 +1,4 @@
-; ltool Inno Setup 打包脚本
+﻿; ltool Inno Setup 打包脚本
 ; 编译: "D:\software\InnoSetup6\ISCC.exe" ltool.iss
 ; 产物: installer\ltool-{#MyAppVersion}-setup.exe（按用户安装到 %LOCALAPPDATA%\Programs\ltool，无需管理员）
 
@@ -60,6 +60,10 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; \
 Name: "autostart"; Description: "开机自动启动 ltool"; \
     GroupDescription: "其他：" ; Flags: unchecked
 
+[Dirs]
+; 开箱零插件：安装包不内建任何插件 DLL，保持纯净轻量；运行时在此空目录按需从插件商店拉取
+Name: "{app}\ltool-plugins"
+
 [Files]
 Source: "build\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; "=" 是历史上一次 shell 重定向打错产生的垃圾文件；genicon.exe 是构建期生成图标的工具，
@@ -71,7 +75,7 @@ Source: "build\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; captures / recordings：截图/录像的默认落点就是 exe 旁边这两个文件夹，本机自测要是
 ; 手滑在 build\Release 里跑过一次 F1，别让那几张图跟着安装包出去
 Source: "build\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "=,genicon.exe,*.lib,*.exp,captures,recordings,D3Dcompiler_47.dll,dxcompiler.dll,dxil.dll,Qt6Svg.dll,qsvg.dll,qsvgicon.dll,qtuiotouchplugin.dll,qjp2.dll,qwebp.dll,qtiff.dll,qoffscreen.dll"
+    Excludes: "=,genicon.exe,*.lib,*.exp,captures,recordings,D3Dcompiler_47.dll,dxcompiler.dll,dxil.dll,Qt6Svg.dll,qsvg.dll,qsvgicon.dll,qtuiotouchplugin.dll,qjp2.dll,qwebp.dll,qtiff.dll,qoffscreen.dll,ltool-plugins,ltool-plugins\*"
 
 ; VC++ 运行库（vcruntime140/msvcp140*）故意不打包：Qt6Core 等确实硬导入它们，但
 ; 缺了是"进程根本起不来"，而能弹出设置页的机器一定有；ISCC 是 32 位进程，

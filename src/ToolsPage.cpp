@@ -301,9 +301,16 @@ QString ToolsPage::reinstallHint(const PluginStore::Row& r) const
 QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
 {
     auto* card = new ShopCard(r.remote.name, r.remote.desc, colorOf(r.remote.color, r.remote.id), this);
+    QString stateWord = PluginStore::stateWord(r.state);
+    if (!r.remote.version.isEmpty()) {
+        if (r.state == PluginStore::State::Update)
+            stateWord = QStringLiteral("可更新至 v%1").arg(r.remote.version);
+        else
+            stateWord = QStringLiteral("%1 (v%2)").arg(stateWord, r.remote.version);
+    }
     card->stateLabel()->setText(r.note.isEmpty()
-                                    ? PluginStore::stateWord(r.state)
-                                    : QStringLiteral("%1 · %2").arg(PluginStore::stateWord(r.state), r.note));
+                                    ? stateWord
+                                    : QStringLiteral("%1 · %2").arg(stateWord, r.note));
 
     using S = PluginStore::State;
     const PluginStore::Entry e = r.remote;
@@ -359,7 +366,7 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
     }
     if (installed && !openable)
         card->stateLabel()->setText(QStringLiteral("%1 · 本机有这个 dll 但没通过检查：%2")
-                                        .arg(PluginStore::stateWord(r.state),
+                                        .arg(stateWord,
                                              PluginHost::meta(id) ? QString()
                                                     : QStringLiteral("目录里认不出它")));
     return card;

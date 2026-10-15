@@ -3,6 +3,7 @@
  "Name": "下载器",
  "Desc": "多线程下载、断点续传与任务表",
  "Api": 3,
+ "Version": "1.0.0",
  "Keywords": [
   "下载",
   "download",

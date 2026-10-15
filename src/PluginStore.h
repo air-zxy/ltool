@@ -29,6 +29,7 @@ struct Entry {
     QString color;      // "r,g,b"
     qint64 bytes = 0;
     int api = 0;
+    QString version;    // 插件版本号，如 "1.0.0"（由清单给出）
     QStringList keywords;
     QStringList actions;
 };

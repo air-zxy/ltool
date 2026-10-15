@@ -3,6 +3,7 @@
  "Name": "定时任务",
  "Desc": "到点跑 c++/java/python/js/rust 脚本",
  "Api": 3,
+ "Version": "1.0.0",
  "Keywords": [
   "定时",
   "计划",
