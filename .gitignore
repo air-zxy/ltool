@@ -85,3 +85,7 @@ out/
 .vs/
 # 恢复工程时留下的重复副本（和 README.md 同一份内容）
 README (1).md
+.idea/
+build/verify/patch_*.py
+build/verify/add_*.py
+build/verify/*.sh

@@ -58,21 +58,9 @@ constexpr int kRowHeight = 54;
 constexpr int kSectionHeight = 28;
 constexpr int kMaxVisibleRows = 12;   // 空查询的常用面板有 5 节，9 行只够看到两节
 
-QIcon letterIcon(const QString& text, const QColor& color)
+inline QIcon letterIcon(const QString& text, const QColor& color)
 {
-    QPixmap pm(48, 48);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    QPainterPath path;
-    path.addRoundedRect(2, 2, 44, 44, 12, 12);
-    p.fillPath(path, color);
-    QFont f("Microsoft YaHei UI", 17);
-    f.setBold(true);
-    p.setFont(f);
-    p.setPen(Qt::white);
-    p.drawText(pm.rect(), Qt::AlignCenter, text.left(1));
-    return QIcon(pm);
+    return Utils::letterIcon(text, color);
 }
 
 QColor colorForKind(const QString& key)

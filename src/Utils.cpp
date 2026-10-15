@@ -352,6 +352,15 @@ QPixmap tilePixmap(const QColor& color)
 
 QIcon letterIcon(const QString& text, const QColor& color)
 {
+    // 高频绘图缓存：搜索窗口每敲一个字及卡片网格渲染时会触发数十次图标生成，
+    // 按 (色值, 首字符) 64位哈希秒级缓存，彻底消除重复的位图与文字光栅化开销。
+    const ushort ch = text.isEmpty() ? 0 : text.at(0).unicode();
+    const quint64 key = (quint64(color.rgba()) << 32) | quint64(ch);
+    static QHash<quint64, QIcon> cache;
+    auto it = cache.constFind(key);
+    if (it != cache.constEnd())
+        return *it;
+
     QPixmap pm = tilePixmap(color);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
@@ -360,7 +369,9 @@ QIcon letterIcon(const QString& text, const QColor& color)
     p.setFont(f);
     p.setPen(Qt::white);
     p.drawText(pm.rect(), Qt::AlignCenter, text.left(1));
-    return QIcon(pm);
+    const QIcon icon(pm);
+    cache.insert(key, icon);
+    return icon;
 }
 
 QIcon bagIcon(const QColor& color)

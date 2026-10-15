@@ -56,52 +56,56 @@ public:
     ShopCard(const QString& title, const QString& desc, const QColor& color, QWidget* parent)
         : QFrame(parent)
     {
-        // 还是叫 "row"：`--plugintest` 数卡片就是数这个名字的 QFrame（插件数 = 卡片数）
         setObjectName(QStringLiteral("row"));
         setAttribute(Qt::WA_StyledBackground);
-        setMinimumHeight(96);
+        setMinimumHeight(108);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 
-        auto* lay = new QHBoxLayout(this);
-        lay->setContentsMargins(12, 10, 12, 10);
-        lay->setSpacing(10);
+        auto* lay = new QVBoxLayout(this);
+        lay->setContentsMargins(14, 11, 14, 11);
+        lay->setSpacing(6);
+
+        auto* topRow = new QHBoxLayout;
+        topRow->setSpacing(10);
+        topRow->setContentsMargins(0, 0, 0, 0);
 
         auto* icon = new QLabel(this);
         icon->setFixedSize(32, 32);
         icon->setPixmap(Utils::letterIcon(title, color).pixmap(32, 32));
         icon->setScaledContents(true);
         icon->setAttribute(Qt::WA_TranslucentBackground);
+        topRow->addWidget(icon, 0, Qt::AlignVCenter);
 
-        auto* text = new QVBoxLayout;
-        text->setSpacing(2);
         auto* name = new QLabel(title, this);
         QFont f = name->font();
+        f.setPointSize(f.pointSize() + 1);
         f.setBold(true);
         name->setFont(f);
+        topRow->addWidget(name, 0, Qt::AlignVCenter);
+        topRow->addStretch(1);
+
         m_desc = new QLabel(desc, this);
         m_desc->setObjectName(QStringLiteral("muted"));
         m_desc->setWordWrap(true);
 
+        auto* bottomRow = new QHBoxLayout;
+        bottomRow->setSpacing(6);
+        bottomRow->setContentsMargins(0, 0, 0, 0);
+
         m_state = new QLabel(this);
         m_state->setObjectName(QStringLiteral("muted"));
-        // 离屏判据要点名找这一颗（objectName 归样式表用，动不得，所以另挂一个属性）
         m_state->setProperty("shopState", true);
         m_state->setWordWrap(true);
+        bottomRow->addWidget(m_state, 1, Qt::AlignVCenter);
 
-        // 底部这一排是"要几颗加几颗"：装了东西的那张卡现在同时给「禁用」和「卸载」，
-        // 可更新那张还要加一颗「更新」—— 写死两颗很快就会不够用。
-        // 它单独占卡片最底下一行（前面一颗 stretch 把按钮推到右），状态那行不再和按钮挤在一起。
         m_foot = new QHBoxLayout;
         m_foot->setSpacing(6);
-        m_foot->addStretch(0);   // 这颗 stretch 是锚点：按钮一律排在它后面
+        m_foot->setContentsMargins(0, 0, 0, 0);
+        bottomRow->addLayout(m_foot, 0);
 
-        text->addWidget(name);
-        text->addWidget(m_desc);
-        text->addWidget(m_state);
-        text->addStretch(1);
-        text->addLayout(m_foot);
-        lay->addWidget(icon, 0, Qt::AlignTop);
-        lay->addLayout(text, 1);
+        lay->addLayout(topRow);
+        lay->addWidget(m_desc, 1);
+        lay->addLayout(bottomRow);
     }
 
     QLabel* stateLabel() const { return m_state; }
@@ -109,7 +113,9 @@ public:
     {
         auto* b = new QPushButton(text, this);
         b->setCursor(Qt::PointingHandCursor);
-        b->setMaximumWidth(72);
+        b->setMinimumWidth(50);
+        b->setMaximumWidth(68);
+        b->setFixedHeight(24);
         m_foot->addWidget(b);
         return b;
     }
@@ -278,7 +284,7 @@ QWidget* ToolsPage::buildGrid()
     }
 
     auto* grid = new QGridLayout;
-    grid->setSpacing(8);
+    grid->setSpacing(12);
     for (int i = 0; i < rows.size(); ++i) {
         grid->addWidget(makeCard(rows[i]), i / kGridColumns, i % kGridColumns);
         grid->setColumnStretch(i % kGridColumns, 1);
@@ -308,9 +314,25 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
         else
             stateWord = QStringLiteral("%1 (v%2)").arg(stateWord, r.remote.version);
     }
-    card->stateLabel()->setText(r.note.isEmpty()
+    QString noteText;
+    if (r.state == PluginStore::State::Installed) {
+        const int idx = r.note.lastIndexOf(QLatin1String(" · "));
+        noteText = (idx >= 0) ? r.note.mid(idx + 3) : QString();
+    } else if (r.state == PluginStore::State::Missing) {
+        const int idx = r.note.indexOf(QLatin1String("（清单 "));
+        if (idx >= 0) {
+            noteText = r.note.mid(idx + 5);
+            if (noteText.endsWith(QLatin1Char(')')) || noteText.endsWith(QString::fromUtf8("）")))
+                noteText.chop(1);
+        } else {
+            noteText = r.note;
+        }
+    } else {
+        noteText = r.note;
+    }
+    card->stateLabel()->setText(noteText.isEmpty()
                                     ? stateWord
-                                    : QStringLiteral("%1 · %2").arg(stateWord, r.note));
+                                    : QStringLiteral("%1 · %2").arg(stateWord, noteText));
 
     using S = PluginStore::State;
     const PluginStore::Entry e = r.remote;
