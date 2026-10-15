@@ -60,7 +60,7 @@ public:
     {
         setObjectName(QStringLiteral("row"));
         setAttribute(Qt::WA_StyledBackground);
-        setMinimumHeight(108);
+        setMinimumHeight(116);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 
         auto* lay = new QVBoxLayout(this);
@@ -129,13 +129,45 @@ public:
     }
 
     QLabel* stateLabel() const { return m_state; }
-    QPushButton* addButton(const QString& text)
+    QPushButton* addButton(const QString& text, bool isPrimary = false)
     {
         auto* b = new QPushButton(text, this);
         b->setCursor(Qt::PointingHandCursor);
-        b->setMinimumWidth(50);
-        b->setMaximumWidth(68);
-        b->setFixedHeight(24);
+        b->setMinimumWidth(56);
+        b->setFixedHeight(28);
+        if (isPrimary) {
+            b->setObjectName(QStringLiteral("cardBtnPrimary"));
+            b->setStyleSheet(QStringLiteral(
+                "QPushButton {"
+                "  background: #3f6ae0;"
+                "  border: 1px solid #3f6ae0;"
+                "  color: #ffffff;"
+                "  border-radius: 6px;"
+                "  font-size: 9pt;"
+                "  font-weight: 600;"
+                "  padding: 0 10px;"
+                "}"
+                "QPushButton:hover { background: #4f79e8; border-color: #4f79e8; }"
+                "QPushButton:pressed { background: #3560cc; }"
+                "QPushButton:disabled { background: #232429; border: 1px solid #2c2d34; color: #5b616e; }"
+            ));
+        } else {
+            b->setObjectName(QStringLiteral("cardBtn"));
+            b->setStyleSheet(QStringLiteral(
+                "QPushButton {"
+                "  background: #2b2d34;"
+                "  border: 1px solid #3a3c45;"
+                "  color: #e8ebf2;"
+                "  border-radius: 6px;"
+                "  font-size: 9pt;"
+                "  font-weight: 500;"
+                "  padding: 0 10px;"
+                "}"
+                "QPushButton:hover { background: #363842; border-color: #4f5360; }"
+                "QPushButton:pressed { background: #222328; }"
+                "QPushButton:disabled { color: #5b616e; background: #232429; border-color: #2c2d34; }"
+            ));
+        }
         m_foot->addWidget(b);
         return b;
     }
@@ -255,6 +287,23 @@ ToolsPage::ToolsPage(QWidget* parent)
     connect(repoBtn, &QPushButton::clicked, this, [] {
         QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/mateo-ki/ltool_plugin")));
     });
+
+    const QString topBtnQss = QStringLiteral(
+        "QPushButton {"
+        "  background: #2b2d34;"
+        "  border: 1px solid #3a3c45;"
+        "  color: #e8ebf2;"
+        "  border-radius: 7px;"
+        "  font-size: 9pt;"
+        "  font-weight: 500;"
+        "  padding: 4px 12px;"
+        "  min-height: 26px;"
+        "}"
+        "QPushButton:hover { background: #363842; border-color: #4f5360; }"
+        "QPushButton:pressed { background: #222328; }"
+    );
+    refresh->setStyleSheet(topBtnQss);
+    repoBtn->setStyleSheet(topBtnQss);
 
     head->addWidget(m_back);
     head->addWidget(m_heading);
@@ -401,7 +450,8 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
     case S::Missing:
     case S::Update: {
         auto* install = card->addButton(r.state == S::Missing ? QStringLiteral("装")
-                                                               : QStringLiteral("更新"));
+                                                               : QStringLiteral("更新"),
+                                        /*isPrimary=*/true);
         connect(install, &QPushButton::clicked, this, [this, e, card, install] {
             install->setEnabled(false);
             installEntry(e, install, card->stateLabel());
