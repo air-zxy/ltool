@@ -727,7 +727,7 @@ void SearchWindow::runSearch()
     {
         const auto& metas = PluginHost::scan();
         for (int i = 0; i < metas.size(); ++i)
-            if (metas[i].ok())
+            if (metas[i].ok() && !PluginHost::isDisabled(metas[i].id))
                 toolIndices << i;
     }
 
@@ -879,7 +879,7 @@ void SearchWindow::runSearch()
     }
 
     // json 命令行（带内容）：直接把那串递给 JSON 工具那张页解析
-    if (tok0 == "json" && !q.mid(tok0.size()).trimmed().isEmpty()) {
+    if (tok0 == "json" && !q.mid(tok0.size()).trimmed().isEmpty() && !PluginHost::isDisabled(QStringLiteral("json"))) {
         SearchResult r;
         r.kind = SearchResult::Command;
         r.title = "json — 把后面这串丢进 JSON 格式化";
@@ -894,7 +894,7 @@ void SearchWindow::runSearch()
     }
 
     // base64 命令行（带内容）：直接把那串递给编解码那张页
-    if ((tok0 == "b64" || tok0 == "base64") && !q.mid(tok0.size()).trimmed().isEmpty()) {
+    if ((tok0 == "b64" || tok0 == "base64") && !q.mid(tok0.size()).trimmed().isEmpty() && !PluginHost::isDisabled(QStringLiteral("base64"))) {
         SearchResult r;
         r.kind = SearchResult::Command;
         r.title = "b64 — 把后面这串拿去解码";

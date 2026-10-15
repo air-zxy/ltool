@@ -4,6 +4,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFileInfo>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -74,6 +75,9 @@ const QVector<Meta>& scan()
         m.id = str(meta, "Id");
         m.name = str(meta, "Name");
         m.desc = str(meta, "Desc");
+        m.version = str(meta, "Version");
+        if (m.version.isEmpty())
+            m.version = QStringLiteral("1.0.0");
         m.api = meta.value(QLatin1String("Api")).toInt();
         const QJsonArray ks = meta.value(QLatin1String("Keywords")).toArray();
         for (const QJsonValue& v : ks)
@@ -170,6 +174,24 @@ const Meta* meta(const QString& id)
         if (m.id == id)
             return &m;
     return nullptr;
+}
+
+bool isDisabled(const QString& id)
+{
+    const QString dir = pluginsDir();
+    if (QFileInfo::exists(dir + QStringLiteral("/ltool-") + id + QStringLiteral(".dll.off")))
+        return true;
+    if (QFileInfo::exists(dir + QLatin1Char('/') + id + QStringLiteral(".dll.off")))
+        return true;
+    if (const Meta* m = meta(id)) {
+        if (!m->file.isEmpty()) {
+            if (QFileInfo::exists(m->file + QStringLiteral(".off")))
+                return true;
+            if (!QFileInfo::exists(m->file))
+                return true;
+        }
+    }
+    return false;
 }
 
 bool feed(const QString& id, const QString& text)

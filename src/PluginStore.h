@@ -61,6 +61,11 @@ struct Attempt {
     QString label;    // 界面上那句"是从哪条拿到的"就靠它
 };
 
+QByteArray loadCachedIndex();
+bool saveCachedIndex(const QByteArray& json);
+bool shouldAutoRefresh();
+void markFetched();
+
 QString defaultIndexUrl();        // 内置那条 raw 地址（免登录）
 QString mirrorList();             // 配置 store/mirrors，留空 = 内置那两条（这台机器实测过还活着）
 QVector<Attempt> attemptsFor(const QString& originUrl);

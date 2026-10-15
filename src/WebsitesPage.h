@@ -11,11 +11,12 @@ class WebsitesPage : public QWidget {
 public:
     explicit WebsitesPage(QWidget* parent = nullptr);
 
+    void editEntryAt(int index);
+    void removeEntryAt(int index);
+
 private:
     void rebuild();
     void addEntry();
-    void editEntry();
-    void removeEntry();
 
     QListWidget* m_list = nullptr;
 };

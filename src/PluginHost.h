@@ -19,6 +19,7 @@ struct Meta {
     QString id;
     QString name;
     QString desc;
+    QString version;
     QStringList keywords;
     QStringList actions;  // plugin.json 里 "Actions"：这个插件声明它接哪些动作（商店/诊断用）
     QColor color;         // plugin.json 里的 "Color"（r,g,b），卡片图标用；没写就按 id 派生
@@ -31,6 +32,7 @@ QString pluginsDir();                 // <exe 目录>/ltool-plugins
 const QVector<Meta>& scan();          // 只读元数据；结果缓存，reload() 才重扫
 void reload();
 const Meta* meta(const QString& id);
+bool isDisabled(const QString& id);
 QWidget* page(const QString& id, QWidget* parent, QString* err);   // 懒创建 + 缓存
 LToolPlugin* plugin(const QString& id);
 

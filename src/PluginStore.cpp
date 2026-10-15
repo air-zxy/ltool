@@ -60,6 +60,40 @@ QString stateWord(PluginStore::State s)
     return QStringLiteral("条目不能用");
 }
 
+QByteArray loadCachedIndex()
+{
+    QFile f(Utils::dataDir() + QStringLiteral("/plugins_cache.json"));
+    if (!f.open(QIODevice::ReadOnly))
+        return QByteArray();
+    return f.readAll();
+}
+
+bool saveCachedIndex(const QByteArray& json)
+{
+    if (json.isEmpty())
+        return false;
+    QDir().mkpath(Utils::dataDir());
+    QFile f(Utils::dataDir() + QStringLiteral("/plugins_cache.json"));
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    return f.write(json) == json.size();
+}
+
+bool shouldAutoRefresh()
+{
+    QSettings cfg(Utils::dataDir() + QStringLiteral("/config.ini"), QSettings::IniFormat);
+    const QString last = cfg.value(QStringLiteral("store/lastFetchDate")).toString().trimmed();
+    const QString today = QDate::currentDate().toString(Qt::ISODate);
+    return last != today;
+}
+
+void markFetched()
+{
+    QSettings cfg(Utils::dataDir() + QStringLiteral("/config.ini"), QSettings::IniFormat);
+    cfg.setValue(QStringLiteral("store/lastFetchDate"), QDate::currentDate().toString(Qt::ISODate));
+    cfg.setValue(QStringLiteral("store/lastFetchTime"), QDateTime::currentDateTime().toString(Qt::ISODate));
+}
+
 QString defaultIndexUrl()
 {
     // 那份 dist/ 是直接提交在插件仓库 main 上的，raw 地址免登录就能下 —— 商店不需要 api 配额。
@@ -377,6 +411,7 @@ QVector<Row> localRows(const QString& dir)
             r.remote.keywords = m->keywords;
             r.remote.actions = m->actions;
             r.remote.api = m->api;
+            r.remote.version = m->version;
         } else {
             r.remote.name = base;
             r.remote.api = LTOOL_PLUGIN_API_VERSION;

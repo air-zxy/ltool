@@ -2388,6 +2388,19 @@ int main(int argc, char* argv[])
                       ? "yes" : "no", "yes");
         }
 
+        // ---- 6. 本地持久化缓存与每日拉取检测 ----
+        {
+            const QByteArray fakeIndex = "{\"schema\":1,\"plugins\":[]}";
+            check("写入清单缓存", PluginStore::saveCachedIndex(fakeIndex) ? "yes" : "no", "yes");
+            check("读回清单缓存", QString::fromUtf8(PluginStore::loadCachedIndex()), QString::fromUtf8(fakeIndex));
+            PluginStore::markFetched();
+            check("打上标记后今天不重复自动拉取", PluginStore::shouldAutoRefresh() ? "yes" : "no", "no");
+        }
+        // ---- 7. 禁用插件检测 ----
+        {
+            check("不存在的插件不报禁用", PluginHost::isDisabled(QStringLiteral("nonexistent_plug")) ? "yes" : "no", "no");
+        }
+
         // 全程没碰真目录：商店判的是传进去的那个 dir
         check("没把假 dll 写进真正的插件目录",
               QFile::exists(PluginHost::pluginsDir() + "/ltool-new.dll") ? "yes" : "no", "no");

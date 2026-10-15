@@ -6,6 +6,8 @@
 #include "Utils.h"
 
 #include <QColor>
+#include <QDesktopServices>
+#include <QTimer>
 #include <QDir>
 #include <QFileInfo>
 #include <QFrame>
@@ -53,7 +55,7 @@ QColor colorOf(const QString& spec, const QString& id)
 // 一张商店卡片：图标 + 名字 + 说明 + 状态，操作按钮排在卡片最底下一行。
 class ShopCard : public QFrame {
 public:
-    ShopCard(const QString& title, const QString& desc, const QColor& color, QWidget* parent)
+    ShopCard(const QString& title, const QString& desc, const QColor& color, const QString& version, QWidget* parent)
         : QFrame(parent)
     {
         setObjectName(QStringLiteral("row"));
@@ -66,7 +68,7 @@ public:
         lay->setSpacing(6);
 
         auto* topRow = new QHBoxLayout;
-        topRow->setSpacing(10);
+        topRow->setSpacing(8);
         topRow->setContentsMargins(0, 0, 0, 0);
 
         auto* icon = new QLabel(this);
@@ -82,6 +84,24 @@ public:
         f.setBold(true);
         name->setFont(f);
         topRow->addWidget(name, 0, Qt::AlignVCenter);
+
+        if (!version.isEmpty()) {
+            const QString vText = (version.startsWith(QLatin1Char('v')) || version.startsWith(QLatin1Char('V')))
+                                      ? version
+                                      : QStringLiteral("v%1").arg(version);
+            auto* verBadge = new QLabel(vText, this);
+            verBadge->setObjectName(QStringLiteral("verBadge"));
+            verBadge->setStyleSheet(QStringLiteral(
+                "background: rgba(255, 255, 255, 0.08); "
+                "color: #9aa3b2; "
+                "border: 1px solid rgba(255, 255, 255, 0.12); "
+                "border-radius: 4px; "
+                "padding: 1px 6px; "
+                "font-size: 8.5pt; "
+                "font-weight: 500;"));
+            topRow->addWidget(verBadge, 0, Qt::AlignVCenter);
+        }
+
         topRow->addStretch(1);
 
         m_desc = new QLabel(desc, this);
@@ -154,8 +174,10 @@ void addToggleButton(ToolsPage* page, ShopCard* card, const QString& file, bool 
         Utils::log(QStringLiteral("store: %1 %2%3")
                        .arg(enableIt ? QStringLiteral("启用") : QStringLiteral("禁用"), file,
                             err.isEmpty() ? QString() : QStringLiteral(" 失败：") + err));
-        if (err.isEmpty())
+        if (err.isEmpty()) {
+            PluginHost::reload();
             page->rebuildGrid();
+        }
     });
 }
 
@@ -226,16 +248,42 @@ ToolsPage::ToolsPage(QWidget* parent)
     refresh->setCursor(Qt::PointingHandCursor);
     refresh->setToolTip(QStringLiteral("拉插件仓库那份 index.json。\n"
                                       "地址在配置页「插件清单地址」那一行，留空 = 内置那条 raw 地址；代理沿用「下载代理」那一行。"));
+    auto* repoBtn = new QPushButton(QStringLiteral("插件仓库"), this);
+    repoBtn->setObjectName(QStringLiteral("storeRepo"));
+    repoBtn->setCursor(Qt::PointingHandCursor);
+    repoBtn->setToolTip(QStringLiteral("前往 ltool_plugin GitHub 插件仓库网页"));
+    connect(repoBtn, &QPushButton::clicked, this, [] {
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/mateo-ki/ltool_plugin")));
+    });
+
     head->addWidget(m_back);
     head->addWidget(m_heading);
     head->addStretch(1);
+    head->addWidget(repoBtn);
     head->addWidget(refresh);
     lay->addLayout(head);
 
-    m_storeStatus = new QLabel(QStringLiteral(
-        "这一面列的是本机 `ltool-plugins\\` 里装着的那几个。点右上「刷新清单」，仓库里能装的也进这同一面。"), this);
+    // 启动优先载入持久化清单缓存
+    const QByteArray cached = PluginStore::loadCachedIndex();
+    if (!cached.isEmpty()) {
+        QStringList probs;
+        const auto entries = PluginStore::parseIndex(cached, &probs);
+        if (!entries.isEmpty()) {
+            m_haveStore = true;
+            m_lastEntries = entries;
+            m_lastProblems = probs;
+        }
+    }
+
+    m_storeStatus = new QLabel(this);
     m_storeStatus->setObjectName(QStringLiteral("tip"));
     m_storeStatus->setWordWrap(true);
+    if (m_haveStore) {
+        m_storeStatus->setText(QStringLiteral("已载入本地清单缓存（共 %1 条插件）· 每天自动检查更新一次").arg(m_lastEntries.size()));
+    } else {
+        m_storeStatus->setText(QStringLiteral(
+            "这一面列的是本机 `ltool-plugins\\` 里装着的那几个。点右上「刷新清单」，仓库里能装的也进这同一面。"));
+    }
     lay->addWidget(m_storeStatus);
 
     m_stack = new QStackedWidget(this);
@@ -248,6 +296,11 @@ ToolsPage::ToolsPage(QWidget* parent)
         m_heading->setText(QStringLiteral("插件商店"));
     });
     connect(refresh, &QPushButton::clicked, this, [this] { refreshStore(); });
+
+    // 每天自动拉取一次清单更新
+    if (PluginStore::shouldAutoRefresh() || !m_haveStore) {
+        QTimer::singleShot(100, this, [this] { refreshStore(); });
+    }
 }
 
 QVector<PluginStore::Row> ToolsPage::shopRows() const
@@ -306,7 +359,7 @@ QString ToolsPage::reinstallHint(const PluginStore::Row& r) const
 
 QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
 {
-    auto* card = new ShopCard(r.remote.name, r.remote.desc, colorOf(r.remote.color, r.remote.id), this);
+    auto* card = new ShopCard(r.remote.name, r.remote.desc, colorOf(r.remote.color, r.remote.id), r.remote.version, this);
     QString stateWord = PluginStore::stateWord(r.state);
     if (!r.remote.version.isEmpty()) {
         if (r.state == PluginStore::State::Update)
@@ -406,7 +459,13 @@ void ToolsPage::refreshStore()
     PluginStore::fetch(url, this, {}, {}, {}, [this, url](const PluginStore::Fetched& got) {
         m_storeBusy = false;
         if (!got.ok) {
-            // 拉不到就退回"只列本机装着的那些"，并把这件事说出来 —— 不能拿一张半截的列表当结论
+            if (!m_lastEntries.isEmpty()) {
+                m_storeStatus->setText(QStringLiteral("网络拉取未成功：%1 —— 当前展示本地缓存清单（共 %2 条）")
+                                           .arg(got.err).arg(m_lastEntries.size()));
+                rebuildGrid();
+                Utils::log(QStringLiteral("store: 拉清单失败 %1，使用本地缓存").arg(got.err));
+                return;
+            }
             m_haveStore = false;
             m_lastEntries.clear();
             m_lastProblems.clear();
@@ -421,6 +480,8 @@ void ToolsPage::refreshStore()
         m_haveStore = true;
         m_lastEntries = entries;
         m_lastProblems = problems;
+        PluginStore::saveCachedIndex(got.body);
+        PluginStore::markFetched();
 
         const QVector<PluginStore::Row> all = shopRows();
         int canInstall = 0;
