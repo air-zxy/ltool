@@ -40,6 +40,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QToolButton>
 #include <QLineEdit>
 #include <QThread>
 #include <QFrame>
@@ -2501,7 +2502,8 @@ int main(int argc, char* argv[])
     const bool inLoopSelftest = args.contains(QLatin1String("--capgeo"))
                                 || args.contains(QLatin1String("--capflash"))
                                 || args.contains(QLatin1String("--storenet"))
-                                || args.contains(QLatin1String("--storemulti"));
+                                || args.contains(QLatin1String("--storemulti"))
+                                || args.contains(QLatin1String("--uninst"));
     if (!inLoopSelftest) {
         QLocalSocket probe;
         probe.connectToServer(QString::fromWCharArray(kInstanceKey));
@@ -3233,7 +3235,7 @@ int main(int argc, char* argv[])
             QStringList parts;
             int waited = 0;
             QString lastSig;
-            int stable = 0;
+            int stableCount = 0;
             for (; waited < 6000; ++waited) {   // 300 秒上限（每格 50ms）
                 QCoreApplication::processEvents();
                 QThread::msleep(50);
@@ -3247,13 +3249,17 @@ int main(int argc, char* argv[])
                 const QString sig = sz.join(QLatin1Char(' '));
                 if (!sig.isEmpty())
                     std::printf("INFO %3ds 桌面上的 .part：%s\n", waited / 20, sig.toUtf8().constData());
-                stable = (sig == lastSig && !sig.isEmpty()) ? stable + 1 : 0;
-                lastSig = sig;
+                // "字节数不动"只有在**已经有字节**的时候才说明落地了：刚点开那几秒 .part 是 0KB，
+                // 拿 0KB 的三次相同当"稳定"会在下载还没起来时就收工（上一版就是这么把一次
+                // 正常排队读成了"留了个 .part 没清"）。
+                const bool anyBytes = !sz.isEmpty() && !sz.contains(QStringLiteral("=0KB"));
+                const bool stable = (sig == lastSig && !sig.isEmpty() && anyBytes);
+                stableCount = stable ? stableCount + 1 : 0;                lastSig = sig;
                 // 终止条件看"字节数不再动"而不是".part 消失"—— 装失败的那份就是留着不动的，
                 // 拿"消失"当条件会一路等到超时（第一版就这么把一次失败读成了"下载卡死"）。
                 if (parts.isEmpty() && waited > 80)
                     break;
-                if (stable >= 3)
+                if (stableCount >= 3)
                     break;
             }
             check("跑到底还活着（真闪退的话这几行都打不出来）", true,
@@ -3268,9 +3274,99 @@ int main(int argc, char* argv[])
         });
     }
 
-    QObject::connect(&win, &SearchWindow::hotkeyChanged, &win, applyHotkeyChange);
+    // --uninst [插件id]：把"用过那个工具，然后卸载它"这条路整个走一遍 ——
+    // 先真把那张页开出来（dll 就此映射进这个进程），再点卡片上那颗「卸载」，然后重排、再切回那张页。
+    // 他报的是"一卸载网络插件就崩溃"，所以这条判据要跑到**卸载之后还能碰那张页**为止。
+    // 它会真删运行目录里那颗 dll，必须拿临时副本跑：build/verify/storemulti.ps1 -Flag --uninst。
+    int uninstBad = 0;
+    if (args.contains("--uninst")) {
+        const QString id = args.mid(args.indexOf(QStringLiteral("--uninst")) + 1).value(0, QStringLiteral("network"));
+        QTimer::singleShot(150, &app, [&app, &uninstBad, id] {
+            ToolsPage page;
+            page.setAttribute(Qt::WA_DontShowOnScreen, true);
+            page.resize(940, 720);
+            page.show();
+            const auto drain = [] {
+                for (int i = 0; i < 30; ++i) {
+                    QCoreApplication::processEvents();
+                    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                }
+            };
+            const auto check = [&uninstBad](const char* name, bool ok, const QString& got) {
+                std::printf("%s %s got=[%s]\n", ok ? "PASS" : "FAIL", name, got.toUtf8().constData());
+                std::fflush(stdout);
+                if (!ok)
+                    ++uninstBad;
+            };
+            // 那张卡的状态标签（applyUninstall 的答复就写在里面）
+            const auto stateOf = [&page](const QString& cardName) -> QLabel* {
+                for (QFrame* card : page.findChildren<QFrame*>(QStringLiteral("row"))) {
+                    bool mine = false;
+                    for (QLabel* l : card->findChildren<QLabel*>())
+                        if (l->text() == cardName)
+                            mine = true;
+                    if (!mine)
+                        continue;
+                    for (QLabel* l : card->findChildren<QLabel*>())
+                        if (l->property("shopState").toBool())
+                            return l;
+                }
+                return nullptr;
+            };
+            drain();
+            const QString dir = PluginHost::pluginsDir();
+            // 两种情形各来一遍：没打开过 → 文件删得掉 → reload + 重排；打开过 → dll 映射着删不掉
+            // → 该排到下次启动。他报的是"一卸载网络插件就崩溃"，两条都得活着走完。
+            const QVector<QPair<QString, bool>> cases = { { QStringLiteral("base64"), false }, { id, true } };
+            for (const auto& c : cases) {
+                const QString cid = c.first;
+                const PluginHost::Meta* md = PluginHost::meta(cid);
+                check(("[" + cid + "] 元数据里认得出").toUtf8().constData(), md != nullptr, cid);
+                if (!md)
+                    continue;
+                const QString name = md->name;
+                const QString file = QFileInfo(md->file).fileName();
+                QString err;
+                if (c.second) {
+                    QWidget* w = PluginHost::page(cid, &page, &err);
+                    check(("[" + cid + "] 那张页建得出来（dll 已映射进进程）").toUtf8().constData(),
+                          w != nullptr, err);
+                    page.showTool(cid);
+                    drain();
+                    for (QToolButton* b : page.findChildren<QToolButton*>())
+                        if (b->text().contains(QStringLiteral("返回")))
+                            b->click();
+                    drain();
+                }
+                QLabel* state = stateOf(name);
+                check(("[" + cid + "] 那张卡找得到（状态标签在）").toUtf8().constData(), state != nullptr, name);
+                // 走的是「卸载」按下并答了"是"之后那同一段代码（ToolsPage::applyUninstall）。
+                // 不能靠点按钮：无窗口平台上 question() 立刻返回默认值"不"，那条支路进不去。
+                page.applyUninstall(file, name, state);
+                drain();
+                check(("[" + cid + "] 卸载那一下之后还活着").toUtf8().constData(), true,
+                      ("先打开过=" + QString::number(c.second ? 1 : 0)));
+                const bool gone = !QFileInfo::exists(dir + QLatin1Char('/') + file);
+                const bool queued = PluginStore::pendingRemoves().contains(file);
+                check(("[" + cid + "] 要么真删了，要么排到下次启动").toUtf8().constData(), gone || queued,
+                      ("文件还在=" + QString::number(gone ? 0 : 1) + " 排了队=" + QString::number(queued ? 1 : 0)));
+                page.rebuildGrid();
+                drain();
+                check(("[" + cid + "] 重排卡片墙之后还活着").toUtf8().constData(), true,
+                      ("卡片 " + QString::number(page.findChildren<QFrame*>(QStringLiteral("row")).size()) + " 张"));
+                if (c.second) {
+                    page.showTool(cid);
+                    drain();
+                    check(("[" + cid + "] 再切回那张已卸载的页还活着").toUtf8().constData(), true, cid);
+                }
+            }
+            std::printf("uninst: 失败 %d 项\n", uninstBad);
+            std::fflush(stdout);
+            app.quit();
+        });
+    }
 
-    const int rc = app.exec();
+    QObject::connect(&win, &SearchWindow::hotkeyChanged, &win, applyHotkeyChange);    const int rc = app.exec();
     if (args.contains("--toggle"))
         return toggleBad;
     if (args.contains("--capgeo"))

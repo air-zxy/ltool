@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPointer>
 #include <QString>
 #include <QVector>
 #include <QWidget>
@@ -31,6 +32,9 @@ public:
     bool showTool(const QString& id, const QString& text = QString());
 
     void rebuildGrid();      // 重扫目录之后重画那一面卡片（装完/禁用完走的就是这条）
+    // 答了「是」之后那一段：删文件 / 排队 / 重扫 + 重排，答复写进卡片的状态标签。
+    // 公开是为了离屏判据能跑同一条（无窗口平台上那个模态确认框会立刻返回「不」）。
+    void applyUninstall(const QString& file, const QString& name, QLabel* state);
     void refreshStore();     // 联网拉清单：判哈希/落盘/改名都在 PluginStore 那几个纯函数里
 
 private:
@@ -40,9 +44,21 @@ private:
     QWidget* makeCard(const PluginStore::Row& r);
     QString reinstallHint(const PluginStore::Row& r) const;   // 「卸了还能装回来吗」那句实话
     void installEntry(const PluginStore::Entry& e, QPushButton* btn, QLabel* state);
+    // 一次只让一颗 dll 在飞：他那一晚连点九颗，九条下载 + 九次改名 + 中途重扫叠在一起，
+    // 崩在 scan() 里（Qt6Widgets，0xc0000005）。排队把这一类整个拿掉，顺带也不至于把镜像打爆。
+    // 队列里存的也是卡片上的控件 —— 和安装回调同一个道理，必须用 QPointer 兜着：
+    // 排着队的时候他可能点了「刷新清单」或者上一颗装完触发了重排，卡片就没了。
+    struct Queued {
+        PluginStore::Entry entry;
+        QPointer<QPushButton> btn;
+        QPointer<QLabel> state;
+    };
+    void runInstall(const PluginStore::Entry& e, QPushButton* btn, QLabel* state);   // 真开一条下载
+    void startNextInstall();   // 队列里还有就接着装，装完了才重排卡片墙
 
     QLabel* m_storeStatus = nullptr;
     bool m_storeBusy = false;
+    QVector<Queued> m_queue;       // 点下去但还没开始的那些
     int m_installing = 0;    // 在飞的 dll 颗数；归零才 rebuildGrid（一颗装完就拆墙 = 把还在下的卡片控件删掉）
     // 存的是**清单本身**而不是画出来的那屏卡：rebuildGrid 整格换掉之后拿它重新比一次本地目录，
     // 刚装完/刚禁用完，状态就跟着目录里的文件动。

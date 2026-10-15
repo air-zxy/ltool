@@ -84,6 +84,8 @@ public:
 
         m_state = new QLabel(this);
         m_state->setObjectName(QStringLiteral("muted"));
+        // 离屏判据要点名找这一颗（objectName 归样式表用，动不得，所以另挂一个属性）
+        m_state->setProperty("shopState", true);
         m_state->setWordWrap(true);
 
         // 底部这一排是"要几颗加几颗"：装了东西的那张卡现在同时给「禁用」和「卸载」，
@@ -167,23 +169,35 @@ void addUninstallButton(ToolsPage* page, ShopCard* card, const QString& name, co
             card->stateLabel()->setText(QStringLiteral("没动。"));
             return;
         }
-        const QString res = PluginStore::uninstall(file);
-        if (res == QLatin1String("pending")) {
-            card->stateLabel()->setText(QStringLiteral("已安排卸载 · 这个进程还加载着它，下次启动真删掉"));
-            page->rebuildGrid();
-            return;
-        }
-        if (!res.isEmpty()) {
-            card->stateLabel()->setText(res);
-            return;
-        }
-        Utils::log(QStringLiteral("store: 卸载 %1（%2）完成，重扫目录").arg(file, name));
-        PluginHost::reload();
-        page->rebuildGrid();
+        page->applyUninstall(file, name, card->stateLabel());
     });
 }
 
+
 } // namespace
+
+// 答了"是"之后那一段。单独拿出来是因为离屏判据跑不到 `answer == Yes` 那一支 ——
+// 无窗口平台上 question() 会立刻返回默认值（"不"），所以只能让测试直接调这一段。
+// 走的是同一份代码，不是照着抄的第二遍。
+void ToolsPage::applyUninstall(const QString& file, const QString& name, QLabel* state)
+{
+    const QString res = PluginStore::uninstall(file);
+    if (res == QLatin1String("pending")) {
+        if (state)
+            state->setText(QStringLiteral("已安排卸载 · 这个进程还加载着它，下次启动真删掉"));
+        rebuildGrid();
+        return;
+    }
+    if (!res.isEmpty()) {
+        if (state)
+            state->setText(res);
+        return;
+    }
+    Utils::log(QStringLiteral("store: 卸载 %1（%2）完成，重扫目录").arg(file, name));
+    PluginHost::reload();
+    rebuildGrid();
+}
+
 
 ToolsPage::ToolsPage(QWidget* parent)
     : QWidget(parent)
@@ -401,7 +415,24 @@ void ToolsPage::refreshStore()
     });
 }
 
+// 「装/更新」按下去先进这里：已经有一颗在飞就排队。
+// 为什么非要排队 —— 他连点九颗那次，九条下载 + 九次改名 + 中途 reload/重排叠在一起，
+// 最后崩在 scan() 里（Qt6Widgets，0xc0000005）。一次一颗把这堆叠态整个拿掉，
+// 顺带也不会把镜像同时打九个洞。
 void ToolsPage::installEntry(const PluginStore::Entry& e, QPushButton* btn, QLabel* state)
+{
+    if (m_installing > 0) {
+        m_queue.append({ e, btn, state });
+        if (btn)
+            btn->setText(QStringLiteral("排队"));
+        if (state)
+            state->setText(QStringLiteral("前面还有 %1 颗，一颗落地就轮到它").arg(m_queue.size()));
+        return;
+    }
+    runInstall(e, btn, state);
+}
+
+void ToolsPage::runInstall(const PluginStore::Entry& e, QPushButton* btn, QLabel* state)
 {
     const QString dir = PluginHost::pluginsDir();
     QDir().mkpath(dir);
@@ -455,7 +486,7 @@ void ToolsPage::installEntry(const PluginStore::Entry& e, QPushButton* btn, QLab
                                    btnRef->setText(QStringLiteral("重试"));
                                Utils::log(QStringLiteral("store: 下 %1 没成：%2").arg(e.file, got.err));
                                if (--m_installing == 0)
-                                   finishInstalls();
+                                   startNextInstall();
                                return;
                            }
                            const QString err = PluginStore::finishDownload(part, e);
@@ -466,7 +497,7 @@ void ToolsPage::installEntry(const PluginStore::Entry& e, QPushButton* btn, QLab
                                    btnRef->setText(QStringLiteral("重试"));
                                Utils::log(QStringLiteral("store: 装 %1 没成：%2").arg(e.file, err));
                                if (--m_installing == 0)
-                                   finishInstalls();
+                                   startNextInstall();
                                return;
                            }
                            Utils::log(QStringLiteral("store: 装好 %1（%2 拿到，哈希对过，%3 B）")
@@ -474,8 +505,25 @@ void ToolsPage::installEntry(const PluginStore::Entry& e, QPushButton* btn, QLab
                            if (stateRef)
                                stateRef->setText(QStringLiteral("已装好 · 下次启动进卡片墙"));
                            if (--m_installing == 0)
-                               finishInstalls();
+                               startNextInstall();
                        });
+}
+
+// 队列空了才做那一次性的重扫 + 重排；还有下一颗就直接开下一条（控件此刻还都活着）。
+void ToolsPage::startNextInstall()
+{
+    if (m_queue.isEmpty()) {
+        finishInstalls();
+        return;
+    }
+    const Queued q = m_queue.takeFirst();
+    // 卡片可能已经被拆掉了（他中途点了「刷新清单」，或者上一颗落地时重排过）：
+    // 那就没地方写字，但这一颗照样要装下去 —— 装不装是文件的事，写字才是界面的事。
+    if (q.btn)
+        q.btn->setText(QStringLiteral("下载中"));
+    if (q.state)
+        q.state->setText(QStringLiteral("轮到它了（后面还有 %1 颗）").arg(m_queue.size()));
+    runInstall(q.entry, q.btn.data(), q.state.data());
 }
 
 // 一批安装全落地之后只做一次：重扫插件目录 + 重排卡片墙。
