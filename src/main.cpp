@@ -1747,6 +1747,58 @@ int main(int argc, char* argv[])
             // 但它是关键词「清理」的开头 —— 这条守的是"别把直达搞成搜不到"。
             const auto t4 = query(QStringLiteral("qingli"));
             check("取整不伤直达：qingli 还是直达磁盘清理", t4.first ? "yes" : "no", "yes");
+            // 他报的第三件事：搜 `gg` 搜不到 Google。原因是「广告弹窗」的首字母也是 gg，
+            // 工具直达那一节 return 得早，网站那节根本没机会跑。规则改成"显式网站关键字 >
+            // 工具名首字母拼音"之后：gg 归 Google，广告弹窗还能靠整串首字母 ggdc 或 广告 到达。
+            // 这条要看 webs.json 里到底有没有配 gg —— 没有就点名跳过（CI 那台是干净配置，
+            // 拿它判红就是环境依赖的假故障）。行是 delegate 画的，所以读 w.resultAt() 那一份。
+            bool hasGg = false;
+            for (const WebEntry& we : WebShortcuts::loadWebs())
+                if (we.keys.contains(QStringLiteral("gg"))
+                    || we.name.compare(QStringLiteral("gg"), Qt::CaseInsensitive) == 0)
+                    hasGg = true;
+            if (!hasGg) {
+                std::printf("INFO 跳过 gg 那三条：这台机器的 webs.json 里没配 gg 这个关键字\n");
+                std::fflush(stdout);
+            } else {
+                const auto resultTexts = [&w] {
+                    QStringList out;
+                    for (int i = 0; i < w.resultCount(); ++i) {
+                        const SearchResult& r = w.resultAt(i);
+                        if (r.isSection)
+                            continue;
+                        out << (r.title + QStringLiteral(" / ") + r.subtitle);
+                    }
+                    return out;
+                };
+                input->setText(QStringLiteral("gg"));
+                settle();
+                const QStringList r1 = resultTexts();
+                bool googleRow = false;
+                for (const QString& t : r1)
+                    if (t.contains(QStringLiteral("Google")))
+                        googleRow = true;
+                std::printf("INFO 端到端 gg：前两条[%s]\n",
+                            QStringList(r1.mid(0, 2)).join(QStringLiteral(" | ")).left(100).toUtf8().constData());
+                std::fflush(stdout);
+                check("gg 搜得到网站那一条（不被「广告弹窗」的首字母抢走）",
+                      QStringLiteral("%1/%2").arg(googleRow ? 1 : 0)
+                          .arg(hasSection(QStringLiteral("工具")) ? 1 : 0),
+                      "1/0");
+                input->setText(QStringLiteral("gg ltool"));
+                settle();
+                const QStringList r2 = resultTexts();
+                bool searchRow = false;
+                for (const QString& t : r2)
+                    if (t.contains(QStringLiteral("ltool")) && t.contains(QStringLiteral("搜索")))
+                        searchRow = true;
+                std::printf("INFO 端到端 gg ltool：前两条[%s]\n",
+                            QStringList(r2.mid(0, 2)).join(QStringLiteral(" | ")).left(100).toUtf8().constData());
+                std::fflush(stdout);
+                check("gg 空格 查询词 多出一行「在 Google 搜索」", searchRow ? "yes" : "no", "yes");
+                const auto t5 = query(QStringLiteral("ggdc"));   // 广告弹窗的整串首字母
+                check("工具那边没被弄哑：ggdc 还是直达「广告弹窗」", t5.first ? "yes" : "no", "yes");
+            }
             // 他报的第二件事：搜 qq 找不到 QQ。这台机器上 QQ 在应用索引里（apps.json 有
             // name=QQ、target 在盘上），所以这里验的是搜索框那一条链，不是索引。
             bool hasQQ = false;

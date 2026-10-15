@@ -985,6 +985,17 @@ void SearchWindow::runSearch()
     //    的关键词"计划任务"当成直达）；
     // ② 只有"整条查询就是这个词"才 return 独占，否则只在末尾追加一节 ——
     //    不然"下载""网络"这种常用词会把应用列表挤掉。
+    // 网站那一节要用的东西先算出来：它得能在"工具直达"之前说话（见下面 webKeywordWins 那条）。
+    const QVector<WebEntry> webs = WebShortcuts::loadWebs();
+    const QString webTok = low.section(' ', 0, 0);
+    const QString webArgs = q.mid(webTok.size()).trimmed();
+    // 显式配在网站上的关键字，优先级高于"工具名的首字母拼音"：配的 `gg` 就是 Google，
+    // 不该被「广告弹窗」（guang gao → 首字母 gg）用拼音抢走整页。工具那边还有 `ggp`、`广告` 两条路。
+    bool webKeywordWins = false;
+    for (const WebEntry& w : webs)
+        if (w.keys.contains(webTok) || w.name.compare(webTok, Qt::CaseInsensitive) == 0)
+            webKeywordWins = true;
+
     QVector<int> toolLoose;
     {
         const auto& metas = PluginHost::scan();
@@ -1028,7 +1039,7 @@ void SearchWindow::runSearch()
             else if (hitLoose)
                 toolLoose << i;
         }
-        if (!exact.isEmpty()) {
+        if (!exact.isEmpty() && !webKeywordWins) {
             addSection(QStringLiteral("工具"));
             for (const int i : std::as_const(exact))
                 addToolRow(i);
@@ -1037,10 +1048,7 @@ void SearchWindow::runSearch()
         }
     }
 
-    // 网站关键字 / 网址直开
-    const QVector<WebEntry> webs = WebShortcuts::loadWebs();
-    const QString webTok = low.section(' ', 0, 0);
-    const QString webArgs = q.mid(webTok.size()).trimmed();
+    // 网站关键字 / 网址直开（webs / webTok / webArgs 在工具那一节之前就算好了）
     for (const WebEntry& w : webs) {
         if (!w.keys.contains(webTok) && w.name.compare(webTok, Qt::CaseInsensitive) != 0)
             continue;
