@@ -1,4 +1,5 @@
 #include "SoftwarePage.h"
+#include "platform/FileMeta.h"
 #include "platform/Launch.h"
 #include "AppScanner.h"
 #include "DevEnv.h"
@@ -421,7 +422,7 @@ void SoftwarePage::fillVersions()
         QVector<QString> out;
         out.reserve(todo.size());
         for (const QString& p : todo)
-            out.append(Utils::fileVersion(p));
+            out.append(Platform::fileVersion(p));
         return out;
     }));
 }
@@ -574,7 +575,7 @@ void SoftwarePage::showVersions(const QString& name, const QString& keywords,
             }
         if (!hit)
             continue;
-        QString ver = Utils::fileVersion(a.target);
+        QString ver = Platform::fileVersion(a.target);
         if (ver.isEmpty())
             ver = "未知版本";
         locals.append({ver, a.name, a.target});
