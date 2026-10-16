@@ -7,6 +7,8 @@
 #include "GridPage.h"
 #include "Utils.h"
 
+#include <QApplication>
+#include <QApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QDir>
@@ -16,11 +18,28 @@
 #include <QFileInfo>
 #include <QImage>
 #include <QPainter>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QStringList>
 
 #include <cstdio>
 #include <functional>
+
+namespace {
+
+void clickPageCell(GridPage& page, int i)
+{
+    GridBoard* b = page.board();
+    const QPoint c = b->cellRect(i).center();
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(c), b->mapToGlobal(c), Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(c), b->mapToGlobal(c), Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(b, &press);
+    QApplication::sendEvent(b, &release);
+}
+
+} // namespace
 
 extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
 {
@@ -251,6 +270,83 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
         QFile::remove(file);                    // 只删自己刚算出来那一个，不碰目录里别的
     check("保存之后「打开这张」那颗该能点", page.findChild<QPushButton*>(QStringLiteral("gridOpen"))
                   && page.findChild<QPushButton*>(QStringLiteral("gridOpen"))->isEnabled() ? "yes" : "no", "yes");
+
+    // ---- 点空格子 = 往里放一张（原来点它什么都不发生）----
+    // 这一组用一块**独立的板子**：页面那条连接会去弹真选图框，判据一点就把进程卡死在模态框里
+    // （离屏看不见，但就是不动 —— 第一次跑就是这么哑的）。板子层的信号就该在板子层验。
+    GridBoard board;
+    board.setSlots(4);
+    board.setFixedSize(300, 300);            // 四宫：每格 138 见方，坐标算得准
+    int picked = -1;
+    QObject::connect(&board, &GridBoard::pickInto, &board, [&picked](int i) { picked = i; });
+    const auto clickAt = [&board](const QPoint& where, const QPoint& releaseAt) {
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(where), board.mapToGlobal(where),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(releaseAt),
+                            board.mapToGlobal(releaseAt), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(&board, &press);
+        QApplication::sendEvent(&board, &release);
+    };
+    const auto clickCell = [&board, &clickAt](int i) {
+        const QPoint c = board.cellRect(i).center();
+        clickAt(c, c);
+    };
+    clickCell(2);
+    check("点空格子 = 要往里放一张（报的是那一格，不是第一格）", QString::number(picked), "2");
+    picked = -1;
+    clickAt(QPoint(board.cellRect(1).right() - 15, board.cellRect(1).top() + 15),
+            QPoint(board.cellRect(1).right() - 15, board.cellRect(1).top() + 15));
+    check("空格子上那圈虚线里哪儿点都算（点偏右上角也行）", QString::number(picked), "1");
+    picked = -1;
+    check("putAt 收图并只动那一格", board.putAt(0, files.at(0)) ? "yes" : "no", "yes");
+    clickCell(0);
+    check("点已经摆了图的格子不算（那是拖动的起点）", QString::number(picked), "-1");
+    picked = -1;
+    {   // 按下去拖到别的格子上再松 = 不是点那一格
+        const QPoint from = board.cellRect(3).center();
+        const QPoint to = board.cellRect(2).center();
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(from), board.mapToGlobal(from),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent move(QEvent::MouseMove, QPointF(to), board.mapToGlobal(to), Qt::LeftButton,
+                         Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(to), board.mapToGlobal(to),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(&board, &press);
+        QApplication::sendEvent(&board, &move);
+        QApplication::sendEvent(&board, &release);
+    }
+    check("按下去拖出那一格再松 = 不算点它", QString::number(picked), "-1");
+    check("putAt 之后别的格没动",
+          QStringLiteral("%1/%2").arg(QFileInfo(board.paths()[0]).fileName(),
+                                      board.paths()[1].isEmpty() ? QStringLiteral("e") : QStringLiteral("f")),
+          QStringLiteral("c0.png/e"));
+    check("putAt 拒非图片后缀", board.putAt(1, fake) ? "yes" : "no", "no");
+    check("putAt 拒越界格子号", (board.putAt(-1, files.at(0)) || board.putAt(9, files.at(0))) ? "yes" : "no", "no");
+    check("putAt 能盖掉已有那张", board.putAt(0, files.at(1))
+              && QFileInfo(board.paths()[0]).fileName() == QStringLiteral("c1.png") ? "yes" : "no", "yes");
+    {
+        const QRect cell = board.cellRect(0);
+        const QPoint x(cell.right() - 15, cell.top() + 15);
+        clickAt(x, x);
+        check("点那一格右上角的 ✕ = 只拿掉它，不发选图",
+              board.paths()[0].isEmpty() && picked < 0 ? "yes" : "no", "yes");
+    }
+    // 端到端（这一次走页面）：先装好"门"，点空格子 → 图落在**那一格**
+    page.board()->clearImages();
+    page.board()->setFixedSize(300, 300);
+    page.setPickGate([&files] { return files.at(2); });
+    clickPageCell(page, 3);
+    check("点空格子 → 选图框 → 图落在**那一格**",
+          QFileInfo(page.board()->paths()[3]).fileName(), QStringLiteral("c2.png"));
+    auto* foot = page.findChild<QLabel*>(QStringLiteral("muted"));
+    check("放好之后状态行说的是那一格", foot && foot->text().startsWith(QStringLiteral("第 4 格放了"))
+              ? "yes" : "no", "yes");
+    page.setPickGate([] { return QString(); });            // 选图框里按取消
+    clickPageCell(page, 2);
+    check("选图框按取消 = 那一格还是空的", page.board()->paths()[2].isEmpty() ? "yes" : "no", "yes");
+    page.setPickGate(nullptr);
+    page.board()->setMinimumSize(320, 320);
+    page.board()->setMaximumSize(QSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX));
 
     QDir(box).removeRecursively();              // 这次自测造的临时图，绝对路径算出来的
     std::printf("grid: 失败 %d 项\n", bad);

@@ -32,6 +32,7 @@ public:
     void clearImages();
     void moveOrSwap(int from, int to);
     void removeAt(int i);                       // 拿掉那一格（右上角那颗 ✕ 走的就是它）
+    bool putAt(int i, const QString& file);         // 往**指定那一格**放一张（点空格子选回来的图走这条）
 
     int cols() const;                           // 四宫 2 列，六宫/九宫 3 列
     int rows() const;
@@ -43,6 +44,7 @@ public:
 signals:
     void changed();                             // 内容或顺序变了
     void status(const QString& text);           // 页上那一行状态字（满了/收了几个）
+    void pickInto(int index);                   // 空格子被点了一下：请页弹选图框，把选中的交给 putAt
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -51,6 +53,7 @@ protected:
     void dropEvent(QDropEvent*) override;
     void mousePressEvent(QMouseEvent*) override;
     void mouseMoveEvent(QMouseEvent*) override;
+    void mouseReleaseEvent(QMouseEvent*) override;   // 空格子按下来又原位松开 = 点它一下
 
 private:
     int cellAt(const QPoint& p) const;          // -1 = 不在任何格子上
@@ -63,6 +66,8 @@ private:
     mutable QHash<QString, QPixmap> m_preview;  // 按文件路径缓存的缩略图
     QPoint m_pressPos;
     int m_pressCell = -1;
+    QPoint m_emptyPos;
+    int m_pressEmpty = -1;
     int m_dropped = 0;
     int m_rejected = 0;
 };

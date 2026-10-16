@@ -88,6 +88,7 @@ GridPage::GridPage(QWidget* parent)
     m_board = new GridBoard(this);
     lay->addWidget(m_board, 1);
     connect(m_board, &GridBoard::status, this, &GridPage::showStatus);
+    connect(m_board, &GridBoard::pickInto, this, [this](int i) { pickIntoCell(i); });
     connect(m_board, &GridBoard::changed, this, [this] {
         // 顺序/内容一变，之前那张生成出来的图就不算数了：把"打开"两颗收回去
         if (!m_lastFile.isEmpty()) {
@@ -162,6 +163,21 @@ void GridPage::pickColor()
         return;                                   // 取消就是取消，别把颜色改了还说改了
     setBackgroundColor(c);
     showStatus(QStringLiteral("背景色改成 %1 了。空格子就是这块颜色。").arg(c.name().toUpper()));
+}
+
+void GridPage::pickIntoCell(int index)
+{
+    // 选图框只挑一张：这一格就是它的位置。想连着填几格还是用「添加图片…」或者整批拖进来。
+    const QString file = m_pickGate
+        ? m_pickGate()
+        : QFileDialog::getOpenFileName(this, QStringLiteral("给第 %1 格选一张图").arg(index + 1),
+                                       Utils::capturesDir(), imageFilter());
+    if (file.isEmpty()) {
+        showStatus(QStringLiteral("第 %1 格还是空的 —— 选图框里按了取消。").arg(index + 1));
+        return;
+    }
+    if (!m_board->putAt(index, file))
+        showStatus(QStringLiteral("这张放不进第 %1 格（不是图片文件，或者那一格已经没了）。").arg(index + 1));
 }
 
 void GridPage::addFromFile()

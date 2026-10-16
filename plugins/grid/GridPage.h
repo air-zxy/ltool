@@ -46,6 +46,10 @@ public:
     // 光测 saveComposed 的话，谁把弹框从 generate() 里删掉都还是全绿。
     void setPreviewGate(std::function<bool(const QImage&)> gate) { m_gate = std::move(gate); }
 
+    // 「点空格子 → 选一张图放进去」那一步的选图框：默认是 QFileDialog，判据换成给一个固定路径。
+    // 理由和上面那道门一样 —— 不然"点了空格子会把图放进**那一格**"这条只能靠人眼看。
+    void setPickGate(std::function<QString()> gate) { m_pickGate = std::move(gate); }
+
     void setBackgroundColor(const QColor& c);
     QColor backgroundColor() const { return m_bg; }
     void setCellPixels(int px) { m_cellPx = qBound(128, px, 4096); }
@@ -55,6 +59,7 @@ signals:
 
 private:
     bool confirmPreview(const QImage& img);   // 弹那张效果图；返回"要不要存"
+    void pickIntoCell(int index);   // 板子发出 pickInto 之后：弹选图框，选中的交给那一格
     void pickColor();
     void addFromFile();
     void showStatus(const QString& text);
@@ -68,5 +73,6 @@ private:
     QColor m_bg = Qt::white;
     int m_cellPx = 1080;
     std::function<bool(const QImage&)> m_gate;
+    std::function<QString()> m_pickGate;
     QString m_lastFile;
 };

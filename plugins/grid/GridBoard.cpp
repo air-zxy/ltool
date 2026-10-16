@@ -249,7 +249,11 @@ void GridBoard::paintEvent(QPaintEvent*)
             p.setPen(QPen(palette().color(QPalette::Mid), 1.4, Qt::DashLine));
             p.drawPath(clip);
             p.setPen(palette().color(QPalette::PlaceholderText));
-            p.drawText(cell, Qt::AlignCenter, QStringLiteral("第 %1 格 · 拖图片进来").arg(i + 1));
+            // 两行摆：一行写完在 138 见方的小格子里会被裁掉（离屏量出来的）
+            p.drawText(cell.adjusted(0, 0, 0, -cell.height() / 5), Qt::AlignCenter,
+                       QStringLiteral("第 %1 格").arg(i + 1));
+            p.drawText(cell.adjusted(0, cell.height() / 5, 0, 0), Qt::AlignCenter,
+                       QStringLiteral("点一下或拖进来"));
             continue;
         }
         const QPixmap pm = previewAt(i, cell);
@@ -323,8 +327,42 @@ void GridBoard::mousePressEvent(QMouseEvent* e)
         removeAt(i);
         return;
     }
-    m_pressCell = m_paths[i].isEmpty() ? -1 : i;
+    m_pressEmpty = -1;
+    m_pressCell = -1;
+    if (m_paths[i].isEmpty()) {
+        // 空格子没有东西可拖，但"点它一下"是有意思的：往里放一张。松开时原位才算点中。
+        m_pressEmpty = i;
+        m_emptyPos = e->pos();
+        return;
+    }
     m_pressPos = e->pos();
+}
+
+void GridBoard::mouseReleaseEvent(QMouseEvent* e)
+{
+    if (e->button() != Qt::LeftButton)
+        return;
+    const int i = m_pressEmpty;
+    m_pressEmpty = -1;
+    if (i < 0)
+        return;
+    if (cellAt(e->pos()) != i)
+        return;                                     // 松在别的格子上 = 没点中这一格
+    if ((e->pos() - m_emptyPos).manhattanLength() > QApplication::startDragDistance())
+        return;                                     // 按下去还挪了一大截 = 不是点
+    emit pickInto(i);
+}
+
+bool GridBoard::putAt(int i, const QString& file)
+{
+    if (i < 0 || i >= m_paths.size() || !isImageFile(file))
+        return false;
+    m_paths[i] = QFileInfo(file).absoluteFilePath();
+    m_preview.clear();
+    emit changed();
+    emit status(QStringLiteral("第 %1 格放了 %2").arg(i + 1).arg(QFileInfo(file).fileName()));
+    update();
+    return true;
 }
 
 void GridBoard::mouseMoveEvent(QMouseEvent* e)
