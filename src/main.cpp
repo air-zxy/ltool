@@ -1903,6 +1903,63 @@ int main(int argc, char* argv[])
                         antiRow2 = true;
                 check("长一点的前缀 antig 也照样搜得到（不是只测两字母那种边界）", antiRow2 ? "yes" : "no", "yes");
             }
+            // 2026-10-16 立的新规矩：直达**没有"独占整页"这个特权**了。这一组钉的是新那件事 ——
+            // 工具仍然摆第一行（回车还是它），但后面几节照常出，谁也不许被铲平。
+            // 为什么必须单独钉：把 return 摘掉之后，上面所有旧判据一条都没红 —— 也就是说
+            // 它们里面没有一条盯得住"有人把 return 加回来"，那正是这套测试最容易被悄悄退回老行为的地方。
+            // "第一行是谁"要跳过小节标题那条 —— 回车激活的是第一条**可点**的行，
+            // 断言必须量同一个东西，不然第一节 "工具" 那个标题行会把断言指错。
+            const auto headIsTool = [&w] {
+                for (int i = 0; i < w.resultCount(); ++i) {
+                    const SearchResult& r = w.resultAt(i);
+                    if (r.isSection || !r.actionable)
+                        continue;
+                    return r.target.startsWith(QStringLiteral("tool:"));
+                }
+                return false;
+            };
+            {
+                input->setText(QStringLiteral("cpql"));   // 磁盘清理的整串首字母：一定算直达
+                settle();
+                std::printf("INFO 端到端 cpql：小节=[%s] 第一行=[%s]\n",
+                            sections().toUtf8().constData(),
+                            w.resultCount() > 0 ? w.resultAt(0).title.toUtf8().constData() : "");
+                std::fflush(stdout);
+                check("直达改完还是排第一（回车那条仍然是工具，不是应用）",
+                      headIsTool() ? "yes" : "no", "yes");
+                // 这条是"老代码在这里 return"的直接探针：兜底那行是函数最后才加的，
+                // 只要有人把独占加回来，它立刻消失 —— 不依赖任何一台机器装了什么。
+                bool netFallback = false;
+                for (int i = 0; i < w.resultCount(); ++i)
+                    if (w.resultAt(i).title.contains(QStringLiteral("用搜索引擎搜索")))
+                        netFallback = true;
+                check("直达不清场：末尾那条「用搜索引擎搜索」加得回来（老行为当场红）",
+                      netFallback ? "yes" : "no", "yes");
+            }
+            // 真实碰撞那一类：查询串既是某工具的关键词、又是某个应用的名字开头。
+            // 挑 `disk` 而不是 `python`：这台机器的 webs.json 里显式配了 python/rust/cpp/npm/pypi/qt/docker
+            // 这些网站关键字，`python` 走的是 webKeywordWins 那条"网站让工具让路"的规矩（他自己拍的），
+            // 用它当探针测到的是那条规矩、不是"直达不清场"。disk 没配在网站里，才是干净的那一条。
+            // 索引里没有以 disk 开头的应用就点名跳过（CI 那台是干净索引，判红就是环境依赖的假故障）。
+            bool hasDiskApp = false;
+            for (const AppEntry& a : apps)
+                if (a.name.startsWith(QLatin1String("disk"), Qt::CaseInsensitive))
+                    hasDiskApp = true;
+            if (!hasDiskApp) {
+                std::printf("INFO 跳过 disk 那两条：这台机器的应用索引里没有 Disk* 应用\n");
+                std::fflush(stdout);
+            } else {
+                input->setText(QStringLiteral("disk"));
+                settle();
+                const bool diskToolHead = headIsTool();
+                const bool diskAppSect = hasSection(QStringLiteral("── 应用 ──"));
+                std::printf("INFO 端到端 disk：小节=[%s] 第一行是工具=%d 应用节=%d\n",
+                            sections().toUtf8().constData(), diskToolHead ? 1 : 0, diskAppSect ? 1 : 0);
+                std::fflush(stdout);
+                check("disk 这种撞名：工具还在第一行（回车那条）", diskToolHead ? "yes" : "no", "yes");
+                check("disk 这种撞名：应用那一节不再被铲平（老行为 = Disk Cleanup 整个搜不出来）",
+                      diskAppSect ? "yes" : "no", "yes");
+            }
             // 他报的第二件事：搜 qq 找不到 QQ。这台机器上 QQ 在应用索引里（apps.json 有
             // name=QQ、target 在盘上），所以这里验的是搜索框那一条链，不是索引。
             bool hasQQ = false;

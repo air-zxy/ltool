@@ -979,15 +979,16 @@ void SearchWindow::runSearch()
 
     // 工具直达：卡片墙那些事，搜名字或关键词都能打开。
     // 现在九个自带工具和别人写的插件是同一张表（PluginHost::scan()），这里没有"内置"特判。
-    // 两条规矩是从「计划任务抢页」那次教训直接抄过来的：
+    // 三条规矩都是吃过亏才立起来的（2026-10-16 起，直达**没有"独占整页"这个特权了**，见下面那处注释；
+    // 但前两条反而更要紧 —— 命中错了不再是"把别人的挤掉"，而是"第一行摆错东西"，回车就点错了）：
     // ① 命中只认开头（matchStart）—— 中段撞上是"名字里正好含这几个字母"，
-    //    拿它独占整页会把用户要的那个顶掉（搜 renwu 想要任务管理器，却被「开机启动分析」
+    //    把它摆到第一行会把用户要的那个顶掉（搜 renwu 想要任务管理器，却被「开机启动分析」
     //    的关键词"计划任务"当成直达）；
-    // ② 只有"整条查询就是这个词"才 return 独占，否则只在末尾追加一节 ——
-    //    不然"下载""网络"这种常用词会把应用列表挤掉；
-    // ③ 拼音直达只认主读音（Pinyin::matchStart）—— 表里那些生僻读法没有独占整页的权力：
+    // ② 只有"整条查询就是这个工具名/关键词"（或关键词后面带空格接参数）才算直达，
+    //    否则只算松散命中、排在末尾那一节；
+    // ③ 拼音直达只认主读音（Pinyin::matchStart）—— 表里那些生僻读法没资格占第一行：
     //    搜 An 想要 Antigravity，结果「广告弹窗」的关键词"广告"有个读法 an（广 = guang,yan,an）
-    //    被判成直达，应用那一节整个没了。
+    //    被判成直达。
     // 网站那一节要用的东西先算出来：它得能在"工具直达"之前说话（见下面 webKeywordWins 那条）。
     const QVector<WebEntry> webs = WebShortcuts::loadWebs();
     const QString webTok = low.section(' ', 0, 0);
@@ -1043,11 +1044,18 @@ void SearchWindow::runSearch()
                 toolLoose << i;
         }
         if (!exact.isEmpty() && !webKeywordWins) {
+            // 直达**不再清场**。以前这里 `return`，后面「网站 / 网址直开 / 应用 / 文件 / 系统 /
+            // 剪贴板历史」五节整个没跑到 —— 那是一条有特权的路，拿真实的 apps.json 复算过：
+            // 这台机器上 51 个查询串会命中它、连带 44 个应用永远搜不出来（最刺眼的是 `windows`：
+            // 「Windows 用户名」那把工具的名字本身就是 windows 开头，于是所有 Windows* 应用没了）。
+            // 现在工具那一节照样摆在最前面（**第一行还是它，回车还是它**），只是不再铲平别人。
             addSection(QStringLiteral("工具"));
             for (const int i : std::as_const(exact))
                 addToolRow(i);
-            rebuildList();
-            return;
+            // 松散命中的那几个并进**同一节**（强的在前、弱的在后），末尾那个"工具"标题就不再重复
+            for (const int i : std::as_const(toolLoose))
+                addToolRow(i);
+            toolLoose.clear();
         }
     }
 

@@ -10,8 +10,21 @@
 #include <QSettings>
 
 #include <windows.h>
+#include <shlobj.h>
 
 namespace {
+
+// 写完注册表就广播这一次：让资源管理器自己重读那张表，不用重开窗口、不用注销。
+// ASSOCCHANGED 会冲掉外壳的关联缓存，而右键菜单是每次弹出时才按 HKCR（= HKLM + 我们这份
+// HKCU\Software\Classes）搭的，所以连已经开着的窗口多半也当场就变。
+// Windows 不保证"每一张老窗口都立刻变"（个别要按一下 F5）—— 文案就照这个说，别说满。
+void notifyShell()
+{
+    // SHCNF_IDLIST：载荷是两个 NULL（不是针对某个具体文件/目录，是"整张表变了"）。
+    // SHCNF_FLUSH：逼它同步发出去，否则我们这边刚对完账、消息还压在队列里没广播到，
+    // 界面就抢先说"已通知资源管理器重读"，那句话就成了假的。
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSH, nullptr, nullptr);
+}
 
 QString selfPath()
 {
@@ -217,8 +230,9 @@ QString install()
     Utils::log(QStringLiteral("shellmenu: install wrote %1 items, exe=%2").arg(written).arg(exe));
     if (written == 0)
         return QStringLiteral("写注册表失败了（HKCU 下也写不动？），右键菜单没有变化");
-    return QStringLiteral("已写入 %1 项（%2）。资源管理器的右键菜单是缓存的，"
-                          "没看到的话重开一个资源管理器窗口，或者注销一次。").arg(written).arg(locationHint());
+    notifyShell();
+    return QStringLiteral("已写入 %1 项（%2）。已经通知资源管理器重读，那几项一般马上就在；"
+                          "个别早就开着的窗口要按一下 F5 才刷新。").arg(written).arg(locationHint());
 }
 
 QString remove()
@@ -227,8 +241,12 @@ QString remove()
     deleteTree(HKEY_CURRENT_USER, hkcuPath(true));
     const bool gone = !installed();
     Utils::log(QStringLiteral("shellmenu: remove, 现在干净了吗=%1").arg(gone ? "yes" : "no"));
-    return gone ? QStringLiteral("已撤销：右键菜单里的 ltool 子菜单已删除（%1）").arg(locationHint())
-                : QStringLiteral("删除后仍然能读到我们的键，可能没删干净，请到 %1 里看一眼")
+    if (!gone)
+        return QStringLiteral("删除后仍然能读到我们的键，可能没删干净，请到 %1 里看一眼")
+                      .arg(locationHint());
+    notifyShell();
+    return QStringLiteral("已撤销：右键菜单里的 ltool 子菜单已删除（%1）。"
+                          "已经通知资源管理器重读，那几项一般马上就没；个别早就开着的窗口要按一下 F5。")
                       .arg(locationHint());
 }
 
