@@ -1686,6 +1686,21 @@ int main(int argc, char* argv[])
               kind(Pinyin::matchStart(QStringLiteral("磁盘清理"), "cipanqingli")), "full");
         check("直达认开头：cpql 也算 磁盘清理（matchStart）",
               kind(Pinyin::matchStart(QStringLiteral("磁盘清理"), "cpql")), "initial");
+        // 他报的第四件事的根因：直达吃到了生僻读音。广 在表里是 "guang,yan,an"，
+        // 于是 "an" 被当成「广告」的全拼开头 → 工具直达独占整页 → Antigravity 没了。
+        // 应用那一档（match）故意留着这个读音：那边只是排序，多一条召回没坏处。
+        check("直达不吃生僻读音：an 不算「广告」直达",
+              kind(Pinyin::matchStart(QStringLiteral("广告"), "an")), "none");
+        check("但应用那一档还留着：match(广告, an) 仍是全拼",
+              kind(Pinyin::match(QStringLiteral("广告"), "an")), "full");
+        check("换成主读音照样直达：guanggao 算「广告」",
+              kind(Pinyin::matchStart(QStringLiteral("广告"), "guanggao")), "full");
+        check("直达的首字母那档没被带歪：ggdc 算 广告弹窗",
+              kind(Pinyin::matchStart(QStringLiteral("广告弹窗"), "ggdc")), "initial");
+        check("多音字直达只吃第一条读音：重庆（表里是 zhong,chong,tong）走 zhongqing",
+              kind(Pinyin::matchStart(QStringLiteral("重庆"), "zhongqing")), "full");
+        check("第二条 chongqing 就不到达了 —— 代价就这一条，应用那边（match）还留着",
+              kind(Pinyin::matchStart(QStringLiteral("重庆"), "chongqing")), "none");
         check("纯英文名不走拼音这一档", kind(Pinyin::match(QStringLiteral("Qoder"), "oder")), "none");
         check("单字母不启用", Pinyin::usableQuery(QStringLiteral("r")) ? "yes" : "no", "no");
         check("带数字的名字：腾讯会议3",
@@ -1847,6 +1862,46 @@ int main(int argc, char* argv[])
                 check("gg 空格 查询词 多出一行「在 Google 搜索」", searchRow ? "yes" : "no", "yes");
                 const auto t5 = query(QStringLiteral("ggdc"));   // 广告弹窗的整串首字母
                 check("工具那边没被弄哑：ggdc 还是直达「广告弹窗」", t5.first ? "yes" : "no", "yes");
+            }
+            // 他报的第四件事：搜 `An` 搜不到 Antigravity。同样先看索引里有没有这个名字
+            //（CI 那台没装它，拿它判红就是环境依赖的假故障）。
+            bool hasAnti = false;
+            for (const AppEntry& a2 : apps)
+                if (a2.name.startsWith(QLatin1String("Antigravity"), Qt::CaseInsensitive))
+                    hasAnti = true;
+            if (!hasAnti) {
+                std::printf("INFO 跳过 An 那两条：这台机器的应用索引里没有 Antigravity\n");
+                std::fflush(stdout);
+            } else {
+                input->setText(QStringLiteral("An"));      // 首字母大写也照样要能搜到
+                settle();
+                QStringList appRows;
+                for (int i = 0; i < w.resultCount(); ++i)
+                    if (w.resultAt(i).kind == SearchResult::App)
+                        appRows << w.resultAt(i).title;
+                bool antiRow = false;
+                for (const QString& s : appRows)
+                    if (s.startsWith(QLatin1String("Antigravity")))
+                        antiRow = true;
+                const bool toolSectAn = hasSection(QStringLiteral("工具"));
+                std::printf("INFO 端到端 An：小节=[%s] 应用行=%d 工具节=%d 前 8=[%s]\n",
+                            sections().toUtf8().constData(), int(appRows.size()),
+                            toolSectAn ? 1 : 0,
+                            QStringList(appRows.mid(0, 8)).join(QStringLiteral(" | ")).toUtf8().constData());
+                std::fflush(stdout);
+                check("An 搜得到 Antigravity（英文前缀，大写开头也一样）", antiRow ? "yes" : "no", "yes");
+                // 抢页的那一站要单独断：光看"有没有 Antigravity 行"，将来别处再冒出一个
+                // 生僻读音命中，测试只会红在"行数不对"上，看不出是直达又吃掉了整页。
+                check("An 不该有工具直达这一节（「广告」的 an 是生僻读音，没资格独占）",
+                      toolSectAn ? "yes" : "no", "no");
+                input->setText(QStringLiteral("antig"));
+                settle();
+                bool antiRow2 = false;
+                for (int i = 0; i < w.resultCount(); ++i)
+                    if (w.resultAt(i).kind == SearchResult::App
+                        && w.resultAt(i).title.startsWith(QLatin1String("Antigravity")))
+                        antiRow2 = true;
+                check("长一点的前缀 antig 也照样搜得到（不是只测两字母那种边界）", antiRow2 ? "yes" : "no", "yes");
             }
             // 他报的第二件事：搜 qq 找不到 QQ。这台机器上 QQ 在应用索引里（apps.json 有
             // name=QQ、target 在盘上），所以这里验的是搜索框那一条链，不是索引。

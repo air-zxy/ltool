@@ -984,7 +984,10 @@ void SearchWindow::runSearch()
     //    拿它独占整页会把用户要的那个顶掉（搜 renwu 想要任务管理器，却被「开机启动分析」
     //    的关键词"计划任务"当成直达）；
     // ② 只有"整条查询就是这个词"才 return 独占，否则只在末尾追加一节 ——
-    //    不然"下载""网络"这种常用词会把应用列表挤掉。
+    //    不然"下载""网络"这种常用词会把应用列表挤掉；
+    // ③ 拼音直达只认主读音（Pinyin::matchStart）—— 表里那些生僻读法没有独占整页的权力：
+    //    搜 An 想要 Antigravity，结果「广告弹窗」的关键词"广告"有个读法 an（广 = guang,yan,an）
+    //    被判成直达，应用那一节整个没了。
     // 网站那一节要用的东西先算出来：它得能在"工具直达"之前说话（见下面 webKeywordWins 那条）。
     const QVector<WebEntry> webs = WebShortcuts::loadWebs();
     const QString webTok = low.section(' ', 0, 0);

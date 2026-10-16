@@ -131,6 +131,46 @@ const Reading& readings(const QString& name)
     return it.value();
 }
 
+// 主读音串：每个字只取表里第一条读音（广 = "guang,yan,an" 里取 guang），不展开笛卡尔积。
+// matchStart 用它，理由写在 Pinyin.h 那条注释里（搜 An 被「广告弹窗」抢页那一次）。
+struct Primary
+{
+    QString full;
+    QString initials;
+    bool anyCjk = false;
+};
+
+const Primary& primaryReadings(const QString& name)
+{
+    static QHash<QString, Primary> cache;
+    auto it = cache.constFind(name);
+    if (it != cache.constEnd())
+        return it.value();
+    Primary p;
+    for (const QChar& ch : name) {
+        const QByteArray row = rowOf(ch.unicode());
+        QString first;
+        for (const QByteArray& part : row.split(',')) {
+            if (part.isEmpty())
+                continue;
+            first = QString::fromUtf8(part);
+            break;
+        }
+        if (first.isEmpty()) {           // 不是汉字（字母、数字、点）：按原样算
+            p.full.append(ch.toLower());
+            p.initials.append(ch.toLower());
+            continue;
+        }
+        p.anyCjk = true;
+        p.full += first;
+        p.initials += first.left(1);
+    }
+    if (cache.size() > 8000)
+        cache.clear();
+    it = cache.insert(name, p);
+    return it.value();
+}
+
 } // namespace
 
 namespace Pinyin {
@@ -155,15 +195,27 @@ QStringList initialReadings(const QString& name)
     return readings(name).initials;
 }
 
-// anchored=false：全拼允许出现在串的任何位置（"guanli" 要能在 "renwuguanliqi" 里命中）；
-// anchored=true：全拼也必须从开头命中。首字母两档都只认开头，否则两个字母就能把整个列表捞一遍。
+// anchored=false：全拼允许出现在串的任何位置（"guanli" 要能在 "renwuguanliqi" 里命中），
+// 多音字每个读音都算 —— 应用那一档只要召回，多一个读法就多一条命中的机会。
+// anchored=true：这是"整条查询就要这个工具"的意思，所以两头都收紧 ——
+// 全拼必须从开头命中，而且只认主读音（见 Pinyin.h：renwu 被"计划任务"抢页、
+// An 被「广告弹窗」的生僻读音 an 抢页，两次都是这个 return 惹的）。
+// 首字母两档都只认开头，否则两个字母就能把整个列表捞一遍。
 static Kind matchImpl(const QString& name, const QString& low, bool anchored)
 {
     if (!usableQuery(low))
         return None;
+    if (anchored) {
+        const Primary& p = primaryReadings(name);
+        if (!p.anyCjk)
+            return None;
+        if (p.full.startsWith(low))
+            return Full;
+        return p.initials.startsWith(low) ? Initial : None;
+    }
     const Reading& r = readings(name);
     for (const QString& f : r.full)
-        if (anchored ? f.startsWith(low) : f.contains(low))
+        if (f.contains(low))
             return Full;
     for (const QString& i : r.initials)
         if (i.startsWith(low))
