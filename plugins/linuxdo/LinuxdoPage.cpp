@@ -75,8 +75,14 @@ LinuxdoPage::LinuxdoPage(QWidget* parent)
     row4->addWidget(m_open);
     lay->addLayout(row4);
 
+    m_cats = new QLabel(this);
+    m_cats->setObjectName(QStringLiteral("linuxdoCats"));
+    m_cats->setWordWrap(true);
+    m_cats->setStyleSheet(QStringLiteral("color:#8b93a1;font-size:8.5pt;"));
+    lay->addWidget(m_cats);
+
     auto* note = new QLabel(QStringLiteral(
-        "看到的是<b>登出态的公开内容</b>：Cloudflare 把 cf_clearance 绑在浏览器的 TLS 指纹上，"
+        "关键词比的是<b>标题、标签和分类名</b>（实测：新帖里标题含「福利」的 0 条，但在分类「福利羊毛」里的有 4 条，所以分类名必须参与比对）。看到的是<b>登出态的公开内容</b>：Cloudflare 把 cf_clearance 绑在浏览器的 TLS 指纹上，"
         "非浏览器客户端带着 cookie 也换不来登录态（实测三条路径全回挑战页）。"
         "系统气泡点了开不了浏览器（Qt6 在 Windows 上不吐这个点击事件），所以要点着看就来这一页。"),
         this);
@@ -116,13 +122,23 @@ void LinuxdoPage::refresh()
 {
     const LinuxdoWatch& w = LinuxdoWatch::instance();
     m_status->setText(w.statusLine());
+    // 分类表没拿到的时候「福利」这类词根本撞不到 —— 这个降级状态必须写在页面上，
+    // 不能让人以为"今天没有新帖"
+    m_cats->setText(w.categories().isEmpty()
+        ? QStringLiteral("分类表：还没拿到 —— 现在只能比标题和标签，「福利」这类只出现在分类名上的词撞不到")
+        : QStringLiteral("分类表：已拿到 %1 个分类%2")
+              .arg(w.categories().size())
+              .arg(w.catCheckText().isEmpty() ? QString() : QStringLiteral("（%1）").arg(w.catCheckText())));
     m_now->setEnabled(!w.busy());
     const int keep = m_hits->currentRow();
     m_hits->clear();
     for (const LinuxdoHit& h : w.hits()) {
         const QString when = h.topic.createdAt.left(10);
-        auto* it = new QListWidgetItem(QStringLiteral("%1  ·  命中「%2」 ·  %3")
-                                           .arg(h.topic.title.left(60), h.matched, when),
+        const QString why = h.where.isEmpty()
+            ? QStringLiteral("命中「%1」").arg(h.matched)
+            : QStringLiteral("命中「%1」在%2").arg(h.matched, h.where);
+        auto* it = new QListWidgetItem(QStringLiteral("%1  ·  %2  ·  %3")
+                                           .arg(h.topic.title.left(60), why, when),
                                        m_hits);
         it->setData(Qt::UserRole, h.topic.url);
     }

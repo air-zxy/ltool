@@ -9,6 +9,7 @@
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QHash>
 #include <QJsonObject>
 #include <QLayout>
 #include <QLabel>
@@ -102,6 +103,48 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
               "0");
     }
 
+    // ---- 分类名也得参与比对（这条就是"盯帖没效果"的根因）----
+    {
+        const QByteArray catJson = R"JSON({"category_list":{"categories":[
+            {"id":36,"name":"福利羊毛","slug":"welfare"},{"id":11,"name":"搞七捻三","slug":"gossip"},
+            {"id":0,"name":"","slug":"x"}]}})JSON";
+        const QHash<int, QString> cats = LinuxdoWatch_::parseCategories(catJson);
+        check("分类表解出两个（id=0 那个没名字，丢掉）", QString::number(cats.size()), "2");
+        check("分类名带着 slug 一起存（英文词也能撞）", cats.value(36),
+              QStringLiteral("福利羊毛 / welfare"));
+        QVector<LinuxdoTopic> two;
+        LinuxdoTopic a1; a1.id = 50; a1.title = QStringLiteral("opencode又把glm免费了"); a1.categoryId = 36;
+        LinuxdoTopic a2; a2.id = 51; a2.title = QStringLiteral("今天天气不错"); a2.categoryId = 11;
+        two << a1 << a2;
+        const QVector<LinuxdoHit> byCat = LinuxdoWatch_::matchNew(two, { QStringLiteral("福利") }, 0, cats);
+        check("标题里没有「福利」也能命中（撞在分类名上）", QString::number(byCat.size()), "1");
+        check("命中说清撞在哪儿", byCat.isEmpty() ? QString() : byCat[0].where,
+              QStringLiteral("分类「福利羊毛」"));
+        const QVector<LinuxdoHit> none = LinuxdoWatch_::matchNew(two, { QStringLiteral("福利") }, 0, {});
+        check("分类表还没拿到的时候，这条就是 0 命中（老行为，也就是「没效果」）",
+              QString::number(none.size()), "0");
+        LinuxdoTopic a3; a3.id = 52; a3.title = QStringLiteral("求推荐裙子");
+        a3.tags << QStringLiteral("女装");
+        two << a3;
+        const QVector<LinuxdoHit> byTag = LinuxdoWatch_::matchNew(two, { QStringLiteral("女装") }, 51, cats);
+        check("撞在标签上也说清在哪儿", byTag.isEmpty() ? QString() : byTag[0].where,
+              QStringLiteral("标签"));
+        LinuxdoTopic a4; a4.id = 53; a4.title = QStringLiteral("公益站又挂了"); a4.categoryId = 11;
+        two << a4;
+        const QVector<LinuxdoHit> byTitle = LinuxdoWatch_::matchNew(two, { QStringLiteral("公益") }, 52, cats);
+        check("标题撞的排最前，where 是「标题」",
+              byTitle.isEmpty() ? QString() : byTitle[0].where, QStringLiteral("标题"));
+        LinuxdoWatch& w2 = LinuxdoWatch::instance();
+        w2.setCategories(cats);
+        check("分类表进了引擎（12 条判据后面要用）", QString::number(w2.categories().size()), "2");
+    }
+
+    // ---- 没表的时候别把这一页记过去（不然那 30 条永远没被分类名比过）----
+    check("有表：推进到这一页最大的 id",
+          QString::number(LinuxdoWatch_::advanceSeen(100, 140, true)), "140");
+    check("没表：原地不动，下一轮再比",
+          QString::number(LinuxdoWatch_::advanceSeen(100, 140, false)), "100");
+
     // ---- 前缀拼法 ----
     check("前缀带斜杠：拼出来不多不少一个斜杠",
           LinuxdoWatch_::relayUrl(QStringLiteral("https://r.jina.ai/"),
@@ -189,7 +232,7 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     };
     const auto names = { "linuxdoEnabled", "linuxdoMinutes", "linuxdoWords", "linuxdoPrefix",
                          "linuxdoNow", "linuxdoHits", "linuxdoStatus", "linuxdoOpen",
-                         "linuxdoNote" };
+                         "linuxdoNote", "linuxdoCats" };
     int laid = 0, found = 0;
     for (const char* n : names) {
         auto* w2 = page.findChild<QWidget*>(QString::fromLatin1(n));
@@ -199,11 +242,14 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
         if (inLayout(w2))
             ++laid;
     }
-    check("九件控件都在（开关/间隔/关键词/前缀/立即查/列表/状态/打开/说明）",
-          QStringLiteral("%1/%2").arg(found).arg(laid), QStringLiteral("9/9"));
+    check("十件控件都在（开关/间隔/关键词/前缀/立即查/列表/状态/打开/说明/分类表那行）",
+          QStringLiteral("%1/%2").arg(found).arg(laid), QStringLiteral("10/10"));
     auto* status = page.findChild<QLabel*>(QStringLiteral("linuxdoStatus"));
     check("状态行说的就是引擎那一句（不另编一份）", status ? status->text() : QString(),
           w.statusLine());
+    auto* catLine = page.findChild<QLabel*>(QStringLiteral("linuxdoCats"));
+    check("分类表那一行在说实话（拿到几个 / 没拿到就只能比标题）",
+          catLine && catLine->text().contains(QStringLiteral("分类表")) ? "yes" : "no", "yes");
     auto* hits = page.findChild<QListWidget*>(QStringLiteral("linuxdoHits"));
     check("命中列表初始是空的（这一路一次网都没上）", QString::number(hits ? hits->count() : -1), "0");
     auto* now = page.findChild<QPushButton*>(QStringLiteral("linuxdoNow"));
@@ -232,6 +278,18 @@ extern "C" Q_DECL_EXPORT int ltoolLinuxdoNetRun(int seconds)
         std::fflush(stdout);
     };
     LinuxdoWatch& w = LinuxdoWatch::instance();
+    const auto spin = [](int ms) {
+        for (int i = 0; i < ms / 50; ++i) {
+            QCoreApplication::processEvents();
+            QThread::msleep(50);
+        }
+    };
+    // 一次只飞一趟：先要分类表，再查帖子 —— 两个并发请求会把免费中转打到 25 秒超时
+    w.fetchCategories();
+    for (int i = 0; i < 40 && w.categories().isEmpty(); ++i)
+        spin(500);
+    check("分类表拿到了（一天一趟，没它「福利」这类词只能撞标题，等于永远不响）",
+          w.categories().size() >= 10 ? "yes" : "no", "yes");
     QEventLoop loop;
     QObject::connect(&w, &LinuxdoWatch::changed, &loop, [&w, &loop] {
         if (!w.busy())
@@ -249,6 +307,32 @@ extern "C" Q_DECL_EXPORT int ltoolLinuxdoNetRun(int seconds)
               ? "yes" : "no", "yes");
     check("lastSeen 记下了这一页里最大的 id", w.lastSeenId() > 0 ? "yes" : "no", "yes");
     check("第一趟只播种，不弹框也不攒命中", w.hits().isEmpty() ? "yes" : "no", "yes");
+    check("分类表也拿到了（一天一趟，没它就只能比标题）",
+          w.categories().size() >= 10 ? "yes" : "no", "yes");
+    {
+        // 端到端最硬的一条：拿这一页里**帖子最多的那个分类**的名字当关键词，必须撞到，
+        // 而且撞的就是分类 —— 关键词换成自己造的词才算不出这个数（标题里没有「福利」是实测过的）。
+        const QVector<LinuxdoTopic> live = w.lastTopics();
+        int modeCat = 0, modeN = 0;
+        QHash<int, int> byCat;
+        for (const LinuxdoTopic& tp : live) {
+            const int n = byCat.value(tp.categoryId) + 1;
+            byCat.insert(tp.categoryId, n);
+            if (n > modeN) { modeN = n; modeCat = tp.categoryId; }
+        }
+        const QString catName = w.categories().value(modeCat).split(QStringLiteral(" / ")).first();
+        const QVector<LinuxdoHit> live2 = LinuxdoWatch_::matchNew(live, { catName }, 0, w.categories());
+        bool allInThatCat = !live2.isEmpty();
+        for (const LinuxdoHit& hh : live2)
+            if (hh.topic.categoryId != modeCat && !hh.topic.title.contains(catName))
+                allInThatCat = false;
+        std::printf("INFO 真数据：这一页 %d 条，最多的分类是「%s」(%d 条)，拿它当关键词撞到 %d 条\n",
+                    live.size(), catName.toUtf8().constData(), modeN, live2.size());
+        std::fflush(stdout);
+        check("真数据端到端：分类名当关键词必须撞到（这就是以前 0 命中的那批帖）",
+              live2.isEmpty() ? "no" : "yes", "yes");
+        check("撞到的确实是那个分类里的帖子", allInThatCat ? "yes" : "no", "yes");
+    }
     check("状态行把「第一次」这件事写在脸上",
           w.statusLine().contains(QStringLiteral("第一次")) ? "yes" : "no", "yes");
     std::printf("linuxdonet: 失败 %d 项\n", bad);

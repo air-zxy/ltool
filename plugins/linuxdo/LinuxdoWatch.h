@@ -1,8 +1,10 @@
 #pragma once
 
+#include <QHash>
 #include <QObject>
 #include <QStringList>
 #include <QVector>
+#include <functional>
 
 // linux.do 盯帖的引擎：每隔几分钟拉一次「最新帖」，比标题和标签，命中就在托盘冒一句。
 //
@@ -38,18 +40,26 @@ struct LinuxdoTopic {
 struct LinuxdoHit {
     LinuxdoTopic topic;
     QString matched;          // 命中的那个词（界面上要说清为什么是它）
+    QString where;            // 撞在哪儿：标题 / 标签 / 分类名 —— 「福利」十有八九在分类名上
 };
 
 namespace LinuxdoWatch_ {
 
 // 纯函数三件套 —— 判据直接打这三个，不碰网络也不碰托盘（自测一次气泡都不许弹出去）
 QVector<LinuxdoTopic> parseTopics(const QByteArray& json);
+// 分类 id → 「分类名 / slug」。实测过：新帖里标题含「福利」的 0 条，但在分类 36「福利羊毛」
+// 里的有 4 条 —— 只比标题和标签就永远是 0 命中，所以分类名必须进比对。
+QHash<int, QString> parseCategories(const QByteArray& json);
 QVector<LinuxdoHit> matchNew(const QVector<LinuxdoTopic>& topics, const QStringList& keywords,
-                             qint64 lastSeen);
+                             qint64 lastSeen, const QHash<int, QString>& cats = {});
 QString relayUrl(const QString& prefix, const QString& origin);
 // 要不要弹那一句：第一次跑只记下"从哪条开始"，不弹（装上就哗啦十几条没人会看）；
 // 没命中也不弹。判据打这一个函数，页面和引擎共用同一条决定。
 bool shouldNotify(bool firstRun, int freshCount);
+
+// 分类表还没到手的时候，这一页先别推进 lastSeen —— 否则那 30 条永远没被分类名比过
+// （「福利」这类词就只出现在分类名上）。表到手之后下一轮会把同一页再比一遍，宁可晚报不要漏。
+qint64 advanceSeen(qint64 currentSeen, qint64 topId, bool haveCategories);
 
 } // namespace LinuxdoWatch_
 
@@ -72,6 +82,10 @@ public:
     QVector<LinuxdoHit> hits() const { return m_hits; }
     bool busy() const { return m_busy; }
     int lastTopicCount() const { return m_lastCount; }   // 上一次一趟拿到几条帖子
+    QVector<LinuxdoTopic> lastTopics() const { return m_lastTopics; }   // 就是那几条（判据拿真数据用）
+    QHash<int, QString> categories() const { return m_cats; }
+    QString catCheckText() const { return m_catCheck; }   // 那张表是什么时候拿的
+    void setCategories(const QHash<int, QString>& cats);   // 拉到新表就换（顺带落盘缓存）
 
     // 改配置：写盘 + 重排定时器 + 立刻生效（页面那几颗控件走的就是这一条）
     void setEnabled(bool on);
@@ -82,6 +96,10 @@ public:
     // 查一次（异步）。返回的是"这次有没有把这一趟发出去"，结果一律走 changed()/statusLine()。
     bool checkNow();
 
+    // 分类表（id → 名字 / slug）。公开是因为：拉不到就只能比标题和标签，
+    // 而"福利"这类词十有八九只出现在分类名上 —— 页面要把这个降级状态说出来，判据也要能点名要一次。
+    void fetchCategories();
+
 signals:
     void changed();
 
@@ -91,7 +109,14 @@ private:
     void save() const;
     void arm();
     void fetchVia(int stage);                       // 0=直连 1=前缀中转
-    void onBody(int stage, const QByteArray& body, const QString& how, qint64 ms);
+    // 一条通用的两级取回：先短超时试直连，不通再走前缀中转。帖子和分类表共用这一条。
+    void grabVia(int stage, const QString& origin,
+                 std::function<void(const QByteArray&, const QString&, qint64)> onBody,
+                 std::function<void(const QString&)> onFail);
+
+    void onBody(const QByteArray& body, const QString& how, qint64 ms);
+    void onCategories(const QByteArray& body, const QString& how, qint64 ms);
+    bool dayChanged() const;   // 分类表一天拿一趟就够（它变得慢）
 
     QTimer* m_timer = nullptr;
     bool m_enabled = true;
@@ -105,5 +130,9 @@ private:
     QVector<LinuxdoHit> m_hits;
     bool m_busy = false;
     bool m_booted = false;
+    bool m_wantCats = false;              // 这轮帖子跑完之后要补拿分类表
+    QHash<int, QString> m_cats;
+    QString m_catCheck;                     // 分类表上次是什么时候拿的
     int m_lastCount = 0;
+    QVector<LinuxdoTopic> m_lastTopics;
 };

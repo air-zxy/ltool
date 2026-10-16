@@ -29,4 +29,5 @@ private:
     QPushButton* m_open = nullptr;
     QListWidget* m_hits = nullptr;
     QLabel* m_status = nullptr;
+    QLabel* m_cats = nullptr;
 };
