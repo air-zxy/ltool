@@ -89,11 +89,12 @@ endif()
 # 缝的规格写在 src/platform/*.h 里，不在这里重复。
 if(WIN32)
     set(LTOOL_PLATFORM_SRC src/platform/Paths_win.cpp src/platform/Launch_win.cpp
-        src/platform/Autostart_win.cpp src/platform/FileMeta_win.cpp src/platform/ProcInfo_win.cpp)
+        src/platform/Autostart_win.cpp src/platform/FileMeta_win.cpp src/platform/ProcInfo_win.cpp
+        src/platform/FileOps_win.cpp)
 else()
     set(LTOOL_PLATFORM_SRC src/platform/Paths_posix.cpp src/platform/Launch_posix.cpp
         src/platform/Autostart_posix.cpp src/platform/FileMeta_posix.cpp
-        src/platform/ProcInfo_posix.cpp)
+        src/platform/ProcInfo_posix.cpp src/platform/FileOps_posix.cpp)
 endif()
 
 # ---- 非 Windows：台阶一，只编"量过确实可移植"的那些 TU，然后到此为止 ----
@@ -133,7 +134,7 @@ if(NOT WIN32)
     set_target_properties(ltool_portable PROPERTIES POSITION_INDEPENDENT_CODE ON)
     # 数目从名单算，不写死：写死过两次都腐烂了（一度是 12、名单实际 13，再加 PluginHost 是 14）
     list(LENGTH LTOOL_CORE_PORTABLE_SRC LTOOL_PORTABLE_N)
-    message(STATUS "非 Windows：只编平台层五道缝 + 名单里那 ${LTOOL_PORTABLE_N} 个 TU；core/exe/插件要等注册表、USN、WGC、COM 和 bit7z 的对等实现")
+    message(STATUS "非 Windows：只编平台层那几道缝（份数就是上面那个名单）+ 名单里那 ${LTOOL_PORTABLE_N} 个 TU；core/exe/插件要等注册表、USN、WGC、COM 和 bit7z 的对等实现")
     return()
 endif()
 

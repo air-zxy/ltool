@@ -1325,15 +1325,30 @@ int main(int argc, char* argv[])
     if (args.contains("--fwallow") || args.contains("--fwremove"))
         return runFwWrite(args);
 
-    // --whohastest <路径>：无界面跑一遍句柄枚举，把每一步的结果打出来
+    // --whohastest <路径> [kill]：无界面跑一遍占用枚举，把每一步的结果打出来。
+    // 带 kill 再走「解除占用」那一步（逐个结束占用者后再数一遍）—— 这两条是第七道缝
+    // （platform/FileOps_*）搬家前后的对照物，所以打得要细：谁、几个句柄、结束成没成。
     if (args.contains("--whohastest")) {
-        const QString target = args.mid(args.indexOf("--whohastest") + 1).value(0);
+        const QStringList rest = args.mid(args.indexOf("--whohastest") + 1);
+        const QString target = rest.value(0);
         QString err;
         const auto holders = FileOps::whoHas(target, &err);
         std::printf("whohastest: target=%s holders=%d err=%s\n", target.toUtf8().constData(),
                     int(holders.size()), err.toUtf8().constData());
         for (const FileOps::Holder& h : holders)
             std::printf("  pid=%llu %s handles=%d\n", h.pid, h.processName.toUtf8().constData(), h.handles);
+        if (rest.value(1) == QLatin1String("kill")) {
+            for (const FileOps::Holder& h : holders) {
+                QString killErr;
+                const bool ok = FileOps::killProcess(h.pid, &killErr);
+                std::printf("  kill pid=%llu ok=%d err=%s\n", h.pid, ok ? 1 : 0,
+                            killErr.toUtf8().constData());
+            }
+            QString err2;
+            const auto left = FileOps::whoHas(target, &err2);
+            std::printf("whohastest: 结束后 holders=%d err=%s\n", int(left.size()),
+                        err2.toUtf8().constData());
+        }
         std::fflush(stdout);
         return 0;
     }
@@ -1804,6 +1819,63 @@ int main(int argc, char* argv[])
         check("空路径不许启动（launch）", Platform::launch(QString()) ? "yes" : "no", "no");
         check("空路径不许提权启动（launchAsAdmin）",
               Platform::launchAsAdmin(QString()) ? "yes" : "no", "no");
+        // 5) 第七道缝（粉碎 / 占用查询）：这四条两边期望值相同 —— 报的字节数、"没了"、
+        //    "-1 + 原因"、"没人开着就是空表"。Linux 那侧同一组断言在 tools/seam_probe.sh 里，
+        //    数字对得上才说明这两份实现做的是同一件事（POSIX 探针量的目录树也是 12288）。
+        //    删除只往 QDir::tempPath() 下算出来的那棵走，别的一律不碰。
+        const QString box = QDir::tempPath() + QStringLiteral("/ltool-seam-fileops");
+        QDir(box).removeRecursively();
+        QDir().mkpath(box + QStringLiteral("/tree/sub"));
+        const auto put = [](const QString& path, int bytes) {
+            QFile f(path);
+            if (!f.open(QIODevice::WriteOnly))
+                return false;
+            f.write(QByteArray(bytes, 'A'));
+            f.close();
+            return true;
+        };
+        put(box + "/a.bin", 1 << 20);
+        QString serr;
+        const qint64 shallow = FileOps::shred(box + "/a.bin", false, &serr);
+        check("粉碎一颗 1MB 文件报的字节数 = 文件大小",
+              QString::number(shallow), QStringLiteral("1048576"));
+        check("粉碎之后文件真没了（不是移到回收站）",
+              QFileInfo::exists(box + "/a.bin") ? "yes" : "no", "no");
+        put(box + "/b.bin", 4096);
+        serr.clear();
+        const qint64 deep = FileOps::shred(box + "/b.bin", true, &serr);
+        check("thorough 三遍覆写也按大小报一遍", QString::number(deep), QStringLiteral("4096"));
+        check("改名用的 ~*.tmp 没留在原地",
+              QDir(box).entryList({QStringLiteral("~*.tmp")}, QDir::Files).isEmpty() ? "yes" : "no",
+              "yes");
+        put(box + "/tree/a.bin", 4096);
+        put(box + "/tree/sub/b.bin", 8192);
+        serr.clear();
+        const qint64 dirErased = FileOps::shred(box + "/tree", false, &serr);
+        check("整棵目录树抹掉的字节数是两颗之和", QString::number(dirErased),
+              QStringLiteral("12288"));
+        check("目录从最深往上删干净、没报错",
+              (!QFileInfo::exists(box + "/tree") && serr.isEmpty()) ? "yes" : "no", "yes");
+        QString missErr;
+        const qint64 missing = FileOps::shred(box + "/nope.bin", false, &missErr);
+        check("不存在的目标返回 -1 并说出原因",
+              (missing == -1 && !missErr.isEmpty()) ? "yes" : "no", "yes");
+        put(box + "/quiet.bin", 1024);
+        QString werr;
+        const auto nobody = FileOps::whoHas(box + "/quiet.bin", &werr);
+        check("没人开着的文件：占用表是空的、也不报错",
+              (nobody.isEmpty() && werr.isEmpty()) ? "yes" : "no", "yes");
+        // 自己开着的文件能不能认出来：两份实现走的是完全不同的机制（Windows 问 Restart
+        // Manager，POSIX 扫 /proc/self/fd），"看不看得到查询者自己"本来就是平台差异，
+        // 所以这里只把实测打出来，不当判据 —— 认不出自己不算坏，认得出更好。
+        QFile mine(box + "/quiet.bin");
+        mine.open(QIODevice::ReadOnly);
+        const auto selfish = FileOps::whoHas(box + "/quiet.bin", &werr);
+        std::printf("INFO 自持句柄时扫到 %d 个占用者（本机 pid=%lld，err=[%s]）\n",
+                    int(selfish.size()), qint64(QCoreApplication::applicationPid()),
+                    werr.toUtf8().constData());
+        mine.close();
+        QDir(box).removeRecursively();
         std::printf("seamtest: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad;

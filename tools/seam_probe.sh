@@ -21,6 +21,7 @@ cat > "$D/probe.cpp" <<'EOF'
 #include "platform/ProcInfo.h"
 #include "platform/FileMeta.h"
 #include "platform/PluginNames.h"
+#include "platform/FileOpsShred.h"    // 第七道缝：FileOps::shred / whoHas / killProcess
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -143,7 +144,69 @@ int main(int argc, char** argv) {
           Platform::pluginIdOf(QStringLiteral("ltool-shell.dll")).isEmpty());
     check("裸 .so 也认不出 id（只有 .so 那四个字符的文件名不是插件）",
           Platform::pluginIdOf(QStringLiteral(".so")).isEmpty());
-    std::printf("seam_probe: failed %d\n", bad);
+        // ---- 第七道缝（粉碎 / 占用查询 / 结束进程）在 Linux 上的真行为 ----
+    // Windows 那侧同一组夹具的实测数记在 docs/notes.md（--shredtest / --whohastest）：
+    // 目录树那两颗之和 4096+8192=12288，两边、搬家前后都该是同一个数。
+    const QString box = QDir::tempPath() + "/ltool-fileops";
+    QDir(box).removeRecursively();            // 只清自己刚建的这一棵，不碰别的东西
+    QDir().mkpath(box + "/tree/sub");
+    const auto make = [](const QString& path, int bytes) {
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly))
+            return false;
+        f.write(QByteArray(bytes, 'A'));
+        f.close();
+        return true;
+    };
+    make(box + "/a.bin", 1 << 20);
+    const qint64 shallow = FileOps::shred(box + "/a.bin", false, nullptr);
+    check("Linux 粉碎报的字节数 = 文件大小（1MB）", shallow == (1 << 20));
+    check("浅粉碎之后文件真没了", !QFileInfo::exists(box + "/a.bin"));
+    QString serr;
+    make(box + "/b.bin", 4096);
+    const qint64 deep = FileOps::shred(box + "/b.bin", true, &serr);
+    check("thorough 三遍覆写也按大小报一遍（不是三遍）", deep == 4096 && serr.isEmpty());
+    const QStringList leftovers = QDir(box).entryList(QStringList() << QStringLiteral("~*.tmp"), QDir::Files);
+    check("改名用的 ~*.tmp 没留在原地（改名那条真走了）", leftovers.isEmpty());
+    make(box + "/tree/a.bin", 4096);
+    make(box + "/tree/sub/b.bin", 8192);
+    serr.clear();
+    const qint64 dirErased = FileOps::shred(box + "/tree", false, &serr);
+    check("整棵目录树抹掉的字节数是两颗之和（和 Windows 同一个 12288）", dirErased == 12288);
+    check("目录从最深往上删干净、没报错", !QFileInfo::exists(box + "/tree") && serr.isEmpty());
+    QString missErr;
+    const qint64 missing = FileOps::shred(box + "/nope.bin", false, &missErr);
+    check("不存在的目标返回 -1 并说出原因", missing == -1 && missErr.contains(QString::fromUtf8("不存在")));
+    const QString held = box + "/held.bin";
+    make(held, 1024);
+    check("没人开着的文件：占用表是空的", FileOps::whoHas(held, &serr).isEmpty());
+    QProcess holder;
+    holder.start(QStringLiteral("/bin/tail"),
+                 {QStringLiteral("-n"), QStringLiteral("0"), QStringLiteral("-F"), held});
+    const bool holderUp = holder.waitForStarted(3000);
+    check("起了一个 tail -F 当占用者（谁占用着它的试验场）", holderUp);
+    if (holderUp) {
+        QString werr;
+        const auto hs = FileOps::whoHas(held, &werr);
+        std::printf("INFO whoHas 扫到 %d 个占用者，err=[%s]\n", int(hs.size()),
+                    werr.toUtf8().constData());
+        bool seesIt = false;
+        for (const FileOps::Holder& h : hs)
+            if (h.pid == quint64(holder.processId()))
+                seesIt = true;
+        check("扫 /proc/<pid>/fd 认出了那颗 tail 的 pid", seesIt);
+        check("占用者的进程名读得出来", !hs.isEmpty() && !hs.first().processName.isEmpty());
+        QString kerr;
+        check("killProcess 结束它报成功", FileOps::killProcess(quint64(holder.processId()), &kerr));
+        holder.waitForFinished(3000);
+        QString werr2;
+        check("结束之后占用表空了（和 Windows 那条一样归零）", FileOps::whoHas(held, &werr2).isEmpty());
+        QString kerr2;
+        check("再杀一次（进程号已经没了）老实报没有那个进程",
+              !FileOps::killProcess(quint64(holder.processId()), &kerr2) && !kerr2.isEmpty());
+    }
+    QDir(box).removeRecursively();
+std::printf("seam_probe: failed %d\n", bad);
     std::fflush(stdout);
     return bad;
 }
@@ -154,6 +217,7 @@ cd "$SRC"
 g++ -std=c++20 -fPIC -Wall -Wextra -I src $(pkg-config --cflags Qt6Core Qt6Gui) \
     "$D/probe.cpp" src/platform/Paths_posix.cpp src/platform/Launch_posix.cpp \
     src/platform/Autostart_posix.cpp src/platform/ProcInfo_posix.cpp \
-    src/platform/FileMeta_posix.cpp src/Pinyin.cpp $(pkg-config --libs Qt6Core Qt6Gui) -o "$D/probe"
+    src/platform/FileMeta_posix.cpp src/platform/FileOps_posix.cpp src/Pinyin.cpp \
+    $(pkg-config --libs Qt6Core Qt6Gui) -o "$D/probe"
 "$D/probe"
 HOME=$(mktemp -d) "$D/probe" --autostart
