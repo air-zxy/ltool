@@ -20,12 +20,14 @@ cat > "$D/probe.cpp" <<'EOF'
 #include "Pinyin.h"
 #include "platform/ProcInfo.h"
 #include "platform/FileMeta.h"
+#include "platform/PluginNames.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QProcess>
 #include <QThread>
 #include <QFileInfo>
+#include <QStringList>
 #include <cstdio>
 static int bad = 0;
 static void check(const char* n, bool ok) {
@@ -127,6 +129,20 @@ int main(int argc, char** argv) {
     }
     check("extractIconToPng 对着纯文本老实说 false",
           !Platform::extractIconToPng(QStringLiteral("/etc/hostname"), 0, QDir::tempPath() + "/nope.png"));
+    // ---- 第六道缝（插件产物命名）在 POSIX 这一侧的答案 ----
+    // 这一族判据的意义是"能红"：Windows 上 pluginFileSuffix() 本来就是 dll，改错了也测不出来；
+    // 在 Linux 上，只要还有任何一处把 .dll 当协议写死，这几个期望值就立刻对不上。
+    check("这台机器的后缀是 so（不是 dll）", Platform::pluginFileSuffix() == QLatin1String("so"));
+    check("扫描匹配式跟着走", Platform::pluginFileGlobs()
+          == QStringList{ QStringLiteral("*.so") });
+    check("文件名带 lib 前缀", Platform::pluginFileName(QStringLiteral("shell"))
+          == QStringLiteral("libltool-shell.so"));
+    check("文件名反推得回 id", Platform::pluginIdOf(QStringLiteral("libltool-shell.so"))
+          == QStringLiteral("shell"));
+    check("别的平台那个后缀在这里不认（dll 反推不出 id）",
+          Platform::pluginIdOf(QStringLiteral("ltool-shell.dll")).isEmpty());
+    check("裸 .so 也认不出 id（只有 .so 那四个字符的文件名不是插件）",
+          Platform::pluginIdOf(QStringLiteral(".so")).isEmpty());
     std::printf("seam_probe: failed %d\n", bad);
     std::fflush(stdout);
     return bad;

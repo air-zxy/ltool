@@ -1,6 +1,7 @@
 #include "AppScanner.h"
 #include "platform/ProcInfo.h"
 #include "platform/FileMeta.h"
+#include "platform/PluginNames.h"
 #include "QRegularExpression"
 #include "QCoreApplication"
 #include "platform/Autostart.h"
@@ -321,10 +322,10 @@ int runPluginSelftest(const QString& id, const char* symbol = "ltoolPluginSelfte
     if (!raw) {
         // "插件根本没起来"和"起来了但没导出这个符号"是两种坏法，分开说才有人能照着修
         if (!PluginHost::plugin(id))
-            std::printf("FAIL %s：插件没能加载（%s 里没有能用的 ltool-%s.dll —— 安装包少文件了？）\n",
+            std::printf("FAIL %s：插件没能加载（%s 里没有能用的 %s —— 安装包少文件了？）\n",
                         id.toUtf8().constData(),
                         PluginHost::pluginsDir().toUtf8().constData(),
-                        id.toUtf8().constData());
+                        Platform::pluginFileName(id).toUtf8().constData());
         std::printf("FAIL %s：没有可用的判据入口（插件没加载起来，或没导出 %s）\n",
                     id.toUtf8().constData(), symbol);
         std::printf("%s: 失败 1 项\n", flag ? flag : id.toUtf8().constData());
@@ -2457,40 +2458,67 @@ int main(int argc, char* argv[])
         };
 
         // ---- 1. 清单解析：好的收下，坏的点名拒收 ----
+        // 文件名一律从 platform/PluginNames.h 现算，不写死 .dll：这套判据挪到 Linux 上跑的时候，
+        // 喂给校验的就得是那一侧真正认的名字。foreign 那条专门喂**另一个平台**的后缀 ——
+        // 它测的是"认得边界在哪"，不是"dll 这三个字母对不对"。
         const QString goodSha = makeFile(box + "/src-good.bin", QByteArray("GOOD-DLL-CONTENT"));
         const QString otherSha = makeFile(box + "/src-other.bin", QByteArray("OTHER"));
+        const QString foreignFile = QStringLiteral("ltool-foreign.")
+            + (Platform::pluginFileSuffix() == QLatin1String("dll")
+                   ? QStringLiteral("so") : QStringLiteral("dll"));
         const QString indexJson = QStringLiteral(
             R"({"schema":1,"core":"0.9.0","plugins":[)"
             R"({"id":"good","name":"好的那个","desc":"d","api":%2,"keywords":[],"actions":[],"color":"1,2,3",)"
-            R"("file":"ltool-good.dll","bytes":16,"sha256":"%1",)"
-            R"("url":"https://raw.githubusercontent.com/mateo-ki/ltool_plugin/main/dist/ltool-good.dll"},)"
+            R"("file":"%4","bytes":16,"sha256":"%1",)"
+            R"("url":"https://raw.githubusercontent.com/mateo-ki/ltool_plugin/main/dist/%4"},)"
             R"({"id":"trav","name":"路径穿越","desc":"d","api":%2,"keywords":[],"actions":[],"color":"1,2,3",)"
-            R"("file":"../ltool-trav.dll","bytes":1,"sha256":"%3",)"
-            R"("url":"https://raw.githubusercontent.com/mateo-ki/ltool_plugin/main/dist/ltool-trav.dll"},)"
+            R"("file":"../%5","bytes":1,"sha256":"%3",)"
+            R"("url":"https://raw.githubusercontent.com/mateo-ki/ltool_plugin/main/dist/%5"},)"
             R"({"id":"plain","name":"不加密","desc":"d","api":%2,"keywords":[],"actions":[],"color":"1,2,3",)"
-            R"("file":"ltool-plain.dll","bytes":1,"sha256":"%3",)"
-            R"("url":"http://example.invalid/ltool-plain.dll"},)"
+            R"("file":"%6","bytes":1,"sha256":"%3",)"
+            R"("url":"http://example.invalid/%6"},)"
             R"({"id":"badhash","name":"哈希不像哈希","desc":"d","api":%2,"keywords":[],"actions":[],"color":"1,2,3",)"
-            R"("file":"ltool-bad.dll","bytes":1,"sha256":"deadbeef",)"
-            R"("url":"https://example.invalid/ltool-bad.dll"},)"
+            R"("file":"%7","bytes":1,"sha256":"deadbeef",)"
+            R"("url":"https://example.invalid/%7"},)"
             R"({"id":"oldapi","name":"接口太旧","desc":"d","api":1,"keywords":[],"actions":[],"color":"1,2,3",)"
-            R"("file":"ltool-old.dll","bytes":1,"sha256":"%3",)"
-            R"("url":"https://example.invalid/ltool-old.dll"}]})"
-            ).arg(goodSha).arg(LTOOL_PLUGIN_API_VERSION).arg(otherSha);
+            R"("file":"%8","bytes":1,"sha256":"%3",)"
+            R"("url":"https://example.invalid/%8"},)"
+            R"({"id":"foreign","name":"另一个平台的那颗","desc":"d","api":%2,"keywords":[],"actions":[],"color":"1,2,3",)"
+            R"("file":"%9","bytes":1,"sha256":"%3",)"
+            R"("url":"https://example.invalid/%9"}]})"
+            ).arg(goodSha).arg(LTOOL_PLUGIN_API_VERSION).arg(otherSha)
+             .arg(Platform::pluginFileName(QStringLiteral("good")),
+                  Platform::pluginFileName(QStringLiteral("trav")),
+                  Platform::pluginFileName(QStringLiteral("plain")),
+                  Platform::pluginFileName(QStringLiteral("bad")),
+                  Platform::pluginFileName(QStringLiteral("old")),
+                  foreignFile);
 
         QStringList problems;
         const auto entries = PluginStore::parseIndex(indexJson.toUtf8(), &problems);
         // 没收下的每一条都说出来：这一面红了要能在三秒内看出是哪个字段被拒
         for (const QString& q : problems)
             std::printf("INFO 拒收 %s\n", q.toUtf8().constData());
-        // 五条里 oldapi 是"条目本身没毛病、只是接口版本不对"，它要走到 compare 才被判装不了，
-        // 所以解析这一步该收两条、拒三条。
-        check("五条里收下两条（good 和 oldapi）", QString::number(entries.size()), "2");
-        check("拒掉的三条各说一句", QString::number(problems.size()), "3");
+        // 六条里 oldapi 是"条目本身没毛病、只是接口版本不对"，它要走到 compare 才被判装不了，
+        // 所以解析这一步该收两条、拒四条。
+        check("六条里收下两条（good 和 oldapi）", QString::number(entries.size()), "2");
+        check("拒掉的四条各说一句", QString::number(problems.size()), "4");
         check("拒收点名到 id", problems.join(QStringLiteral("|")).contains(QStringLiteral("trav"))
                   && problems.join(QStringLiteral("|")).contains(QStringLiteral("plain"))
                   && problems.join(QStringLiteral("|")).contains(QStringLiteral("badhash"))
+                  && problems.join(QStringLiteral("|")).contains(QStringLiteral("foreign"))
               ? "yes" : "no", "yes");
+        // 这一条盯的是"界面能不能说实话"：拒的理由里必须点出**这台机器**认的那个后缀，
+        // 而不是只说"不是 .dll"（Linux 上看那句话等于没说）。
+        {
+            QString foreignWhy;
+            for (const QString& q : problems)
+                if (q.contains(QStringLiteral("foreign")))
+                    foreignWhy = q;
+            check("拒 foreign 的理由说清了这台机器要哪个后缀",
+                  foreignWhy.contains(QStringLiteral("这里要 .") + Platform::pluginFileSuffix())
+                      ? "yes" : "no", "yes");
+        }
         check("好的那条认得出的确是好的", entries.isEmpty() ? QStringLiteral("-") : entries[0].id, "good");
         {
             QStringList p2;
@@ -2518,10 +2546,10 @@ int main(int argc, char* argv[])
         const Entry& good = *found;
         QString note;
         check("目录里什么都没有 = 能装", word(PluginStore::compare(good, &note, box)), "能装");
-        QFile::copy(box + "/src-good.bin", box + "/ltool-good.dll");
+        QFile::copy(box + "/src-good.bin", box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("good")));
         check("哈希就是清单里那个 = 已装", word(PluginStore::compare(good, &note, box)), "已装");
         {
-            makeFile(box + "/ltool-good.dll", QByteArray("一个更早的版本"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("good")), QByteArray("一个更早的版本"));
             const QString st = word(PluginStore::compare(good, &note, box));
             check("同一个文件名但内容不同 = 可更新", st, "可更新");
             check("可更新那句里带两边的哈希头", note.contains(QStringLiteral("本机")) && note.contains(QStringLiteral("清单"))
@@ -2531,70 +2559,70 @@ int main(int argc, char* argv[])
             Entry old = good;
             old.api = 1;
             check("清单里的 Api 和宿主对不上 = 装不了", word(PluginStore::compare(old, &note, box)), "装不了");
-            QFile::remove(box + "/ltool-good.dll");
-            makeFile(box + "/ltool-old2.dll", QByteArray("x"));
+            QFile::remove(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("good")));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("old2")), QByteArray("x"));
             Entry o2 = good;
-            o2.file = QStringLiteral("ltool-old2.dll");
+            o2.file = Platform::pluginFileName(QStringLiteral("old2"));
             o2.api = 99;
             check("就算文件在，Api 不对也先拒", word(PluginStore::compare(o2, &note, box)), "装不了");
         }
 
         // ---- 3. 落盘：先验哈希，再改名；半成品不许冒充 ----
         {
-            makeFile(box + "/ltool-new.dll.part", QByteArray("GOOD-DLL-CONTENT"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("new")) + QStringLiteral(".part"), QByteArray("GOOD-DLL-CONTENT"));
             Entry e = good;
-            e.file = QStringLiteral("ltool-new.dll");
-            const QString err = PluginStore::finishDownload(box + "/ltool-new.dll.part", e, box);
+            e.file = Platform::pluginFileName(QStringLiteral("new"));
+            const QString err = PluginStore::finishDownload(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("new")) + QStringLiteral(".part"), e, box);
             check("哈希对了就落进目录（回报空串）", err.isEmpty() ? "ok" : err, "ok");
-            check("落下来的文件哈希还是那个", PluginStore::sha256Of(box + "/ltool-new.dll"), goodSha);
-            check("落下来之后 .part 不该留着", QFile::exists(box + "/ltool-new.dll.part") ? "yes" : "no", "no");
+            check("落下来的文件哈希还是那个", PluginStore::sha256Of(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("new"))), goodSha);
+            check("落下来之后 .part 不该留着", QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("new")) + QStringLiteral(".part")) ? "yes" : "no", "no");
         }
         {
             // 「更新」那条路：目录里**已经有**一颗旧的。Windows 上 QFile::rename 不覆盖已存在的目标，
             // 少了"先拿掉旧的"这一步，12 颗可更新的全会撞在 rename 上（他点出来的就是这个）。
-            makeFile(box + "/ltool-upd.dll", QByteArray("本机那份旧的 dll 内容"));
-            makeFile(box + "/ltool-upd.dll.part", QByteArray("GOOD-DLL-CONTENT"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("upd")), QByteArray("本机那份旧的 dll 内容"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("upd")) + QStringLiteral(".part"), QByteArray("GOOD-DLL-CONTENT"));
             Entry e = good;
-            e.file = QStringLiteral("ltool-upd.dll");
-            const QString err = PluginStore::finishDownload(box + "/ltool-upd.dll.part", e, box);
+            e.file = Platform::pluginFileName(QStringLiteral("upd"));
+            const QString err = PluginStore::finishDownload(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("upd")) + QStringLiteral(".part"), e, box);
             check("更新能盖掉目录里已存在的那颗（回报空串）", err.isEmpty() ? "ok" : err, "ok");
-            check("盖完之后目录里那颗就是清单那份", PluginStore::sha256Of(box + "/ltool-upd.dll"), goodSha);
-            check("更新也不许留 .part", QFile::exists(box + "/ltool-upd.dll.part") ? "yes" : "no", "no");
+            check("盖完之后目录里那颗就是清单那份", PluginStore::sha256Of(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("upd"))), goodSha);
+            check("更新也不许留 .part", QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("upd")) + QStringLiteral(".part")) ? "yes" : "no", "no");
             // 这一节后面还要数目录里有几颗插件，把这颗用完的拿掉（路径是算出来的绝对路径，不是相对）
-            QFile::remove(box + QStringLiteral("/ltool-upd.dll"));
+            QFile::remove(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("upd")));
         }
         {
-            makeFile(box + "/ltool-badhash.dll.part", QByteArray("被人动过的内容"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("badhash")) + QStringLiteral(".part"), QByteArray("被人动过的内容"));
             Entry e = good;
-            e.file = QStringLiteral("ltool-badhash.dll");
-            const QString err = PluginStore::finishDownload(box + "/ltool-badhash.dll.part", e, box);
+            e.file = Platform::pluginFileName(QStringLiteral("badhash"));
+            const QString err = PluginStore::finishDownload(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("badhash")) + QStringLiteral(".part"), e, box);
             check("哈希不对必须报错", err.isEmpty() ? "ok" : "err", "err");
             check("报错里说清是哈希", err.contains(QStringLiteral("哈希")) ? "yes" : "no", "yes");
             check("哈希不对的那份要删掉，不许留下半成品",
-                  QFile::exists(box + "/ltool-badhash.dll.part") ? "yes" : "no", "no");
-            check("没落进目录", QFile::exists(box + "/ltool-badhash.dll") ? "yes" : "no", "no");
+                  QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("badhash")) + QStringLiteral(".part")) ? "yes" : "no", "no");
+            check("没落进目录", QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("badhash"))) ? "yes" : "no", "no");
         }
         {
-            makeFile(box + "/ltool-trunc.dll.part", QByteArray("GOOD-DLL-CONTENT"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("trunc")) + QStringLiteral(".part"), QByteArray("GOOD-DLL-CONTENT"));
             Entry e = good;
-            e.file = QStringLiteral("ltool-trunc.dll");
+            e.file = Platform::pluginFileName(QStringLiteral("trunc"));
             e.bytes = 1 << 20;    // 清单说要 1MB，下到的是 16B —— 传输被截断的形状
-            const QString err = PluginStore::finishDownload(box + "/ltool-trunc.dll.part", e, box);
+            const QString err = PluginStore::finishDownload(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("trunc")) + QStringLiteral(".part"), e, box);
             check("字节数不符也拒", err.contains(QStringLiteral("字节数")) ? "yes" : "no", "yes");
-            check("字节数不符的那份也删掉", QFile::exists(box + "/ltool-trunc.dll.part") ? "yes" : "no", "no");
+            check("字节数不符的那份也删掉", QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("trunc")) + QStringLiteral(".part")) ? "yes" : "no", "no");
         }
 
         // ---- 4. 禁用/恢复 = 在 <file> 和 <file>.off 之间改名 ----
         {
-            makeFile(box + "/ltool-off.dll", QByteArray("GOOD-DLL-CONTENT"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("off")), QByteArray("GOOD-DLL-CONTENT"));
             Entry e = good;
-            e.file = QStringLiteral("ltool-off.dll");
+            e.file = Platform::pluginFileName(QStringLiteral("off"));
             check("禁用回报空串", [&] {
                 const QString r = PluginStore::setEnabled(e.file, false, box);
                 return r.isEmpty() ? QStringLiteral("ok") : r;
             }(), "ok");
-            check("禁用之后 live 没了", QFile::exists(box + "/ltool-off.dll") ? "yes" : "no", "no");
-            check("禁用之后 .off 在", QFile::exists(box + "/ltool-off.dll.off") ? "yes" : "no", "yes");
+            check("禁用之后 live 没了", QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("off"))) ? "yes" : "no", "no");
+            check("禁用之后 .off 在", QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("off")) + QStringLiteral(".off")) ? "yes" : "no", "yes");
             check("目录里那种状态认得出已禁用", word(PluginStore::compare(e, &note, box)), "已禁用");
             check("再禁一次不算失败", [&] {
                 const QString r = PluginStore::setEnabled(e.file, false, box);
@@ -2602,13 +2630,13 @@ int main(int argc, char* argv[])
             }(), "ok");
             check("恢复：.off 改回 live", [&] {
                 const QString r = PluginStore::setEnabled(e.file, true, box);
-                return (r.isEmpty() && QFile::exists(box + "/ltool-off.dll")
-                        && !QFile::exists(box + "/ltool-off.dll.off"))
+                return (r.isEmpty() && QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("off")))
+                        && !QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("off")) + QStringLiteral(".off")))
                           ? QStringLiteral("ok") : r;
             }(), "ok");
             check("目录里又认得出已装", word(PluginStore::compare(e, &note, box)), "已装");
             check("没装过的东西谈不上禁用",
-                  PluginStore::setEnabled(QStringLiteral("ltool-never.dll"), false, box).isEmpty()
+                  PluginStore::setEnabled(Platform::pluginFileName(QStringLiteral("never")), false, box).isEmpty()
                       ? QStringLiteral("ok") : QStringLiteral("err"), "err");
         }
 
@@ -2616,8 +2644,8 @@ int main(int argc, char* argv[])
         {
             // 到这儿为止目录里有三个 *.dll（new / off / old2，都是上面几段落的产物），
             // 再造一个改名成 .off 的，就能同时看到"活着"和"被禁用"两种。
-            makeFile(box + "/ltool-extra.dll", QByteArray("要被禁的那个"));
-            PluginStore::setEnabled(QStringLiteral("ltool-extra.dll"), false, box);
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("extra")), QByteArray("要被禁的那个"));
+            PluginStore::setEnabled(Platform::pluginFileName(QStringLiteral("extra")), false, box);
             const auto locals = PluginStore::localRows(box);
             QStringList who;
             int on = 0, off = 0;
@@ -2629,7 +2657,7 @@ int main(int argc, char* argv[])
                     ++off;
             }
             // 目录里有 *.dll / *.dll.off / *.bin（bin 不算）、还有那个 .part 留下的别的文件也不算
-            check("只把 *.dll 和 *.dll.off 当插件（旁边那些 *.bin 不算）", QString::number(who.size()), "4");
+            check("只把本机那个后缀和它的 .off 当插件（旁边那些 *.bin 不算）", QString::number(who.size()), "4");
             std::printf("INFO 目录里认出来的：%s\n", who.join(QStringLiteral("，")).toUtf8().constData());
             check("活着的报已装、改名 .off 的报已禁用",
                   QStringLiteral("%1/%2").arg(on).arg(off), QStringLiteral("3/1"));
@@ -2649,8 +2677,8 @@ int main(int argc, char* argv[])
 
         // ---- 4b. 本机装着、清单里却没列的那几个 ----
         {
-            makeFile(box + "/ltool-stranger.dll", QByteArray("不在清单上的那个"));
-            makeFile(box + "/ltool-good.dll", QByteArray("GOOD-DLL-CONTENT"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("stranger")), QByteArray("不在清单上的那个"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("good")), QByteArray("GOOD-DLL-CONTENT"));
             // `listed` 就是第 1 段解析出来的那两条（good 的文件名是 ltool-good.dll）：
             // 目录里那个文件既然被清单覆盖了，就不该再被报成"清单外"。
             QStringList names;
@@ -2669,29 +2697,29 @@ int main(int argc, char* argv[])
             };
             collect(PluginStore::localOnly(entries, box));
             check("清单外那一栏报出没被清单覆盖的文件",
-                  names.contains(QStringLiteral("ltool-stranger.dll"))
-                      && names.contains(QStringLiteral("ltool-new.dll")) ? "yes" : "no", "yes");
+                  names.contains(Platform::pluginFileName(QStringLiteral("stranger")))
+                      && names.contains(Platform::pluginFileName(QStringLiteral("new"))) ? "yes" : "no", "yes");
             check("清单里已经列过的那个文件不再报成清单外",
-                  names.contains(QStringLiteral("ltool-good.dll")) ? "yes" : "no", "no");
+                  names.contains(Platform::pluginFileName(QStringLiteral("good"))) ? "yes" : "no", "no");
             check("没禁用之前：清单外的条数 = 总条数减掉已禁用的那几条", QString::number(localOnly),
                   QString::number(names.size() - off));
-            const QString err = PluginStore::setEnabled(QStringLiteral("ltool-stranger.dll"), false, box);
+            const QString err = PluginStore::setEnabled(Platform::pluginFileName(QStringLiteral("stranger")), false, box);
             collect(PluginStore::localOnly(entries, box));
             check("清单外那条也能禁用（禁完它还在栏里，已禁用的数比上一轮多一条）",
-                  err.isEmpty() && names.contains(QStringLiteral("ltool-stranger.dll"))
+                  err.isEmpty() && names.contains(Platform::pluginFileName(QStringLiteral("stranger")))
                       && off == 2 && localOnly == names.size() - off ? "yes" : "no", "yes");
         }
 
         // ---- 4c. 卸载：删得掉就当场没了，删不动的记进待删表、下次启动删 ----
         {
-            makeFile(box + "/ltool-doomed.dll", QByteArray("要被卸的那个"));
-            makeFile(box + "/ltool-doomed.dll.off", QByteArray("它禁用的那份也该一起走"));
-            const QString res = PluginStore::uninstall(QStringLiteral("ltool-doomed.dll"), box);
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("doomed")), QByteArray("要被卸的那个"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("doomed")) + QStringLiteral(".off"), QByteArray("它禁用的那份也该一起走"));
+            const QString res = PluginStore::uninstall(Platform::pluginFileName(QStringLiteral("doomed")), box);
             check("卸载把 live 和 .off 一起删掉（回报空串）",
-                  res.isEmpty() && !QFile::exists(box + "/ltool-doomed.dll")
-                      && !QFile::exists(box + "/ltool-doomed.dll.off")
+                  res.isEmpty() && !QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("doomed")))
+                      && !QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("doomed")) + QStringLiteral(".off"))
                       ? QStringLiteral("yes") : QStringLiteral("no"), "yes");
-            const QString again = PluginStore::uninstall(QStringLiteral("ltool-doomed.dll"), box);
+            const QString again = PluginStore::uninstall(Platform::pluginFileName(QStringLiteral("doomed")), box);
             check("再卸一次要说「没装过」，不是假装又删了一次",
                   again.contains(QStringLiteral("没装过")) ? QStringLiteral("yes") : QStringLiteral("no"), "yes");
             check("卸完不该在待删表里留账", QString::number(PluginStore::pendingRemoves().size()), "0");
@@ -2699,18 +2727,18 @@ int main(int argc, char* argv[])
             // 待删表这条真实路径：表里排着的文件名，下次启动由 applyPendingRemoves 落地。
             // （"这个进程还加载着它、删不动"那个分支要真加载过的 dll 才进得去，离线进不去 ——
             //  所以这里验的是账记上了、能删的删掉了、账也销了，不是假装验过 busy。）
-            makeFile(box + "/ltool-pending.dll", QByteArray("排队等删的"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("pending")), QByteArray("排队等删的"));
             {
                 QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
                 QStringList pend = cfg.value(QStringLiteral("store/pendingRemove")).toStringList();
-                pend << QStringLiteral("ltool-pending.dll");
+                pend << Platform::pluginFileName(QStringLiteral("pending"));
                 cfg.setValue(QStringLiteral("store/pendingRemove"), pend);
                 cfg.sync();
             }
             check("待删表读得出来", QString::number(PluginStore::pendingRemoves().size()), "1");
             // 排过队的那颗必须在自己卡片上说出来：文件还在、进程还加载着，点第二下也不会有
             // 别的解释。以前这句只写给那张已经要被重建掉的标签看，界面上就是"点了没反应"。
-            makeFile(box + "/ltool-notpending.dll", QByteArray("没排队的对照"));
+            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("notpending")), QByteArray("没排队的对照"));
             const auto noteOf = [box](const QString& file) {
                 for (const PluginStore::Row& r : PluginStore::localRows(box))
                     if (r.remote.file == file)
@@ -2718,20 +2746,20 @@ int main(int argc, char* argv[])
                 return QStringLiteral("<没有这一行>");
             };
             check("排过卸载队的那颗，状态里写明「下次启动真删掉」",
-                  noteOf(QStringLiteral("ltool-pending.dll")).contains(
+                  noteOf(Platform::pluginFileName(QStringLiteral("pending"))).contains(
                       QStringLiteral("下次启动真删掉")) ? QStringLiteral("yes") : QStringLiteral("no"),
                   "yes");
             check("没排队的那颗不许也被说成排队中",
-                  noteOf(QStringLiteral("ltool-notpending.dll")).contains(
+                  noteOf(Platform::pluginFileName(QStringLiteral("notpending"))).contains(
                       QStringLiteral("下次启动真删掉")) ? QStringLiteral("yes") : QStringLiteral("no"),
                   "no");
             check("对照那颗自己得在列表里（不然上一条是空列表假绿）",
-                  noteOf(QStringLiteral("ltool-notpending.dll")) == QStringLiteral("<没有这一行>")
+                  noteOf(Platform::pluginFileName(QStringLiteral("notpending"))) == QStringLiteral("<没有这一行>")
                       ? QStringLiteral("no") : QStringLiteral("yes"),
                   "yes");
             const int gone = PluginStore::applyPendingRemoves(box);
             check("下次启动那一步真把排队的删掉了",
-                  gone == 1 && !QFile::exists(box + "/ltool-pending.dll")
+                  gone == 1 && !QFile::exists(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("pending")))
                       ? QStringLiteral("yes") : QStringLiteral("no"), "yes");
             check("删完账要销掉，不许留下一条删过的", QString::number(PluginStore::pendingRemoves().size()), "0");
             const int again2 = PluginStore::applyPendingRemoves(box);
@@ -2811,7 +2839,7 @@ int main(int argc, char* argv[])
 
         // 全程没碰真目录：商店判的是传进去的那个 dir
         check("没把假 dll 写进真正的插件目录",
-              QFile::exists(PluginHost::pluginsDir() + "/ltool-new.dll") ? "yes" : "no", "no");
+              QFile::exists(PluginHost::pluginsDir() + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("new"))) ? "yes" : "no", "no");
         QDir(box).removeRecursively();
         std::printf("storetest: 失败 %d 项\n", bad);
         std::fflush(stdout);
@@ -2932,7 +2960,8 @@ int main(int argc, char* argv[])
         if (PluginHost::invoke(action, { path }, &who))
             return 0;
         const QString why = who.isEmpty()
-            ? QStringLiteral("没装接这个动作的插件（ltool-plugins 里是不是缺 ltool-shell.dll）")
+            ? QStringLiteral("没装接这个动作的插件（ltool-plugins 里是不是缺 %1）")
+                  .arg(Platform::pluginFileName(QStringLiteral("shell")))
             : QStringLiteral("%1 接了但没干成").arg(who);
         std::printf("FAIL 右键动作 %s：%s 路径=%s\n", action.toUtf8().constData(),
                     why.toUtf8().constData(), path.toUtf8().constData());
@@ -3000,8 +3029,8 @@ int main(int argc, char* argv[])
         if (PluginHost::invoke(action, {}, &who))
             return;
         const QString why = who.isEmpty()
-            ? QStringLiteral("没装接 %1 这个动作的插件（ltool-plugins 里是不是缺 ltool-%2.dll）")
-                  .arg(action, action)
+            ? QStringLiteral("没装接 %1 这个动作的插件（ltool-plugins 里是不是缺 %2）")
+                  .arg(action, Platform::pluginFileName(action))
             : QStringLiteral("%1 接了但没干成").arg(who);
         Utils::log(QStringLiteral("%1 没人接：%2").arg(keyLabel, why));
         std::fprintf(stderr, "%s: %s\n", keyLabel.toUtf8().constData(), why.toUtf8().constData());
@@ -3678,7 +3707,7 @@ int main(int argc, char* argv[])
             };
             drain();
             const QString dir = PluginHost::pluginsDir();
-            const int dllsBefore = QDir(dir).entryList({QStringLiteral("*.dll")}, QDir::Files).size();
+            const int dllsBefore = QDir(dir).entryList(Platform::pluginFileGlobs(), QDir::Files).size();
             QPushButton* refresh = page.findChild<QPushButton*>(QStringLiteral("storeRefresh"));
             if (!refresh) {
                 std::printf("FAIL 没有「刷新清单」，后面没法跑\n");
@@ -3751,7 +3780,7 @@ int main(int argc, char* argv[])
             check("跑到底还活着（真闪退的话这几行都打不出来）", true,
                   QStringLiteral("等了 %1 ms").arg(waited * 50));
             check("目录里不留 .part（要么改成名要么删干净）", parts.isEmpty(), parts.join(QStringLiteral("；")));
-            const int dllsAfter = QDir(dir).entryList({QStringLiteral("*.dll")}, QDir::Files).size();
+            const int dllsAfter = QDir(dir).entryList(Platform::pluginFileGlobs(), QDir::Files).size();
             check("dll 颗数没变（更新是换文件，不是加文件）", dllsAfter == dllsBefore,
                   QStringLiteral("点之前 %1 / 之后 %2").arg(dllsBefore).arg(dllsAfter));
             std::printf("storemulti: 失败 %d 项\n", storeMultiBad);

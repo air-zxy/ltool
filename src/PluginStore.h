@@ -23,7 +23,7 @@ struct Entry {
     QString id;
     QString name;
     QString desc;
-    QString file;       // 落到 ltool-plugins 里的那个文件名（ltool-<id>.dll）
+    QString file;       // 落到 ltool-plugins 里的那个文件名（后缀按平台：ltool-<id>.dll / libltool-<id>.so）
     QString url;        // 从哪儿下
     QString sha256;     // 清单里那条哈希（小写十六进制）
     QString color;      // "r,g,b"
@@ -100,7 +100,8 @@ State compare(const Entry& e, QString* note, const QString& dir = QString());
 QVector<Row> rows(const QVector<Entry>& entries, const QString& dir = QString());
 // 本机装了、清单里却没列的那些插件也得上那一栏 —— 不然它们在卡片墙上看得见、
 // 在这上面却连"禁用"都按不到（清单没这条，按钮也就没处生成）。
-// 目录里现在有什么：`*.dll` 算已装、`*.dll.off` 算已禁用。不碰网络、不猜清单。
+// 目录里现在有什么：本平台那个后缀（`platform/PluginNames.h`）算已装，后面接 `.off` 算已禁用。
+// 不碰网络、不猜清单。
 // 名字/描述/颜色从 PluginHost 扫出来的那份元数据里拿（只读嵌入的 plugin.json，不加载 dll）。
 QVector<Row> localRows(const QString& dir = QString());
 // 本机装着、清单里却没列的那几个 = localRows 减去清单覆盖的那些文件名。

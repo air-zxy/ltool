@@ -630,3 +630,14 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 装机复跑抓到一件不在代码里的事：`D:\software\ltool\ltool-plugins` 只有 **17 颗**，比本机构建的 19 颗少了 `network` 和 `shell`。所以那 12 条红不是回归，是"装的这棵缺插件"（其中 7 条是右键七个动作没人认领 + 「工具插件数=19 实到 17」）。同步成 19 颗后：装的那份 `--plugintest 221 / --storetest 67 / --cliptest 56(+1 点名 SKIP) / --seamtest 20`，全 0 红；在跑的实例重启后日志数到 **19 条 `plugin: 看到`**，右键那一路有人接了。这正是 #78 那五颗没进插件仓库的代价 —— 从商店装的新用户同样拿不到这两棵。
 - 交付数：`build 7869ms errors=0` / `abi 缺 8 个符号` / 包 **22.09MB** / `install MATCH 0C36B9599360` / 闭环 18.65s。判据（本机构建那棵）：221 / 20 / 67 / 11 / 52 / 56+SKIP / 64 / 44，全 0 红。
 - 一条手滑：`powershell -Command "…$_…"` 里的 `$_` 被 bash 吃掉 → **整段解析错误，一条命令都没执行**（我那条"重启实例"就这么静默没跑，回头查 `StartTime` 还是 00:19:58 才发现）；PowerShell 的语法错不是"这一段没跑"，是"全部没跑"。另：一次 `Copy-Item` 目标写成了目录形状，在他插件目录里套出一个空 `ltool-plugins\ltool-plugins\`（确认空之后 `rmdir` 收掉，rmdir 只对空目录生效）。这类事以后一律落成 ASCII `.ps1` 用 `-File` 跑，新增 `build/verify/restart_ltool.ps1`。
+
+## 商店协议去 `.dll` 硬编码（2026-10-17，#78 的第一半）
+
+- 协议侧三处假设一次改齐：`parseIndex` 的文件名校验、`localRows` 的目录扫描匹配式、文件名**反推 id**（原来 `startsWith("ltool-") → mid(6)` 再 `chop(4)`）。命名缝补了 `pluginFilePrefix()` 与 `pluginIdOf()` 两个方向；Windows 侧算出来的字符串逐字等价（判据没动就跑得出等价）。
+- 新增一条能红的判据：清单里混进一颗**另一个平台后缀**的 `ltool-foreign.so`，必须被拒，而且拒的理由要点出「这里要 .dll」—— 不是只说"不是 .dll"（那句在 Linux 上等于没说）。`--storetest` 67 → **68**。
+- Windows 上"后缀规则改了"这件事本身测不出来（这台机器的后缀就是 dll）。所以去 POSIX 那侧补 **6 条**：`so` / `*.so` / `libltool-shell.so` / 反推回 `shell` / **`ltool-shell.dll` 在这边反推不出 id** / 裸 `.so` 不算插件。`tools/seam_probe.sh` 43 → **49 条，0 红**。
+- **真清单实测**：`--storenet` 拉真 index（14 条），新校验下 **拒收 0** —— 这是"协议改了但 Windows 行为没变"最硬的一条证据（假夹具只能证明我自己编的那几条）。
+- `--storenet` 另有 **4 条红**，做了真 A/B 才敢定责：把这三个文件退回 HEAD、重编、同一条判据跑出来 **13 过 4 红，红的名字逐字相同** ⇒ 这 4 条在 `25a1e0d` 上就已经红了，CI 不含 storenet 所以一直没被看见（另开任务）。A/B 期间用 `git diff > 补丁` + `git checkout --` + `git apply` 走，不碰 stash。
+- 自测夹具里 **57 处** `.dll` 字面量换成从缝里现算。批量替换用的 python 脚本在 raw 字符串里写了 `\'`，**37 处非法转义原样进了源码**，MSVC 当场 `C2017/C2001` 红 —— 幸好报错了：那一轮我差点把**旧产物**跑出来的 536 全绿当成本轮的数（`build rc=1` 之后 exe 的 mtime 才是唯一可信的判据）。
+- 装机那条 `其中 0 颗和本机构建同一份` 不是坏信号：core 一重链，19 颗插件的哈希必然全变。新增 `build/verify/sync_plugins.ps1`（停实例 → 拷 → 数哈希 → 重启），装的那棵 19 颗与构建**逐颗一致**，这条用 python 独立核过一遍，没信脚本自报的数。
+- 对照数：本机 221 / **68** / 20 / 11 / 52 / 56+SKIP / 64 / 44 = **536 条 0 红**；装的那份 221 / 68 / 20 / 11 / 56+SKIP，`--storenet` 13/4（同 HEAD）；Linux 19/19 TU 编过、链接缺口仍 54。闭环 19.0s、22.1MB、`install MATCH DDA93318A2AB`。

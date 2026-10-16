@@ -38,15 +38,37 @@ inline QStringList pluginFileGlobs()
     return { QStringLiteral("*.") + pluginFileSuffix() };
 }
 
+// 文件名前缀：POSIX 那一族必须带 lib（不是审美，是加载器按 soname 找的方式）
+inline QString pluginFilePrefix()
+{
+#if defined(Q_OS_WIN)
+    return QStringLiteral("ltool-");
+#else
+    return QStringLiteral("libltool-");
+#endif
+}
+
 // 那个 id 的插件文件名。Windows 侧算出来就是原来写死的 "ltool-" + id + ".dll"，
 // 一个字符都没变；POSIX 侧前面还得挂上 lib，否则加载器按 soname 找不到。
 inline QString pluginFileName(const QString& id)
 {
-#if defined(Q_OS_WIN)
-    return QStringLiteral("ltool-") + id + QLatin1Char('.') + pluginFileSuffix();
-#else
-    return QStringLiteral("libltool-") + id + QLatin1Char('.') + pluginFileSuffix();
-#endif
+    return pluginFilePrefix() + id + QLatin1Char('.') + pluginFileSuffix();
+}
+
+// 从文件名反推 id：先剥后缀，再剥**本平台那个**前缀。
+// 不认的形状返回空 —— 调用方（商店那排卡片）据此说"这颗我不认"，别猜一个 id 出来。
+// Windows 侧和原先那段「startsWith("ltool-") 就 mid(6)，再 chop(4)」逐字等价：
+// 不带前缀的文件名照样只剥后缀（历史形状，别改了行为）。
+inline QString pluginIdOf(const QString& fileName)
+{
+    const QString dotSuffix = QLatin1Char('.') + pluginFileSuffix();
+    if (fileName.size() <= dotSuffix.size()
+        || !fileName.endsWith(dotSuffix, Qt::CaseInsensitive))
+        return {};
+    QString id = fileName.left(fileName.size() - dotSuffix.size());
+    if (id.startsWith(pluginFilePrefix()))
+        id = id.mid(pluginFilePrefix().size());
+    return id;
 }
 
 } // namespace Platform

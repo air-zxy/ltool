@@ -5,6 +5,7 @@
 #include <QNetworkRequest>
 
 #include "ltool-plugin.h"
+#include "platform/PluginNames.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -311,8 +312,9 @@ QVector<Entry> parseIndex(const QByteArray& json, QStringList* problems)
             why << QStringLiteral("没有 id");
         if (e.file.isEmpty() || e.file != QFileInfo(e.file).fileName())
             why << QStringLiteral("文件名不像一个纯文件名：%1").arg(e.file.isEmpty() ? QStringLiteral("(空)") : e.file);
-        else if (!e.file.endsWith(QStringLiteral(".dll"), Qt::CaseInsensitive))
-            why << QStringLiteral("%1 不是 .dll").arg(e.file);
+        else if (!e.file.endsWith(QLatin1Char('.') + Platform::pluginFileSuffix(), Qt::CaseInsensitive))
+            why << QStringLiteral("%1 不是这台机器的插件后缀（这里要 .%2）")
+                       .arg(e.file, Platform::pluginFileSuffix());
         const auto isHex = [](QChar ch) {
             const char16_t x = ch.unicode();
             return (x >= u'0' && x <= u'9') || (x >= u'a' && x <= u'f') || (x >= u'A' && x <= u'F');
@@ -391,19 +393,18 @@ QVector<Row> localRows(const QString& dir)
 {
     const QString d = local(dir);
     QVector<Row> out;
-    const QStringList files = QDir(d).entryList({ QStringLiteral("*.dll"), QStringLiteral("*.dll.off") },
-                                                QDir::Files | QDir::Hidden);
+    const QStringList files = QDir(d).entryList(
+        Platform::pluginFileGlobs()
+            << (QStringLiteral("*.") + Platform::pluginFileSuffix() + QStringLiteral(".off")),
+        QDir::Files | QDir::Hidden);
     for (const QString& f : files) {
         const bool off = f.endsWith(QStringLiteral(".off"));
         const QString base = off ? f.left(f.size() - 4) : f;
         Row r;
         r.remote.file = base;
-        QString id = base;
-        if (id.startsWith(QStringLiteral("ltool-")))
-            id = id.mid(6);
-        id.chop(4);   // .dll
+        const QString id = Platform::pluginIdOf(base);
         r.remote.id = id;
-        // 元数据只读 dll 里嵌的那份 plugin.json（PluginHost::scan 的产物），不加载 dll；
+        // 元数据只读产物里嵌的那份 plugin.json（PluginHost::scan 的产物），不加载它；
         // .off 那个不在扫描结果里（宿主根本不会去认它），就只能报文件名。
         if (const PluginHost::Meta* m = PluginHost::meta(id)) {
             r.remote.name = m->name;
