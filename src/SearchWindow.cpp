@@ -1,4 +1,5 @@
 #include "SearchWindow.h"
+#include "platform/ProcInfo.h"
 #include "platform/Launch.h"
 #include "platform/Paths.h"
 
@@ -451,7 +452,7 @@ void SearchWindow::showLauncher()
     // 设置页现在是非模态的，热键随时能把搜索框弹出来（以前模态时弹出来也打不了字）
     m_showLatency.start();
     m_paintLogged = false;
-    const int wsBefore = Utils::workingSetMB();
+    const int wsBefore = Platform::workingSetMB();
     QElapsedTimer lap;
     lap.start();
     QScreen* s = QGuiApplication::screenAt(QCursor::pos());
@@ -498,7 +499,7 @@ void SearchWindow::showLauncher()
     if (m_showLatency.elapsed() > 30)
         Utils::log(QString("show: 慢启动器 布局=%1 建窗口=%2 置前=%3 结果=%4 合计=%5ms 工作集 %6→%7MB")
                        .arg(msLayout).arg(msShow).arg(msFg).arg(lap.elapsed()).arg(m_showLatency.elapsed())
-                       .arg(wsBefore).arg(Utils::workingSetMB()));
+                       .arg(wsBefore).arg(Platform::workingSetMB()));
 }
 
 void SearchWindow::warmUp()

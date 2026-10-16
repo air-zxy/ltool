@@ -36,4 +36,12 @@ QString expandEnv(const QString& s)
     return r;
 }
 
+QString findExecutable(const QString& name)
+{
+    wchar_t found[MAX_PATH];
+    if (SearchPathW(nullptr, (LPCWSTR)name.utf16(), nullptr, MAX_PATH, found, nullptr) == 0)
+        return {};
+    return QString::fromWCharArray(found);
+}
+
 } // namespace Platform

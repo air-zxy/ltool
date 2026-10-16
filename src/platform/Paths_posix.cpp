@@ -86,4 +86,10 @@ QString expandEnv(const QString& s)
     return out;
 }
 
+QString findExecutable(const QString& name)
+{
+    const QString found = QStandardPaths::findExecutable(name);
+    return found.isEmpty() ? QString() : found;
+}
+
 } // namespace Platform

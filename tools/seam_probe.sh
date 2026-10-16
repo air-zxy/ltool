@@ -18,9 +18,13 @@ cat > "$D/probe.cpp" <<'EOF'
 #include "platform/Launch.h"
 #include "platform/Autostart.h"
 #include "Pinyin.h"
+#include "platform/ProcInfo.h"
+#include "platform/FileMeta.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QProcess>
+#include <QThread>
 #include <QFileInfo>
 #include <cstdio>
 static int bad = 0;
@@ -101,6 +105,28 @@ int main(int argc, char** argv) {
     check("plain path unchanged", Platform::expandEnv("/tmp/plain") == QString("/tmp/plain"));
     check("empty path not launched", !Platform::launch(QString()));
     check("empty path not elevated", !Platform::launchAsAdmin(QString()));
+    // ---- 第五道缝（进程 / 文件元信息）在 Linux 上的真行为 ----
+    check("findExecutable: PATH 里的找得到", !Platform::findExecutable("sh").isEmpty());
+    check("findExecutable: 没有的返回空", Platform::findExecutable("ltool-no-such-exe-xyz").isEmpty());
+    check("workingSetMB 读得到（>0）", Platform::workingSetMB() > 0);
+    check("trimWorkingSet 这平台做不到就老实返回 false", !Platform::trimWorkingSet());
+    check("fileVersion 普通文件没有版本资源 → 空串",
+          Platform::fileVersion("/bin/sh").isEmpty());
+    QProcess child;
+    child.start("/bin/sleep", {QStringLiteral("30")});
+    const bool started = child.waitForStarted(2000);
+    const qint64 childPid = started ? child.processId() : -1;
+    check("起得了一个子进程用来杀（sleep 30）", started);
+    if (started) {
+        check("杀之前 /proc 里它在", QFileInfo::exists(QStringLiteral("/proc/%1").arg(childPid)));
+        const bool killed = Platform::killProcessTree(childPid);
+        child.waitForFinished(2000);
+        check("killProcessTree 报成功", killed);
+        QThread::msleep(150);
+        check("杀完 /proc 里真没了", !QFileInfo::exists(QStringLiteral("/proc/%1").arg(childPid)));
+    }
+    check("extractIconToPng 对着纯文本老实说 false",
+          !Platform::extractIconToPng(QStringLiteral("/etc/hostname"), 0, QDir::tempPath() + "/nope.png"));
     std::printf("seam_probe: failed %d\n", bad);
     std::fflush(stdout);
     return bad;
@@ -109,8 +135,9 @@ EOF
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 cd "$SRC"
-g++ -std=c++20 -fPIC -Wall -Wextra -I src $(pkg-config --cflags Qt6Core) \
+g++ -std=c++20 -fPIC -Wall -Wextra -I src $(pkg-config --cflags Qt6Core Qt6Gui) \
     "$D/probe.cpp" src/platform/Paths_posix.cpp src/platform/Launch_posix.cpp \
-    src/platform/Autostart_posix.cpp src/Pinyin.cpp $(pkg-config --libs Qt6Core) -o "$D/probe"
+    src/platform/Autostart_posix.cpp src/platform/ProcInfo_posix.cpp \
+    src/platform/FileMeta_posix.cpp src/Pinyin.cpp $(pkg-config --libs Qt6Core Qt6Gui) -o "$D/probe"
 "$D/probe"
 HOME=$(mktemp -d) "$D/probe" --autostart

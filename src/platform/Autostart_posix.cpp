@@ -46,6 +46,7 @@ QString xdgQuote(const QString& s)
     return out;
 }
 
+#ifdef Q_OS_MACOS
 QString xmlEscape(const QString& s)
 {
     QString out = s;
@@ -54,6 +55,7 @@ QString xmlEscape(const QString& s)
     out.replace(QLatin1Char('>'), QStringLiteral("&gt;"));
     return out;
 }
+#endif
 
 } // namespace
 

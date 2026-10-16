@@ -63,7 +63,7 @@ public:
     {
         setObjectName(QStringLiteral("row"));
         setAttribute(Qt::WA_StyledBackground);
-        setMinimumHeight(116);
+        setMinimumHeight(128);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 
         auto* lay = new QVBoxLayout(this);
@@ -108,7 +108,6 @@ public:
         topRow->addStretch(1);
 
         // 可更新那颗卡片的标记：一个绿色向上箭头，钉在右上角。
-        // 箭头写 \u2191 而不是直接贴字符：这个文件里的中文要过好几道工具手，字面量丢过字符。
         m_arrow = new QLabel(QStringLiteral("\u2191"), this);
         m_arrow->setStyleSheet(QStringLiteral(
             "color: #10b981; font-size: 14pt; font-weight: 700; background: transparent;"));
@@ -119,24 +118,26 @@ public:
         m_desc->setObjectName(QStringLiteral("muted"));
         m_desc->setWordWrap(true);
 
-        auto* bottomRow = new QHBoxLayout;
-        bottomRow->setSpacing(8);
-        bottomRow->setContentsMargins(0, 0, 0, 0);
-
+        // 状态信息独占一行（整卡宽度），再也不和右下角的 1~3 颗按钮在同一行互挤
         m_state = new QLabel(this);
         m_state->setObjectName(QStringLiteral("muted"));
         m_state->setProperty("shopState", true);
         m_state->setWordWrap(true);
-        bottomRow->addWidget(m_state, 1, Qt::AlignVCenter);
+
+        auto* footRow = new QHBoxLayout;
+        footRow->setSpacing(6);
+        footRow->setContentsMargins(0, 0, 0, 0);
+        footRow->addStretch(1);
 
         m_foot = new QHBoxLayout;
         m_foot->setSpacing(6);
         m_foot->setContentsMargins(0, 0, 0, 0);
-        bottomRow->addLayout(m_foot, 0);
+        footRow->addLayout(m_foot, 0);
 
         lay->addLayout(topRow);
         lay->addWidget(m_desc, 1);
-        lay->addLayout(bottomRow);
+        lay->addWidget(m_state);
+        lay->addLayout(footRow);
     }
 
     void setUpdateArrow(bool on) { if (m_arrow) m_arrow->setVisible(on); }
@@ -193,9 +194,9 @@ public:
 protected:
     void mouseReleaseEvent(QMouseEvent* e) override
     {
+        QFrame::mouseReleaseEvent(e);
         if (e->button() == Qt::LeftButton && rect().contains(e->pos()) && m_onClick)
             m_onClick();
-        QFrame::mouseReleaseEvent(e);
     }
 
 private:
@@ -222,7 +223,7 @@ void addToggleButton(ToolsPage* page, ShopCard* card, const QString& file, bool 
         if (err.isEmpty()) {
             PluginHost::reload();
             ShellMenu::syncWithPlugin();     // 禁用「右键动作」= 右键里那几项也该没了
-            page->rebuildGrid();
+            QTimer::singleShot(0, page, [page] { page->rebuildGrid(); });
         }
     });
 }
@@ -243,7 +244,9 @@ void addUninstallButton(ToolsPage* page, ShopCard* card, const QString& name, co
             card->stateLabel()->setText(QStringLiteral("没动。"));
             return;
         }
-        page->applyUninstall(file, name, card->stateLabel());
+        QTimer::singleShot(0, page, [page, file, name] {
+            page->applyUninstall(file, name, nullptr);
+        });
     });
 }
 
@@ -434,7 +437,7 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
     QString stateWord = PluginStore::stateWord(r.state);
     if (!r.remote.version.isEmpty()) {
         if (r.state == PluginStore::State::Update)
-            stateWord = QStringLiteral("可更新 v%1").arg(r.remote.version);
+            stateWord = QStringLiteral("\u2191 可更新 v%1").arg(r.remote.version);
         else
             stateWord = QStringLiteral("%1 (v%2)").arg(stateWord, r.remote.version);
     }
@@ -729,9 +732,12 @@ void ToolsPage::rebuildGrid()
 {
     // 只换卡片那一格，已经点开过的插件页留在 stack 里不动（dll 不卸载，拆了也没意义）
     QWidget* old = m_stack->widget(0);
-    m_stack->removeWidget(old);
-    old->deleteLater();
+    if (old) {
+        m_stack->removeWidget(old);
+        old->deleteLater();
+    }
     m_stack->insertWidget(0, buildGrid());
+    m_stack->setCurrentIndex(0);
     m_back->setVisible(false);
     m_heading->setText(QStringLiteral("插件商店"));
 }

@@ -1,6 +1,7 @@
 #include "Utils.h"
 
 #include "platform/Paths.h"
+#include "platform/ProcInfo.h"
 
 #include <QClipboard>
 #include <QColor>
@@ -27,11 +28,6 @@
 
 #include <QSettings>
 
-#include <windows.h>
-#include <shlobj.h>
-#include <shellapi.h>
-#include <tlhelp32.h>
-#include <psapi.h>
 
 namespace Utils {
 
@@ -98,26 +94,6 @@ void ensureDirs()
     QDir().mkpath(backupsDir());
 }
 
-bool extractIconToPng(const QString& iconFile, int iconIndex, const QString& pngOut)
-{
-    QString abs = QDir::toNativeSeparators(QDir::cleanPath(iconFile));
-    if (abs.endsWith(".ico", Qt::CaseInsensitive)) {
-        QImage img(abs);
-        if (!img.isNull())
-            return img.save(pngOut);
-    }
-
-    HICON hIcon = nullptr;
-    UINT n = PrivateExtractIconsW((LPCWSTR)abs.utf16(), iconIndex, 48, 48, &hIcon, nullptr, 1, 0);
-    if (n == 0 || hIcon == nullptr)
-        return false;
-    QImage img = QImage::fromHICON(hIcon);
-    DestroyIcon(hIcon);
-    if (img.isNull())
-        return false;
-    return img.save(pngOut);
-}
-
 QIcon cachedFileIcon(const QString& path)
 {
     static QMutex mu;
@@ -179,10 +155,8 @@ bool fileTargetMissing(const QString& raw)
         return false;                       // 没写过值 ≠ 失效
     if (QFileInfo::exists(p))
         return false;
-    if (!p.contains(QLatin1Char('\\')) && !p.contains(QLatin1Char('/'))) {
-        wchar_t found[MAX_PATH];
-        return SearchPathW(nullptr, (LPCWSTR)p.utf16(), nullptr, MAX_PATH, found, nullptr) == 0;
-    }
+    if (!p.contains(QLatin1Char('\\')) && !p.contains(QLatin1Char('/')))
+        return Platform::findExecutable(p).isEmpty();   // system32 里那些不能算失效
     return true;
 }
 
@@ -201,29 +175,6 @@ QIcon appIcon()
     p.setPen(Qt::white);
     p.drawText(pm.rect().adjusted(0, -2, 0, -2), Qt::AlignCenter, "L");
     return QIcon(pm);
-}
-
-QString fileVersion(const QString& exePath)
-{
-    const std::wstring w = QDir::toNativeSeparators(exePath).toStdWString();
-    DWORD handle = 0;
-    const DWORD size = GetFileVersionInfoSizeW(w.c_str(), &handle);
-    if (size == 0)
-        return {};
-    QByteArray data(int(size), 0);
-    if (!GetFileVersionInfoW(w.c_str(), 0, size, data.data()))
-        return {};
-    VS_FIXEDFILEINFO* ffi = nullptr;
-    UINT len = 0;
-    if (!VerQueryValueW(data.data(), L"\\", (LPVOID*)&ffi, &len) || !ffi)
-        return {};
-    if (ffi->dwFileVersionMS == 0 && ffi->dwFileVersionLS == 0)
-        return {};
-    return QString("%1.%2.%3.%4")
-        .arg(HIWORD(ffi->dwFileVersionMS))
-        .arg(LOWORD(ffi->dwFileVersionMS))
-        .arg(HIWORD(ffi->dwFileVersionLS))
-        .arg(LOWORD(ffi->dwFileVersionLS));
 }
 
 void trayNote(const QString& title, const QString& msg, int msec)
@@ -291,22 +242,6 @@ QString ConsoleLines::tail()
     return rest.isEmpty() ? QString() : decode(rest) + QLatin1Char('\n');
 }
 
-void trimWorkingSet()
-{
-    const BOOL ok = SetProcessWorkingSetSize(GetCurrentProcess(), SIZE_T(-1), SIZE_T(-1));
-    log(QString("trim working set: %1 (剩 %2MB)").arg(ok ? "ok" : QString("failed err %1").arg(GetLastError()))
-                   .arg(workingSetMB()));
-}
-
-int workingSetMB()
-{
-    PROCESS_MEMORY_COUNTERS_EX pmc{};
-    pmc.cb = sizeof(pmc);
-    if (!K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc)))
-        return -1;
-    return int(pmc.WorkingSetSize / (1024 * 1024));
-}
-
 // 两颗菜单图标共用的那块底：48x48、透明底、圆角色块。
 QPixmap tilePixmap(const QColor& color)
 {
@@ -362,32 +297,6 @@ QIcon bagIcon(const QColor& color)
     // 提手：半圆，两端正好落在袋口那条线上（椭圆中心 y=21，所以矩形 y = 21 - h/2）
     p.drawArc(QRectF(18.5, 13, 11, 16), 0, 180 * 16);
     return QIcon(pm);
-}
-
-bool killProcessTree(qint64 pid)
-{
-    if (pid <= 0)
-        return false;
-    bool killed = false;
-    // 先深度优先杀子孙：winget 会再拉起 AppInstaller/msiexec/setup.exe，
-    // 只杀它一个的话安装照样跑完，"取消"就成了假动作
-    if (const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0); snap != INVALID_HANDLE_VALUE) {
-        PROCESSENTRY32W ent{};
-        ent.dwSize = sizeof(ent);
-        if (Process32FirstW(snap, &ent)) {
-            do {
-                if ((qint64)ent.th32ProcessID != pid
-                    && (qint64)ent.th32ParentProcessID == pid)
-                    killed = killProcessTree((qint64)ent.th32ProcessID) || killed;
-            } while (Process32NextW(snap, &ent));
-        }
-        CloseHandle(snap);
-    }
-    if (const HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid)) {
-        killed = TerminateProcess(h, 1602 /* ERROR_CANCELLED */) || killed;
-        CloseHandle(h);
-    }
-    return killed;
 }
 
 bool renameStaged(const QString& stagedPath, const QString& destPath, QString* error)

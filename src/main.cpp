@@ -1,4 +1,8 @@
 #include "AppScanner.h"
+#include "platform/ProcInfo.h"
+#include "platform/FileMeta.h"
+#include "QRegularExpression"
+#include "QCoreApplication"
 #include "platform/Autostart.h"
 #include "platform/Paths.h"
 #include "platform/Launch.h"
@@ -1760,6 +1764,34 @@ int main(int argc, char* argv[])
         const QString entry = Platform::autostartEntry(QStringLiteral("/tmp/My Apps/ltool"));
         check("Exec 那一行带上 exe，且空格被转义（不然那一行会被切成两个参数）",
               entry.contains(QStringLiteral("Exec=/tmp/My\\ Apps/ltool")) ? "yes" : "no", "yes");
+#endif
+        // 4) 第五道缝（进程/文件元信息）：这些在两个平台上的答案本来就不一样，
+        //    分开断言才对得上 —— 特别是"做不到"那件，不许假装成功。
+        check("只给文件名时系统找得到（cmd.exe / 没有这个东西）",
+              (!Platform::findExecutable(QStringLiteral("cmd.exe")).isEmpty()
+               && Platform::findExecutable(QStringLiteral("ltool-no-such-exe-xyz")).isEmpty())
+              ? "yes" : "no", "yes");
+        std::printf("INFO 常驻内存=%d MB\n", Platform::workingSetMB());
+        check("当前进程的常驻内存量得到（-1 = 读不到）",
+              Platform::workingSetMB() > 0 ? "yes" : "no", "yes");
+#ifdef Q_OS_WIN
+        check("Windows 上能把工作集还给系统", Platform::trimWorkingSet() ? "yes" : "no", "yes");
+        check("Windows 上读得到版本号（拿系统里的 cmd.exe 量）",
+              QRegularExpression(QStringLiteral("^\\d+\\.\\d+")).match(
+                  Platform::fileVersion(Platform::expandEnv(QStringLiteral("%SystemRoot%"))
+                                         + QStringLiteral("/System32/cmd.exe"))).hasMatch()
+              ? "yes" : "no", "yes");
+        // 顺手量出来的一条事实，不当判据（判据该断言真相，不该为了绿去改期望）：
+        // 我们自己的 exe **没有** VERSIONINFO 资源 —— 关于页那个版本号是编译期宏，
+        // PE 里读不到，所以任务管理器/属性面板的版本列是空的。要补就得给 ltool.rc 加
+        // VERSIONINFO 并把 LTOOL_VERSION 传进 rc 编译，那是单独一件事。
+        std::printf("INFO 自己的 exe 版本号=[%s]（空=PE 里没有 VERSIONINFO 资源，已知缺口）\n",
+                    Platform::fileVersion(QCoreApplication::applicationFilePath()).toUtf8().constData());
+#else
+        check("这个平台上「把工作集还给系统」做不到，要如实报 false",
+              Platform::trimWorkingSet() ? "yes" : "no", "no");
+        check("这个平台上普通文件没有版本资源，返回空串（不许编一个）",
+              Platform::fileVersion(QStringLiteral("/bin/sh")).isEmpty() ? "yes" : "no", "yes");
 #endif
         check("空路径不许启动（launch）", Platform::launch(QString()) ? "yes" : "no", "no");
         check("空路径不许提权启动（launchAsAdmin）",

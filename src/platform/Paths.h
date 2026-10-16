@@ -25,4 +25,9 @@ QString knownDir(KnownDir d);
 // 把字符串吃掉比不展开更糟。
 QString expandEnv(const QString& s);
 
+// 只给了个文件名（没写路径）时，它在不在系统找得到的位置上。
+// Windows 是 SearchPathW（system32 里那些不能算失效），POSIX 是 $PATH 里找。
+// 找不到返回空串。
+QString findExecutable(const QString& name);
+
 } // namespace Platform

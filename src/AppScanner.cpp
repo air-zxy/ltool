@@ -1,4 +1,5 @@
 #include "AppScanner.h"
+#include "platform/FileMeta.h"
 #include "platform/Paths.h"
 
 #include "Utils.h"
@@ -190,7 +191,7 @@ QString iconCachePng(const QString& iconSrc, int iconIdx)
                                  QCryptographicHash::Md5).toHex());
     const QString png = Utils::iconsDir() + "/" + key + ".png";
     if (!QFile::exists(png))
-        Utils::extractIconToPng(iconSrc, iconIdx, png);
+        Platform::extractIconToPng(iconSrc, iconIdx, png);
     return QFile::exists(png) ? png : QString();
 }
 

@@ -503,7 +503,7 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 | `--cfgcheck` | 11 条：离屏建一次配置页，数每一行在不在、那两颗按钮是不是**各只有一颗**、每个分组框能不能从布局走到；另数设置窗菜单那四行（顺序、每行点开有内容、**只有「插件商店」那颗换成了画出来的袋子**），并把四颗图标拼成一条 PNG 存到 `%TEMP%\ltool-cfgshots\menu-icons.png` 供肉眼复核。 |
 | `--storetest` | 67 条（2026-10-16 数的；文档原来写 60，加"排队那句写进卡片"三条之前实测已经是 64）：插件商店离线那半条链 —— 清单解析（收两条、拒三条，拒的每条说一句）、`localRows`（目录里 `*.dll` 算已装、`*.dll.off` 算已禁用、旁边的 `*.bin` 不算）、和本地目录比（能装/已装/可更新/装不了）、`.part` 验哈希再改名（哈希或字节数不符就删掉半成品）、`<file>`↔`<file>.off` 改名禁用/恢复、索引地址留空回内置。**一次都不联网**。 |
 | `--storenet` | 17 条：真拉一次 `dist/index.json` 并离屏点「刷新清单」，**逐张卡**核对「那句状态词 ↔ 那颗按钮」——没装的只给「装」、装了的只给「禁用/启用」、可更新的两颗都要，再对状态行里的卡片数 / 能装数 / 拒收数 / 清单外数；三条新的盯这次改版：卡片上不许留裸字节数、本机装着的那几张都得写出 MB、**每颗按钮都在卡片最底下一行**（离屏量几何）。**要联网，没网就是红，所以不进 CI**。 |
-| `--seamtest` | 平台层那三道缝自己（`src/platform/Paths.h`、`Launch.h`、`Autostart.h`）16 条：四个已知目录问得到且**两两不同**、Windows 上各自落点、占位符换成系统里那个真值、夹在句子里的也换、认不出的原样留着、空路径不许启动/不许提权。Linux 侧 33 条走 `wsl -e bash tools/seam_probe.sh`（拼音 10 + 缝 14 + 自启 9 条真往返：HOME 指临时目录，勾上→文件真在→关掉→文件没了）。细节与反向验见文末 **跨平台移植：平台层那道缝**。 |
+| `--seamtest` | 平台层那三道缝自己（`src/platform/Paths.h`、`Launch.h`、`Autostart.h`、`ProcInfo.h`、`FileMeta.h`）20 条：四个已知目录问得到且**两两不同**、Windows 上各自落点、占位符换成系统里那个真值、夹在句子里的也换、认不出的原样留着、空路径不许启动/不许提权。Linux 侧 43 条走 `wsl -e bash tools/seam_probe.sh`（拼音 10 + 缝 14 + 自启 9 条真往返：HOME 指临时目录，勾上→文件真在→关掉→文件没了）。细节与反向验见文末 **跨平台移植：平台层那道缝**。 |
 | `--storemulti [颗数]` | 5 条：连着点几颗「装/更新」（他那次是九颗），然后**当场把卡片墙拆掉重排** —— 回调连的是页面（还活着）、卡片是 deleteLater 掉的，用裸控件指针就是往已删的 QWidget 上写。回退版跑出来 `rc=-1073741819`（0xC0000005 访问违例），修复版全绿。要联网、会往运行目录真写 dll，所以 `build/verify/storemulti.ps1` 先拷一份临时副本；不进 CI。 |
 | `--uninst [id]` | 11 条：卸载那条路整个走到底 —— 先 `PluginHost::page()` 把那张页开出来（dll 就此映射进进程）、回商店、`applyUninstall`、重排、再切回那张页；另一颗没打开过的直接卸。两种都得活着，且"当场删掉"与"排到下次启动"必有一条成立。跑在临时副本里（它会真删文件），不进 CI。 |
 | `--pintool` | 19 条几何断言：置顶窗那两个「收起」开关（离屏，一次都不 `show()`）。 |
@@ -603,3 +603,12 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - CMake 的形状：非 Windows 走到 `add_library(ltool_portable OBJECT 缝 + 名单)` 然后 **`return()`**，core / exe / 插件那几段一行都不执行。为什么用 OBJECT：这批名单里还有一堆调用 `Utils::` 那些**还没进缝**的函数，做成 `.so` 要么链接报未定义符号，要么（Linux 默认允许 .so 留未定义符号）**"链接成功"却根本跑不起来** —— 后者比现在老老实实说"编到这里为止"更像假绿。
 - 实测（WSL Ubuntu 24.04 / gcc 13.3 / cmake 3.28）：`cmake -S . -B /tmp/lp2` **CONFIGURE OK**（那条 status 打的是"只编平台层那三道缝 + 名单里那 12 个 TU"），`cmake --build --target ltool_portable` **BUILD OK**。Windows 那一整条路径一个字没动：`--seamtest` 16 / `--plugintest` 221 / `--pinyin` 52 / `--cfgcheck` 11 / `--storetest` 67 / `--cliptest` 56 全绿、退出码 0，闭环 20.9s、包 22.09MB、SHA `MATCH 3A5404E9F16D`。
 - 顺手让 Linux 那侧第一次**跑起来**验了行为而不是只编译：`tools/seam_probe.sh` 从 23 涨到 **33 条**，新并进去的 10 条是拼音引擎（`usableQuery` 三条闸门、全拼/首字母/中段、`An` 不抢「广告弹窗」的直达、`renwu` 不抢「开机启动分析」、表和码点对齐的"垃圾/任务"抽查、多音字两个读音）—— 全绿。**这十条是有分量的**：搜索框那一整路是可移植的，Linux 上不用重写。
+
+## 第五道缝：进程与文件元信息（2026-10-16 深夜，WP2 第二块砖）
+
+- 动机不是"再抽一道缝好看"，是 **`Utils.cpp` 自己还不能在 Linux 上编** —— 所有人都在调它，它就是一堵墙。里面最后六个 Win32 入口切成分给了两处：`platform/ProcInfo.{h}`（`killProcessTree` / `workingSetMB` / `trimWorkingSet`）和 `platform/FileMeta.{h}`（`extractIconToPng` / `fileVersion`），另外把"只给文件名时系统找不找得到"（`SearchPathW`）归进 `Paths.h` 叫 `findExecutable`。`fileTargetMissing` 那个判断逻辑留在 `Utils`（本来就跨平台），只把平台那一步调出去。
+- 三个真对等物 + 两件如实做不到：**`findExecutable`**（POSIX 用 `$PATH`）、**`workingSetMB`**（读 `/proc/self/statm` 第二列乘页大小）、**`killProcessTree`**（`/proc/<pid>/task/<tid>/children` 递归，读不到就扫 `/proc` 比 `PPid`，最后 `SIGKILL`）—— 探针里真的起了一个 `sleep 30` 再杀掉，验 `/proc/<pid>` 从在到没了。做不到的两件：`trimWorkingSet` 在 POSIX 没有对等物（`malloc_trim` 只还堆顶，动不了内核记的常驻页）→ **返回 false**，调用方要说"这平台做不到"；`fileVersion` 普通文件没有版本资源 → **空串**，不许编一个。
+- 判据：Windows `--seamtest` 16 → **20 条**，Linux 探针 23 → **43 条**。Windows 那 20 条里有一条顺带量出来的事实：**我们自己的 exe 没有 VERSIONINFO 资源**（`fileVersion(自己)` 是空，`Get-Item .VersionInfo.FileVersion` 也是空）—— 关于页那个版本号是编译期宏，PE 里读不到，所以任务管理器和"属性→详细信息"的版本列是空的。我没有为了让判据变绿去改期望值，而是把判据换成拿 `cmd.exe` 量（真读得到 `10.0.26100.x`），自己那份作为 `INFO` 打出来 + 记成已知缺口。
+- **Linux 侧的 TU 名单从 12 涨到 13**：`Utils.cpp` 进来了（WSL 复测 `g++ -fsyntax-only` 逐个 TU 量：还是那 12 个 + Utils，其余 22 个照旧卡在 `windows.h`）。CMake 的 `LTOOL_CORE_PORTABLE_SRC` 跟着加了一行。
+- **ABI 闸当场涨了价**：`deliver` 的 `abi` 栏从"缺 7 个符号"变成**缺 8 个**（capture 从缺 1 变缺 2）。这轮又删了六个 `Utils::` 名字，已发布的那批里 import 到的多了一个。#91 现在更贵了 —— 越往后抽缝，要重发的插件越多。这不是停止的理由，但它是"什么时候停手重发一轮产物"的定价信号。
+- 对照数与交付：Windows 221 / 52 / 11 / 67 / 56 + `--seamtest` 20 全绿；闭环 18.9s、22.09MB、SHA `MATCH 5B7CA22BD43D`，装的那份同步到本次构建（`--plugintest` 那 12 红还是"右键动作已卸载"那一族，不是新伤）。

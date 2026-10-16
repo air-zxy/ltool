@@ -89,10 +89,11 @@ endif()
 # 缝的规格写在 src/platform/*.h 里，不在这里重复。
 if(WIN32)
     set(LTOOL_PLATFORM_SRC src/platform/Paths_win.cpp src/platform/Launch_win.cpp
-        src/platform/Autostart_win.cpp)
+        src/platform/Autostart_win.cpp src/platform/FileMeta_win.cpp src/platform/ProcInfo_win.cpp)
 else()
     set(LTOOL_PLATFORM_SRC src/platform/Paths_posix.cpp src/platform/Launch_posix.cpp
-        src/platform/Autostart_posix.cpp)
+        src/platform/Autostart_posix.cpp src/platform/FileMeta_posix.cpp
+        src/platform/ProcInfo_posix.cpp)
 endif()
 
 # ---- 非 Windows：台阶一，只编"量过确实可移植"的那些 TU，然后到此为止 ----
@@ -105,6 +106,8 @@ endif()
 # 那两种形状都比现在老实说"编到这里为止"更像假绿。
 if(NOT WIN32)
     set(LTOOL_CORE_PORTABLE_SRC
+        src/Utils.cpp           # 2026-10-16 夜把里面最后六个 Win32 入口抽成 FileMeta / ProcInfo
+                                # 两道缝之后，这个 TU（所有人都在调它）终于是可移植的了
         src/Pinyin.cpp          # 搜索框的拼音匹配（表在 pinyin_data.h，只吃 QString）
         src/Archives.cpp        # 走系统 libarchive；bit7z 那颗后端只在 Windows 那边编
         src/CaptureHistory.cpp

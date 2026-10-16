@@ -1,4 +1,5 @@
 #include "SilentInstallLog.h"
+#include "platform/ProcInfo.h"
 
 #include <QApplication>
 #include <QDesktopServices>
@@ -294,7 +295,7 @@ bool SilentInstallLog::cancel(int jobId)
     showText(jobId, "正在取消：终止安装进程及其子进程…\n");
     // winget 只是壳，真正在写文件的是它拉起的 msiexec / setup.exe，必须连树一起杀。
     // 那些进程往往已经提权，这里可能杀不动 —— 如实写进日志，别假装取消了。
-    const bool killed = pid && Utils::killProcessTree(pid);
+    const bool killed = pid && Platform::killProcessTree(pid);
     if (!killed)
         showText(jobId, "提示：没能终止安装进程（多半是安装器已经提权在跑）。"
                         "已标记为取消，但这一次安装可能还会继续到结束，"

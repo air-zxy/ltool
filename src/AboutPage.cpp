@@ -17,6 +17,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QNetworkProxy>
 #include <QPushButton>
 #include <QProcess>
 #include <QRegularExpression>
@@ -102,6 +103,8 @@ AboutPage::AboutPage(QWidget* parent)
     m_status = new QLabel(QStringLiteral("还没检查过"), this);
     m_status->setObjectName(QStringLiteral("updateStatus"));
     m_status->setWordWrap(true);
+    m_status->setTextFormat(Qt::RichText);
+    m_status->setOpenExternalLinks(true);
     lay->addWidget(m_status);
 
     m_progress = new QProgressBar(this);
@@ -278,34 +281,48 @@ void AboutPage::startCheck()
     m_check->setEnabled(false);
     m_status->setText(QStringLiteral("正在问 github 有没有新版本…"));
 
-    // 管理器挂在页上：页（连带设置窗）销毁时 reply 一起断，回调里再用 this 已经被 Qt 摘掉。
     auto* nam = new QNetworkAccessManager(this);
     DevEnv::applyProxy(nam);
-    // 走**网页那一条**，不走 api.github.com：匿名 api 的额度是每台出口 IP 60 次/小时，
-    // 一台 NAT 后面多查几次就 403（他这次撞的就是 —— 而且是我拿脚本反复查 CI 把额度用光的）。
-    // /releases/latest 会 302 到 /releases/tag/vX.Y.Z，跟完重定向读最终地址就知道最新 tag，
-    // 这条路没有限流；安装包直链按我们自己的命名推出来，资产大小不预报（下载时自己报）。
-    QNetworkRequest req { QUrl(releasesPageUrl()) };
-    req.setRawHeader("User-Agent", QByteArrayLiteral("ltool-updater"));
-    req.setTransferTimeout(20000);
-    QNetworkReply* reply = nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, nam] {
-        m_checking = false;
-        m_check->setEnabled(true);
-        const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const QString finalUrl = reply->url().toString();
-        reply->deleteLater();
-        nam->deleteLater();
 
-        if (reply->error() != QNetworkReply::NoError) {
-            const QString why = http == 404
-                ? QStringLiteral("这个仓库还没在 GitHub 上发过 Release（回 404）—— 先发一版才有东西可比")
-                : QStringLiteral("%1%2").arg(reply->errorString(),
-                                             http ? QStringLiteral("（HTTP %1）").arg(http) : QString());
-            m_status->setText(QStringLiteral("检查更新没走通：%1。可以直接点「打开发布页」看最新版本。").arg(why));
-            Utils::log(QStringLiteral("update: 检查失败 http=%1 err=%2").arg(http).arg(reply->errorString()));
-            return;
-        }
+    auto doRequest = [this, nam](auto self, bool isDirect) -> void {
+        if (isDirect)
+            nam->setProxy(QNetworkProxy::NoProxy);
+        QNetworkRequest req { QUrl(releasesPageUrl()) };
+        req.setRawHeader("User-Agent", QByteArrayLiteral("ltool-updater"));
+        req.setTransferTimeout(15000);
+        QNetworkReply* reply = nam->get(req);
+        connect(reply, &QNetworkReply::finished, this, [this, reply, nam, self, isDirect] {
+            const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const QString finalUrl = reply->url().toString();
+            const auto err = reply->error();
+            const QString errStr = reply->errorString();
+            reply->deleteLater();
+
+            if (err != QNetworkReply::NoError) {
+                const bool isProxyErr = (err == QNetworkReply::ProxyConnectionRefusedError
+                                         || err == QNetworkReply::ProxyNotFoundError
+                                         || err == QNetworkReply::ProxyTimeoutError
+                                         || errStr.contains(QLatin1String("Proxy"), Qt::CaseInsensitive));
+                if (!isDirect && isProxyErr) {
+                    Utils::log(QStringLiteral("update: 代理被拒（%1），自动尝试直连...").arg(errStr));
+                    m_status->setText(QStringLiteral("正在问 github 有没有新版本（代理不可用，改走直连）…"));
+                    self(self, true);
+                    return;
+                }
+                m_checking = false;
+                m_check->setEnabled(true);
+                nam->deleteLater();
+
+                const QString why = http == 404
+                    ? QStringLiteral("这个仓库还没在 GitHub 上发过 Release（回 404）—— 先发一版才有东西可比")
+                    : QStringLiteral("%1%2").arg(errStr,
+                                                 http ? QStringLiteral("（HTTP %1）").arg(http) : QString());
+                m_status->setText(QStringLiteral(
+                    "检查更新没走通：%1。可以直接点 <a href=\"%2\" style=\"color:#5b8def;text-decoration:underline;\">打开发布页</a> 看最新版本。")
+                    .arg(why, releasesPageUrl()));
+                Utils::log(QStringLiteral("update: 检查失败 http=%1 err=%2").arg(http).arg(errStr));
+                return;
+            }
         // 最终地址必须是 .../releases/tag/<tag>：没跳过去就是"最新"这条没指到任何 release
         const QString tag = tagFromReleasesUrl(finalUrl);
         const QString ver = versionFromTag(tag);
@@ -354,6 +371,8 @@ void AboutPage::startCheck()
             Utils::log(QStringLiteral("update: 最新 %1，本机 %2，不用动").arg(ver, currentVersion()));
         }
     });
+    };
+    doRequest(doRequest, false);
 }
 
 void AboutPage::startDownload()
