@@ -717,3 +717,11 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 探针跟着修了两处自己的失真：`tools/link_gap.sh` 以前不认名单里的**行尾注释**（我加 TU 时带了说明，awk 的"这行以 ) 结尾"判断被注释带偏，最后一颗整条漏掉，awk 25 / grep 26 —— 幸好那条独立核对还在，把解析漏洞当场抓出来了）；两边现在都先剥 `#` 后面的内容再数。另一处是 AboutPage 进名单后探针不给 `LTOOL_VERSION`，那 1 个 TU 的 `#error` 会被念成实现缺口 —— 和当初 moc / libarchive 是同一类错。
 - 数字：可移植 TU core 15 → **18**（+7 道缝文件 = 探针里 25 个），`g++ -fsyntax-only` 全过、**真 CMake 在 WSL 上 `--target ltool_portable` 构建过了**；链接缺口仍是 **3**（`SevenZip::compress`、`ShellMenu::syncWithPlugin` 这两个要拍形状 + `SettingsDialog::staticMetaObject` 那个 TU 还没进名单）。POSIX 探针 69/0。Windows 侧离线判据 **578 条 0 红**（`--plugintest` 240、`--storetest` 73、`--seamtest` 38、cfgcheck 11、gridtest 64、pinyin 52、linuxdotest 44、cliptest 56+1 SKIP）。abi 仍缺 8（没删名字）。闭环 19.0s、22.11MB、`install MATCH FDF38B0E1BD6`，sync 后 19/19 与构建逐颗一致。
 - 版本判断：**不升**。Windows 侧 8 处调用是同一句旗标应用搬进缝（进程照常起、输出照常读，578 条判据一字没变），POSIX 侧还没有用户拿得到的产物。
+
+## 跨平台地图更新（2026-10-17 夜，第十刀之后量的，不是印象）
+
+- 现在能编的 core TU 是 18 个，**正好等于名单里的 18 个** —— 也就是说"白捡的"已经捡完了，剩下 20 个每个都要动一次结构。
+- 剩下 20 个按卡住的东西分类（每个都是 grep + 两个编译器实测出来的）：注册表那一族 5 个（EnvPath 最薄：只有 RegOpenKeyExW / RegSetValueExW / RegGetValueW；RegClean 60 处 Reg 系列最厚）；机制级要拍形状的 6 个（SevenZip 卡 bit7z、UsnIndex/FileIndexer/DiskScan 卡 USN-MFT 和 FindFirstFileExW 那套快速枚举、AdBlocker 卡 EnumWindows + DWM 取标题、ClipboardStore 卡 GetClipboardSequenceNumber）；纯界面的那几个（ConfigPage / SearchWindow / SettingsDialog / StartupAudit / Firewall / AppScanner / ShellMenu）各带注册表或 COM。
+- 一处我读错的规格顺手改掉：`SettingsDialog` 的 showEvent 里除了 `SetWindowPos` 还有 `DwmSetWindowAttribute`（深色标题栏）和 `SetForegroundWindow` —— 只把 SetWindowPos 抽进缝**并不能**让这颗 TU 进名单，那条"消掉 staticMetaObject 缺口"的说法作废。
+- 干净的 on/off 置顶其实只剩一处（`PinWindow::applyTopmost`，旗标是 NOMOVE|NOSIZE|NOACTIVATE）；`CaptureOverlay` 那颗和抢焦点那一整套（按 Alt、接前台线程输入队列、重试、写日志）缠在一起，不能跟着一起搬 —— 所以"setTopMost 那道缝"这一刀的价值只是少抄一遍，不推名单，先排在 EnvPath 后面。
+- 下一刀定在 **EnvPath**：Windows 那份逐字保住行为，POSIX 那份有真对等做法（`~/.config/environment.d` 那套 + shell rc 追加），做完 core 可移植 TU 18 → 19。它不欠任何人拍板。
