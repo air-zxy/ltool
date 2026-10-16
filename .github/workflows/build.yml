@@ -193,7 +193,7 @@ jobs:
           head -c 5000 /dev/urandom > "$RUNNER_TEMP/test_diskbranch/root.bin"
           export LTOOL_DISKBRANCH_DIR="$RUNNER_TEMP/test_diskbranch"
 
-          for f in --smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --diskbranch; do
+          for f in --smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --seamtest --diskbranch; do
             echo "===== $f ====="
             log_file="$RUNNER_TEMP/test_${f//--/}.log"
             cmd="./ltool.exe $f"

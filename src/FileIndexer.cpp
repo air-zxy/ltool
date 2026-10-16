@@ -1,4 +1,5 @@
 #include "FileIndexer.h"
+#include "platform/Paths.h"
 #include "UsnIndex.h"
 #include "Utils.h"
 
@@ -223,7 +224,7 @@ QVector<FileIndexer::QuickRoot> FileIndexer::quickRoots()
         if (!dir.isEmpty())
             roots.append({dir, depth});
     };
-    add(Utils::knownFolderPath(Utils::KnownFolder::Desktop), 4);
+    add(Platform::knownDir(Platform::KnownDir::UserDesktop), 4);
     add(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation), 3);
     add(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation), 3);
     add(QStandardPaths::writableLocation(QStandardPaths::PicturesLocation), 2);

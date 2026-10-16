@@ -1,4 +1,5 @@
 #include "PinWindow.h"
+#include "platform/Launch.h"
 
 #include "OcrBundle.h"
 #include "OcrPanel.h"
@@ -1017,7 +1018,7 @@ void PinWindow::buildToolbar()
                                  .arg(Utils::capturesDir())
                                  .arg(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss"));
         if ((m_flat.isNull() ? m_pm : m_flat).save(path))
-            Utils::revealInExplorer(path);
+            Platform::reveal(path);
     });
     lay->addWidget(saveBtn);
     lay->addStretch(1);
@@ -1088,7 +1089,7 @@ void PinWindow::showContextMenu(const QPoint& globalPos)
         const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("另存为截图"),
                                                           def, QStringLiteral("PNG 图片 (*.png)"));
         if (!path.isEmpty() && m_pm.save(path))
-            Utils::revealInExplorer(path);
+            Platform::reveal(path);
     } else {
         close();
     }

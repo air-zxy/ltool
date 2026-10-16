@@ -1,4 +1,6 @@
 #include "UninstallPage.h"
+#include "platform/Launch.h"
+#include "platform/Paths.h"
 
 #include "Firewall.h"
 #include "InfoRow.h"
@@ -120,7 +122,7 @@ void splitCommand(const QString& cmd, QString* exe, QString* params)
 // DisplayIcon 常见形态：C:\dir\a.exe 或 "C:\dir\a.exe",0 —— 清成能用的 exe 路径
 QString cleanIconPath(const QString& raw)
 {
-    QString p = Utils::expandEnv(raw.trimmed());
+    QString p = Platform::expandEnv(raw.trimmed());
     p.remove(QLatin1Char('"'));
     const int comma = p.lastIndexOf(QLatin1Char(','));
     if (comma > 2) {
@@ -690,7 +692,7 @@ void UninstallPage::doUninstall(int entryIdx, bool quiet)
         != QMessageBox::Yes)
         return;
     // msiexec 只给了文件名，靠系统目录解析；其它情况 exe 已是绝对路径
-    const bool ok = Utils::launch(exe, params, QString(), true);
+    const bool ok = Platform::launch(exe, params, QString(), true);
     m_status->setText(ok ? QStringLiteral("已交给系统执行：%1 · 卸完请点「重新扫描」核对")
                            .arg(line)
                         : QStringLiteral("启动失败：%1").arg(line));

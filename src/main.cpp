@@ -1,4 +1,6 @@
 #include "AppScanner.h"
+#include "platform/Paths.h"
+#include "platform/Launch.h"
 #include "AdBlocker.h"
 #include "CaptureHistory.h"
 #include "ConfigPage.h"
@@ -167,15 +169,15 @@ bool keySeqToHotkey(const QKeySequence& ks, UINT* mods, UINT* vk)
 int runSmokeTest()
 {
     // 诊断：打印各扫描根目录与 .lnk 数量
-    struct FolderCheck { const char* label; Utils::KnownFolder kf; };
+    struct FolderCheck { const char* label; Platform::KnownDir kf; };
     static const FolderCheck folders[] = {
-        {"desktop", Utils::KnownFolder::Desktop},
-        {"publicDesktop", Utils::KnownFolder::PublicDesktop},
-        {"userPrograms", Utils::KnownFolder::UserStartMenuPrograms},
-        {"commonPrograms", Utils::KnownFolder::CommonStartMenuPrograms},
+        {"desktop", Platform::KnownDir::UserDesktop},
+        {"publicDesktop", Platform::KnownDir::SharedDesktop},
+        {"userPrograms", Platform::KnownDir::UserApps},
+        {"commonPrograms", Platform::KnownDir::SystemApps},
     };
     for (const FolderCheck& fc : folders) {
-        const QString dir = Utils::knownFolderPath(fc.kf);
+        const QString dir = Platform::knownDir(fc.kf);
         const int lnkCount = QDir(dir).entryList({"*.lnk"}, QDir::Files).size();
         std::fprintf(stdout, "folder %s: %s exists=%d lnk=%d\n",
                      fc.label, dir.toUtf8().constData(),
@@ -1664,6 +1666,79 @@ int main(int argc, char* argv[])
             }
         }
         std::printf("cfgcheck: 失败 %d 项\n", bad);
+        std::fflush(stdout);
+        return bad;
+    }
+
+    // --seamtest：平台层那两道缝本身的可观测行为（src/platform/Paths.h、Launch.h）。
+    // 为什么要这条：这一轮把 SHGetKnownFolderPath / ShellExecuteExW / %VAR% 展开从 Utils
+    // 原样搬到 src/platform/*_win.cpp，纯搬家、行为零变化 —— 可"switch 里把枚举项配错一行"
+    // 这种事故，原有那 221+52+36 条一条都发现不了（没人断言过桌面到底扫的是哪个目录）。
+    // 之后每搬一道缝都要留下这种"缝自己能被断言"的判据，否则 POSIX 那份写完，
+    // 没人有证据说它和 Windows 这份对得上。最后两条不许真去启动任何东西。
+    if (args.contains("--seamtest")) {
+        int bad = 0;
+        const auto check = [&bad](const char* name, const QString& got, const QString& want) {
+            const bool ok = got == want;
+            if (!ok)
+                ++bad;
+            std::printf("%s %s got=[%s] want=[%s]\n", ok ? "PASS" : "FAIL", name,
+                        got.toUtf8().constData(), want.toUtf8().constData());
+        };
+        const QString desk = Platform::knownDir(Platform::KnownDir::UserDesktop);
+        const QString shared = Platform::knownDir(Platform::KnownDir::SharedDesktop);
+        const QString userApps = Platform::knownDir(Platform::KnownDir::UserApps);
+        const QString sysApps = Platform::knownDir(Platform::KnownDir::SystemApps);
+        std::printf("INFO 桌面=[%s] 共用桌面=[%s] 用户条目=[%s] 系统条目=[%s]\n",
+                    desk.toUtf8().constData(), shared.toUtf8().constData(),
+                    userApps.toUtf8().constData(), sysApps.toUtf8().constData());
+        check("用户桌面问得到", desk.isEmpty() ? "no" : "yes", "yes");
+        check("用户级启动条目目录问得到", userApps.isEmpty() ? "no" : "yes", "yes");
+        check("全体用户级启动条目目录问得到", sysApps.isEmpty() ? "no" : "yes", "yes");
+        QStringList dirs;
+        dirs << desk << shared << userApps << sysApps;
+        dirs.removeAll(QString());
+        int dupes = 0;
+        for (int i = 0; i < dirs.size(); ++i)
+            for (int j = i + 1; j < dirs.size(); ++j)
+                if (dirs[i] == dirs[j])
+                    ++dupes;
+        check("问出来的目录两两不同（枚举项配错一行就会撞车）", dupes == 0 ? "yes" : "no", "yes");
+#ifdef Q_OS_WIN
+        check("用户桌面就是 profile 下那个 Desktop",
+              desk.startsWith(QDir::homePath() + QStringLiteral("/Desktop")) ? "yes" : "no", "yes");
+        check("共用桌面走的是 Public 那一棵",
+              shared.contains(QStringLiteral("/Public")) ? "yes" : "no", "yes");
+        check("用户级条目在用户自己 profile 下",
+              userApps.startsWith(QDir::homePath()) ? "yes" : "no", "yes");
+        check("全体级条目不在用户 profile 下",
+              sysApps.startsWith(QDir::homePath()) ? "yes" : "no", "no");
+#endif
+#ifdef Q_OS_WIN
+        const QString knownToken = QStringLiteral("%SystemRoot%");
+        const QString knownValue = qEnvironmentVariable("SystemRoot");
+        const QString unknownToken = QStringLiteral("%LTOOL_NO_SUCH_VAR%");
+#else
+        const QString knownToken = QStringLiteral("$HOME");
+        const QString knownValue = QDir::homePath();
+        const QString unknownToken = QStringLiteral("$LTOOL_NO_SUCH_VAR");
+#endif
+        // 这两条要跟"真的那个值"比，不能跟 expandEnv 自己吐出来的东西比：
+        // 反向验（把 expandEnv 改成直接 return s）时，自己比自己那版照样绿，等于没判据。
+        check("认得出的占位符换成了系统里那个真值",
+              Platform::expandEnv(knownToken) == knownValue ? "yes" : "no", "yes");
+        check("句子里夹着的占位符也换，两头文字不动",
+              Platform::expandEnv(QStringLiteral("A") + knownToken + QStringLiteral("B"))
+                  == QStringLiteral("A") + knownValue + QStringLiteral("B") ? "yes" : "no", "yes");
+        check("认不出的占位符原样留着（不许吃掉字符串）",
+              Platform::expandEnv(unknownToken) == unknownToken ? "yes" : "no", "yes");
+        check("没有占位符的普通路径原样回去",
+              Platform::expandEnv(QStringLiteral("/tmp/plain")) == QStringLiteral("/tmp/plain")
+              ? "yes" : "no", "yes");
+        check("空路径不许启动（launch）", Platform::launch(QString()) ? "yes" : "no", "no");
+        check("空路径不许提权启动（launchAsAdmin）",
+              Platform::launchAsAdmin(QString()) ? "yes" : "no", "no");
+        std::printf("seamtest: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad;
     }

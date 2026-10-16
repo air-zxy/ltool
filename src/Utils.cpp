@@ -1,5 +1,7 @@
 #include "Utils.h"
 
+#include "platform/Paths.h"
+
 #include <QClipboard>
 #include <QColor>
 #include <QCoreApplication>
@@ -96,23 +98,6 @@ void ensureDirs()
     QDir().mkpath(backupsDir());
 }
 
-QString knownFolderPath(KnownFolder kf)
-{
-    KNOWNFOLDERID id = FOLDERID_Desktop;
-    switch (kf) {
-    case KnownFolder::Desktop:                  id = FOLDERID_Desktop; break;
-    case KnownFolder::PublicDesktop:            id = FOLDERID_PublicDesktop; break;
-    case KnownFolder::UserStartMenuPrograms:    id = FOLDERID_Programs; break;
-    case KnownFolder::CommonStartMenuPrograms:  id = FOLDERID_CommonPrograms; break;
-    }
-    PWSTR p = nullptr;
-    if (FAILED(SHGetKnownFolderPath(id, KF_FLAG_DONT_VERIFY, nullptr, &p)))
-        return {};
-    QString r = QString::fromWCharArray(p);
-    CoTaskMemFree(p);
-    return QDir::fromNativeSeparators(r);
-}
-
 bool extractIconToPng(const QString& iconFile, int iconIndex, const QString& pngOut)
 {
     QString abs = QDir::toNativeSeparators(QDir::cleanPath(iconFile));
@@ -157,79 +142,6 @@ QIcon cachedFileIcon(const QString& path)
     return icon;
 }
 
-bool launchAsAdmin(const QString& path, const QString& params, const QString& workingDir)
-{
-    if (path.isEmpty())
-        return false;
-    QString file = QDir::toNativeSeparators(path);
-    QString wd = workingDir;
-    if (wd.isEmpty())
-        wd = QFileInfo(path).absolutePath();
-    if (!QFileInfo(wd).isDir())
-        wd.clear();
-
-    SHELLEXECUTEINFOW sei = {};
-    sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_ASYNCOK;
-    sei.lpVerb = L"runas";
-    sei.lpFile = (LPCWSTR)file.utf16();
-    if (!params.isEmpty())
-        sei.lpParameters = (LPCWSTR)params.utf16();
-    if (!wd.isEmpty()) {
-        wd = QDir::toNativeSeparators(wd);
-        sei.lpDirectory = (LPCWSTR)wd.utf16();
-    }
-    sei.nShow = SW_SHOWNORMAL;
-    return ShellExecuteExW(&sei) != FALSE;
-}
-
-bool launch(const QString& path, const QString& params, const QString& workingDir, bool async)
-{
-    if (path.isEmpty())
-        return false;
-    QString file = QDir::toNativeSeparators(path);
-    QString wd = workingDir;
-    if (wd.isEmpty())
-        wd = QFileInfo(path).absolutePath();
-    if (!QFileInfo(wd).isDir())
-        wd.clear();
-
-    SHELLEXECUTEINFOW sei = {};
-    sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_FLAG_NO_UI;
-    if (async)
-        sei.fMask |= SEE_MASK_ASYNCOK;   // 交给 shell 异步跑，不等 DDE/进程起来
-    sei.lpVerb = L"open";
-    sei.lpFile = (LPCWSTR)file.utf16();
-    if (!params.isEmpty())
-        sei.lpParameters = (LPCWSTR)params.utf16();
-    if (!wd.isEmpty()) {
-        wd = QDir::toNativeSeparators(wd);
-        sei.lpDirectory = (LPCWSTR)wd.utf16();
-    }
-    sei.nShow = SW_SHOWNORMAL;
-    return ShellExecuteExW(&sei) != FALSE;
-}
-
-void revealInExplorer(const QString& path)
-{
-    QString native = QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath());
-    QString params = "/select,\"" + native + "\"";
-    ShellExecuteW(nullptr, L"open", L"explorer.exe", (LPCWSTR)params.utf16(), nullptr, SW_SHOWNORMAL);
-}
-
-QString expandEnv(const QString& s)
-{
-    wchar_t buf[2048];
-    DWORD n = ExpandEnvironmentStringsW((LPCWSTR)s.utf16(), buf, 2048);
-    if (n == 0 || n > 2048)
-        return s;
-    QString r = QString::fromWCharArray(buf);
-    while (r.endsWith(QChar(0)))
-        r.chop(1);
-    return r;
-}
-
 QString exeFromCommand(const QString& cmd)
 {
     QString s = cmd.trimmed();
@@ -248,11 +160,11 @@ QString exeFromCommand(const QString& cmd)
     for (const char* ext : kExeExt)
         if (s.endsWith(QLatin1String(ext), Qt::CaseInsensitive))
             return s;   // 整条就是文件名：哪怕文件已经没了，也不能按空格切
-    if (QFileInfo::exists(expandEnv(s)))
+    if (QFileInfo::exists(Platform::expandEnv(s)))
         return s;
     for (int i = s.indexOf(QLatin1Char(' ')); i > 0; i = s.indexOf(QLatin1Char(' '), i + 1)) {
         const QString head = s.left(i);
-        if (QFileInfo::exists(expandEnv(head)))
+        if (QFileInfo::exists(Platform::expandEnv(head)))
             return head;
     }
     const int sp = s.indexOf(QLatin1Char(' '));
@@ -261,7 +173,7 @@ QString exeFromCommand(const QString& cmd)
 
 bool fileTargetMissing(const QString& raw)
 {
-    QString p = expandEnv(raw.trimmed());
+    QString p = Platform::expandEnv(raw.trimmed());
     p.remove(QLatin1Char('"'));
     if (p.isEmpty())
         return false;                       // 没写过值 ≠ 失效

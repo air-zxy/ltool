@@ -1,4 +1,5 @@
 #include "SoftwarePage.h"
+#include "platform/Launch.h"
 #include "AppScanner.h"
 #include "DevEnv.h"
 #include "Utils.h"
@@ -341,7 +342,7 @@ void SoftwarePage::rebuild()
             const QString args = match.args;
             connect(openBtn, &QPushButton::clicked, this, [lnk, args] {
                 // 异步：带 DDE 的 lnk 同步启动会等回调（实测卡 700ms）
-                Utils::launch(lnk, args, {}, true);
+                Platform::launch(lnk, args, {}, true);
             });
             rowBtns.append(openBtn);
         }
@@ -586,7 +587,7 @@ void SoftwarePage::showVersions(const QString& name, const QString& keywords,
             auto* act = menu.addAction(QString("v%1    %2").arg(lv.ver, lv.name));
             act->setToolTip(target);
             connect(act, &QAction::triggered, this, [target] {
-                Utils::revealInExplorer(target);
+                Platform::reveal(target);
             });
         }
     }
@@ -615,7 +616,7 @@ void SoftwarePage::download(const QString& name, const QString& wingetId, const 
 
 void SoftwarePage::openOfficial(const QString& url)
 {
-    Utils::launch(url);
+    Platform::launch(url);
 }
 
 void SoftwarePage::launchOrOpen(const QString& keywords, const QString& url)
@@ -625,7 +626,7 @@ void SoftwarePage::launchOrOpen(const QString& keywords, const QString& url)
         const QString hay = (a.name + " " + a.target).toLower();
         for (const QString& kw : kws) {
             if (hay.contains(kw.trimmed().toLower())) {
-                Utils::launch(a.lnkPath, {}, {}, true);   // 异步：带 DDE 的 lnk 同步会等回调
+                Platform::launch(a.lnkPath, {}, {}, true);   // 异步：带 DDE 的 lnk 同步会等回调
                 return;
             }
         }

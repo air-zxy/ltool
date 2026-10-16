@@ -1,4 +1,5 @@
 #include "AppScanner.h"
+#include "platform/Paths.h"
 
 #include "Utils.h"
 
@@ -204,10 +205,10 @@ QVector<AppEntry> scan()
 
     struct Loc { QString dir; const char* cat; int depth; };
     QVector<Loc> locs;
-    const auto desktop = Utils::knownFolderPath(Utils::KnownFolder::Desktop);
-    const auto pubDesktop = Utils::knownFolderPath(Utils::KnownFolder::PublicDesktop);
-    const auto userProgs = Utils::knownFolderPath(Utils::KnownFolder::UserStartMenuPrograms);
-    const auto commonProgs = Utils::knownFolderPath(Utils::KnownFolder::CommonStartMenuPrograms);
+    const auto desktop = Platform::knownDir(Platform::KnownDir::UserDesktop);
+    const auto pubDesktop = Platform::knownDir(Platform::KnownDir::SharedDesktop);
+    const auto userProgs = Platform::knownDir(Platform::KnownDir::UserApps);
+    const auto commonProgs = Platform::knownDir(Platform::KnownDir::SystemApps);
     if (!desktop.isEmpty())
         locs.push_back({desktop, "desktop", 1});
     if (!pubDesktop.isEmpty() && pubDesktop.compare(desktop, Qt::CaseInsensitive) != 0)
@@ -254,7 +255,7 @@ QVector<AppEntry> scan()
         QString iconSrc = li.iconPath;
         int iconIdx = li.iconIndex;
         if (!iconSrc.isEmpty()) {
-            iconSrc = Utils::expandEnv(iconSrc);
+            iconSrc = Platform::expandEnv(iconSrc);
             if (QDir::isRelativePath(iconSrc)) {
                 QString cand = QDir::cleanPath(QFileInfo(lnk).absolutePath() + "/" + iconSrc);
                 if (!QFileInfo::exists(cand) && !e.target.isEmpty())

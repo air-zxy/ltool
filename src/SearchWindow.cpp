@@ -1,4 +1,6 @@
 #include "SearchWindow.h"
+#include "platform/Launch.h"
+#include "platform/Paths.h"
 
 #include "CaptureHistory.h"
 #include "ClipboardStore.h"
@@ -369,10 +371,10 @@ void SearchWindow::watchAppDirs()
         for (const QFileInfo& fi : d.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot))
             self(self, fi.absoluteFilePath(), depth - 1);
     };
-    const QString desktop = Utils::knownFolderPath(Utils::KnownFolder::Desktop);
-    const QString pubDesktop = Utils::knownFolderPath(Utils::KnownFolder::PublicDesktop);
-    const QString userProgs = Utils::knownFolderPath(Utils::KnownFolder::UserStartMenuPrograms);
-    const QString commonProgs = Utils::knownFolderPath(Utils::KnownFolder::CommonStartMenuPrograms);
+    const QString desktop = Platform::knownDir(Platform::KnownDir::UserDesktop);
+    const QString pubDesktop = Platform::knownDir(Platform::KnownDir::SharedDesktop);
+    const QString userProgs = Platform::knownDir(Platform::KnownDir::UserApps);
+    const QString commonProgs = Platform::knownDir(Platform::KnownDir::SystemApps);
     if (!desktop.isEmpty())
         collect(collect, desktop, 1);
     if (!pubDesktop.isEmpty())
@@ -653,7 +655,7 @@ bool SearchWindow::eventFilter(QObject* obj, QEvent* e)
                             bumpUsage(target);
                             saveUsage();
                             hide();
-                            Utils::launchAsAdmin(target);
+                            Platform::launchAsAdmin(target);
                             return true;
                         }
                     }
@@ -1320,7 +1322,7 @@ void SearchWindow::activateRow(int row)
         saveUsage();
         hide();   // 先收窗再启动：带 DDE 段的 .lnk 同步执行要等握手回调（实测 729ms）
         // 优先通过 lnk 启动（保留参数/工作目录）；异步拿不到失败回执，所以只在没有 lnk 时退到目标
-        Utils::launch(r.extra.isEmpty() ? r.target : r.extra, {}, {}, true);
+        Platform::launch(r.extra.isEmpty() ? r.target : r.extra, {}, {}, true);
         break;
     }
     case SearchResult::File:
@@ -1332,7 +1334,7 @@ void SearchWindow::activateRow(int row)
             bumpUsage(QStringLiteral("web:") + r.title);
         saveUsage();
         hide();
-        Utils::launch(r.target, {}, {}, true);
+        Platform::launch(r.target, {}, {}, true);
         break;
     }
     case SearchResult::Command: {
@@ -1577,7 +1579,7 @@ void SearchWindow::handlePath(const QString& rest)
         SearchResult r;
         r.kind = SearchResult::Info;
         r.actionable = false;
-        r.title = Utils::expandEnv(e);
+        r.title = Platform::expandEnv(e);
         r.subtitle = e == r.title ? QString() : e;
         addItem(r);
     }
@@ -1774,10 +1776,10 @@ void SearchWindow::openContextMenu(const QPoint& globalPos)
             bumpUsage(launchTarget);
             saveUsage();
             hide();
-            Utils::launchAsAdmin(launchTarget);
+            Platform::launchAsAdmin(launchTarget);
         });
         m_menu->addSeparator();
-        m_menu->addAction(QStringLiteral("打开所在位置"), this, [where] { Utils::revealInExplorer(where); });
+        m_menu->addAction(QStringLiteral("打开所在位置"), this, [where] { Platform::reveal(where); });
         if (!r.target.isEmpty()) {
             const QString dir = QFileInfo(r.target).absolutePath();
             m_menu->addAction(QStringLiteral("把程序目录加入 PATH"), this, [this, dir] {
@@ -1796,12 +1798,12 @@ void SearchWindow::openContextMenu(const QPoint& globalPos)
                 bumpUsage(QStringLiteral("file:") + t);
                 saveUsage();
                 hide();
-                Utils::launchAsAdmin(t);
+                Platform::launchAsAdmin(t);
             });
             m_menu->addSeparator();
         }
         m_menu->addAction(QStringLiteral("打开所在文件夹"), this, [t = r.target] {
-            Utils::revealInExplorer(t);
+            Platform::reveal(t);
         });
         m_menu->addAction(QStringLiteral("复制路径"), this, [t = r.target] {
             QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(t));

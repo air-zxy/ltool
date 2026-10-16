@@ -83,7 +83,18 @@ endif()
 # 每个函数贴 __declspec：本项目跨界的几乎全是自由函数和类成员，自动导出够用；
 # 查过 src/*.h 里没有 extern 全局数据，所以"数据导不出来"这个已知限制踩不到。
 # ============================================================================
+# ---- 平台层：同一道缝，两边各一份实现，挑哪份由目标平台说了算 ----
+# Windows 那两份就是原来 Utils.cpp 里的 SHGetKnownFolderPath / ShellExecuteExW 原样搬过来
+# （行为零变化，判据不该因为搬个家就红）；POSIX 那两份走 XDG 目录 + xdg-open / open / pkexec。
+# 缝的规格写在 src/platform/*.h 里，不在这里重复。
+if(WIN32)
+    set(LTOOL_PLATFORM_SRC src/platform/Paths_win.cpp src/platform/Launch_win.cpp)
+else()
+    set(LTOOL_PLATFORM_SRC src/platform/Paths_posix.cpp src/platform/Launch_posix.cpp)
+endif()
+
 qt_add_library(ltoolcore SHARED
+    ${LTOOL_PLATFORM_SRC}
     src/Utils.cpp
     src/EnvPath.cpp
     src/RegClean.cpp
@@ -167,28 +178,34 @@ function(ltool_target_setup tgt)
         Qt6::Widgets
         Qt6::Concurrent
         Qt6::Network
-        user32
-        shell32
-        ole32
-        advapi32
-        uuid
-        runtimeobject
-        version
-        dwmapi
-        rstrtmgr
-        iphlpapi
-        crypt32
-        wintrust
-        ws2_32
-        winhttp
-        mfplat
-        mf
-        mfreadwrite
-        mfuuid
-        d3d11
-        dxgi
-        unofficial::bit7z::bit7z64
     )
+    # 这一串只有 Windows 有：Win32 导入库（外壳/注册表/任务栏/媒体 foundation/直接 3D…）
+    # 加 7z 后端。Linux 端的对等物是 WP2 的事，别在这儿猜。
+    if(WIN32)
+        target_link_libraries(${tgt} PRIVATE
+            user32
+            shell32
+            ole32
+            advapi32
+            uuid
+            runtimeobject
+            version
+            dwmapi
+            rstrtmgr
+            iphlpapi
+            crypt32
+            wintrust
+            ws2_32
+            winhttp
+            mfplat
+            mf
+            mfreadwrite
+            mfuuid
+            d3d11
+            dxgi
+            unofficial::bit7z::bit7z64
+        )
+    endif()
     target_compile_definitions(${tgt} PRIVATE
         NOMINMAX
         WIN32_LEAN_AND_MEAN

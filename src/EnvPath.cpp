@@ -1,4 +1,5 @@
 #include "EnvPath.h"
+#include "platform/Paths.h"
 #include "Utils.h"
 
 #include <QDir>
@@ -63,8 +64,8 @@ QStringList splitRaw(const QString& raw)
 
 bool sameDir(const QString& a, const QString& b)
 {
-    QString ea = QDir::toNativeSeparators(QDir::cleanPath(Utils::expandEnv(a)));
-    QString eb = QDir::toNativeSeparators(QDir::cleanPath(Utils::expandEnv(b)));
+    QString ea = QDir::toNativeSeparators(QDir::cleanPath(Platform::expandEnv(a)));
+    QString eb = QDir::toNativeSeparators(QDir::cleanPath(Platform::expandEnv(b)));
     return QString::compare(ea, eb, Qt::CaseInsensitive) == 0;
 }
 
@@ -86,7 +87,7 @@ QString registryPath()
         QString v = QString::fromWCharArray(buf, size / 2);
         while (v.endsWith(QChar(0)))
             v.chop(1);
-        return Utils::expandEnv(v).trimmed();
+        return Platform::expandEnv(v).trimmed();
     };
     const QString machine = readReg(HKEY_LOCAL_MACHINE,
                                     L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment");

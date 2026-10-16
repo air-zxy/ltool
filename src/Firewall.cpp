@@ -1,4 +1,5 @@
 #include "Firewall.h"
+#include "platform/Paths.h"
 
 #include "Utils.h"
 
@@ -37,7 +38,7 @@ struct ComGuard {
 
 QString normPath(const QString& raw)
 {
-    QString p = Utils::expandEnv(raw);
+    QString p = Platform::expandEnv(raw);
     p.remove(QLatin1Char('"'));
     return QDir::toNativeSeparators(p).toLower();
 }
@@ -227,7 +228,7 @@ QHash<QString, Match> rulesByExe()
 
 bool addRuleNow(const QString& exePath, const QString& ruleName)
 {
-    const QString exe = QDir::toNativeSeparators(Utils::expandEnv(exePath));
+    const QString exe = QDir::toNativeSeparators(Platform::expandEnv(exePath));
     ComGuard com;
     INetFwPolicy2* pol = openPolicy();
     if (!pol)
@@ -281,7 +282,7 @@ bool removeRuleNow(const QString& ruleName)
 
 QString allowExe(const QString& exePath, const QString& displayName)
 {
-    const QString exe = QDir::toNativeSeparators(Utils::expandEnv(exePath));
+    const QString exe = QDir::toNativeSeparators(Platform::expandEnv(exePath));
     if (exe.isEmpty() || !QFileInfo::exists(exe))
         return QStringLiteral("找不到这个程序的文件，没法为它开规则：%1").arg(exePath);
     const QString name = ruleNameFor(displayName);

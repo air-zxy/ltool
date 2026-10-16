@@ -1,0 +1,4 @@
+# 给 bash / WSL 跑的脚本一律留 LF。这台机器 core.autocrlf=true，checkout 时会被改成 CRLF，
+# 而 bash 读到行尾那个 \r 就变成 "command not found" 一类的怪错 —— 报错位置和真因隔得远，
+# 不如在这里一次性钉死。别的文件不动（源码在 Windows 上按 autocrlf 走，MSVC 两种都吃）。
+*.sh text eol=lf

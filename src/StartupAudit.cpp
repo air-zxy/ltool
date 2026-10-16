@@ -1,4 +1,5 @@
 #include "StartupAudit.h"
+#include "platform/Paths.h"
 
 #include "Utils.h"
 
@@ -104,7 +105,7 @@ SigInfo querySignature(const QString& rawPath)
 {
     SigInfo info;
     info.checked = true;
-    const QString path = QDir::toNativeSeparators(Utils::expandEnv(rawPath));
+    const QString path = QDir::toNativeSeparators(Platform::expandEnv(rawPath));
     if (path.isEmpty() || !QFileInfo::exists(path))
         return info;
     const QString key = path.toLower();
@@ -316,7 +317,7 @@ void scanServices(QVector<StartupItem>* out)
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services", 0,
                       KEY_READ | KEY_WOW64_64KEY, &k) != ERROR_SUCCESS)
         return;
-    const QString sysRoot = Utils::expandEnv(QStringLiteral("%SystemRoot%"));
+    const QString sysRoot = Platform::expandEnv(QStringLiteral("%SystemRoot%"));
     for (const QString& name : childKeys(k, 6000)) {
         HKEY sk = nullptr;
         if (RegOpenKeyExW(k, (LPCWSTR)name.utf16(), 0, KEY_READ, &sk) != ERROR_SUCCESS)
@@ -348,7 +349,7 @@ void scanServices(QVector<StartupItem>* out)
         else if (p.startsWith(QLatin1String("System32"), Qt::CaseInsensitive)
                  || p.startsWith(QLatin1String("SysWow64"), Qt::CaseInsensitive))
             p = sysRoot + QLatin1Char('\\') + p;
-        it.targetPath = Utils::exeFromCommand(Utils::expandEnv(p));
+        it.targetPath = Utils::exeFromCommand(Platform::expandEnv(p));
         it.enabled = true;
         // 只写了裸文件名的服务（svchost 之类）不做存在性判断：内核和 SCM 的找法不一样
         if (it.targetPath.contains(QLatin1Char(':')))

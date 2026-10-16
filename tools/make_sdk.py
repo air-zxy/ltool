@@ -86,7 +86,12 @@ def main():
     os.makedirs(os.path.join(out, 'lib'))
 
     for h in heads:
-        shutil.copy2(os.path.join(ROOT, 'src', h), os.path.join(inc, h))
+        # 头可以住在子目录里（platform/Paths.h 就是这样）：不先建目录，copy2 直接抛
+        dest = os.path.join(inc, h)
+        d = os.path.dirname(dest)
+        if d and not os.path.isdir(d):
+            os.makedirs(d)
+        shutil.copy2(os.path.join(ROOT, 'src', h), dest)
     ort = os.path.join(ROOT, 'third_party', 'onnxruntime')
     ort_heads = [f for f in os.listdir(ort) if f.endswith('.h')] if os.path.isdir(ort) else []
     for f in ort_heads:

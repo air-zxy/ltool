@@ -1,4 +1,5 @@
 #include "GridPage.h"
+#include "platform/Launch.h"
 
 #include "GridBoard.h"
 #include "Utils.h"
@@ -130,7 +131,7 @@ GridPage::GridPage(QWidget* parent)
     m_dirBtn->setObjectName(QStringLiteral("gridOpenDir"));
     connect(m_dirBtn, &QPushButton::clicked, this, [this] {
         if (!m_lastFile.isEmpty())
-            Utils::revealInExplorer(m_lastFile);
+            Platform::reveal(m_lastFile);
     });
     foot->addWidget(m_dirBtn);
     lay->addLayout(foot);

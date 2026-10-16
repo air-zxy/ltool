@@ -1,4 +1,5 @@
 #include "RegClean.h"
+#include "platform/Paths.h"
 #include "Utils.h"
 
 #include <QDate>
@@ -56,10 +57,10 @@ QString extractExeFromCommand(const QString& cmd)
 // 删那个键也不是正确修法（该跑 sfc / 重装组件），而且会误伤一堆系统组件。
 bool underWindowsDir(const QString& path)
 {
-    static const QString root = Utils::expandEnv(QStringLiteral("%SystemRoot%")).toLower();
+    static const QString root = Platform::expandEnv(QStringLiteral("%SystemRoot%")).toLower();
     if (root.isEmpty())
         return false;
-    return Utils::expandEnv(path).toLower().startsWith(root);
+    return Platform::expandEnv(path).toLower().startsWith(root);
 }
 
 bool fileExistsSmart(const QString& rawPath)
@@ -232,7 +233,7 @@ QSet<QChar> liveDriveLetters()
 // 不然 system32 里那些只写了文件名的项会被全部误判成失效。
 bool targetMissing(const QString& rawIn)
 {
-    QString p = Utils::expandEnv(rawIn.trimmed());
+    QString p = Platform::expandEnv(rawIn.trimmed());
     p.remove(QLatin1Char('"'));
     if (p.isEmpty())
         return false;                       // 没写过值 ≠ 失效
@@ -458,7 +459,7 @@ void scanServices(QVector<RegIssue>* out)
         QString p = img.trimmed();
         if (p.startsWith(QLatin1String("\\??\\")))
             p = p.mid(4);
-        const QString sysRoot = Utils::expandEnv(QStringLiteral("%SystemRoot%"));
+        const QString sysRoot = Platform::expandEnv(QStringLiteral("%SystemRoot%"));
         if (p.startsWith(QLatin1String("\\SystemRoot\\"), Qt::CaseInsensitive))
             p = sysRoot + QLatin1Char('\\') + p.mid(12);
         else if (p.startsWith(QLatin1String("\\Windows\\"), Qt::CaseInsensitive))
@@ -466,7 +467,7 @@ void scanServices(QVector<RegIssue>* out)
         else if (p.startsWith(QLatin1String("System32"), Qt::CaseInsensitive)
                  || p.startsWith(QLatin1String("SysWow64"), Qt::CaseInsensitive))
             p = sysRoot + QLatin1Char('\\') + p;
-        p = Utils::expandEnv(p);
+        p = Platform::expandEnv(p);
         p.remove(QLatin1Char('"'));
         const QString exe = extractExeFromCommand(p);
         // 只判绝对路径：内核驱动那些裸名/相对名由内核按自己的规则找，
@@ -545,7 +546,7 @@ void scanPathEntries(QVector<RegIssue>* out)
         const QString raw = readString(k, t.val);
         RegCloseKey(k);
         for (const QString& piece : raw.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
-            const QString p = Utils::expandEnv(piece.trimmed());
+            const QString p = Platform::expandEnv(piece.trimmed());
             if (p.isEmpty() || !p.contains(QLatin1Char(':')) || QFileInfo::exists(p))
                 continue;
             // 整条 Path 值不能删，只能告诉用户哪一段该去掉

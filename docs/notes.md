@@ -461,7 +461,7 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 
 托盘图标、单实例、使用频率统计（空查询显示常用应用）、运行日志
 
-## 自测旗标一览（37 面，全表）
+## 自测旗标一览（43 面，全表）
 
 | 旗标 | 一句话 |
 | --- | --- |
@@ -503,6 +503,7 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 | `--cfgcheck` | 11 条：离屏建一次配置页，数每一行在不在、那两颗按钮是不是**各只有一颗**、每个分组框能不能从布局走到；另数设置窗菜单那四行（顺序、每行点开有内容、**只有「插件商店」那颗换成了画出来的袋子**），并把四颗图标拼成一条 PNG 存到 `%TEMP%\ltool-cfgshots\menu-icons.png` 供肉眼复核。 |
 | `--storetest` | 60 条：插件商店离线那半条链 —— 清单解析（收两条、拒三条，拒的每条说一句）、`localRows`（目录里 `*.dll` 算已装、`*.dll.off` 算已禁用、旁边的 `*.bin` 不算）、和本地目录比（能装/已装/可更新/装不了）、`.part` 验哈希再改名（哈希或字节数不符就删掉半成品）、`<file>`↔`<file>.off` 改名禁用/恢复、索引地址留空回内置。**一次都不联网**。 |
 | `--storenet` | 17 条：真拉一次 `dist/index.json` 并离屏点「刷新清单」，**逐张卡**核对「那句状态词 ↔ 那颗按钮」——没装的只给「装」、装了的只给「禁用/启用」、可更新的两颗都要，再对状态行里的卡片数 / 能装数 / 拒收数 / 清单外数；三条新的盯这次改版：卡片上不许留裸字节数、本机装着的那几张都得写出 MB、**每颗按钮都在卡片最底下一行**（离屏量几何）。**要联网，没网就是红，所以不进 CI**。 |
+| `--seamtest` | 平台层那两道缝自己（`src/platform/Paths.h`、`Launch.h`）14 条：四个已知目录问得到且**两两不同**、Windows 上各自落点、占位符换成系统里那个真值、夹在句子里的也换、认不出的原样留着、空路径不许启动/不许提权。Linux 侧同样 14 条走 `wsl -e bash tools/seam_probe.sh`。细节与反向验见文末 **跨平台移植：平台层那道缝**。 |
 | `--storemulti [颗数]` | 5 条：连着点几颗「装/更新」（他那次是九颗），然后**当场把卡片墙拆掉重排** —— 回调连的是页面（还活着）、卡片是 deleteLater 掉的，用裸控件指针就是往已删的 QWidget 上写。回退版跑出来 `rc=-1073741819`（0xC0000005 访问违例），修复版全绿。要联网、会往运行目录真写 dll，所以 `build/verify/storemulti.ps1` 先拷一份临时副本；不进 CI。 |
 | `--uninst [id]` | 11 条：卸载那条路整个走到底 —— 先 `PluginHost::page()` 把那张页开出来（dll 就此映射进进程）、回商店、`applyUninstall`、重排、再切回那张页；另一颗没打开过的直接卸。两种都得活着，且"当场删掉"与"排到下次启动"必有一条成立。跑在临时副本里（它会真删文件），不进 CI。 |
 | `--pintool` | 19 条几何断言：置顶窗那两个「收起」开关（离屏，一次都不 `show()`）。 |
@@ -528,3 +529,15 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 | `clipimg\` | 剪贴板历史里的图片（开了剪贴板历史才有） |
 | `ocr\` | 提取文字用的 PaddleOCR 模型 + `onnxruntime.dll`（首次用到时自动下载，之后离线） |
 | `log.txt` | 运行日志（热键注册结果、扫描/增量统计） |
+
+## 跨平台移植：平台层那道缝（WP1，2026-10-16）
+
+- 他拍的是**全量移植三个平台**，所以顺序不是选出来的、是编译器定的：core 的 30 个 TU 直接 `#include <windows.h>`，Linux 上连 `ltoolcore` 都编不出来 —— 必须先抽缝，Windows 这边行为零变化，再往缝的另一头接 POSIX 实现。
+- 第一轮只动两道最小的缝：**已知目录 + 环境变量展开**（`src/platform/Paths.h` → `Paths_win.cpp` / `Paths_posix.cpp`）、**打开 / 提权打开 / 在文件管理器里定位**（`src/platform/Launch.h` → `Launch_win.cpp` / `Launch_posix.cpp`）。Windows 那两份就是把 `SHGetKnownFolderPath` / `ShellExecuteExW` / `ExpandEnvironmentStringsW` 原样搬过去，一行语义没改；`revealInExplorer` 改名 `reveal`（那三个字在 mac 上是句假话）。
+- `Utils::` 里那五个入口**删干净了**，18 个文件（src 8 个 + 插件源 10 个）全换成 `Platform::`：`expandEnv` 18 处、`launch` 11 处、`launchAsAdmin` 3 处、`reveal` 11 处、`knownFolderPath` 10 处、枚举项 13 处（外加 `Utils::KnownFolder` 这个类型名 1 处），另有 Utils.cpp 里 3 处不带前缀的内部调用；脚本按字节替换，跑完断言残留数为 0。
+- 枚举项换了名字：`Desktop/PublicDesktop/UserStartMenuPrograms/CommonStartMenuPrograms` → `UserDesktop/SharedDesktop/UserApps/SystemApps`。Linux 对得上的是 XDG 桌面 + `~/.local/share/applications` + `/usr/share/applications`，macOS 是 `~/Desktop` + `~/Applications` + `/Applications`；`SharedDesktop` 在这两个平台上**天生是空的**，扫应用那几处本来就会跳过空根。
+- **Wayland / macOS 上的降级是能力缺失，不是 bug**：`reveal` 在 Linux 只能打开父目录（xdg-open 没有「选中这一项」这个语义），带参数又不是可执行文件的目标在 POSIX 起不来（那是 Windows 文件关联才有的语义），这两条都写在头文件里，界面文案要跟着改口径。
+- 判据：**`--seamtest` Windows 14 条、`seam_probe.sh` Linux 14 条，两边全绿**。原有那三面对照数一条没动：`--plugintest` 221 / `--pinyin` 52 / `--cliptest` 36 / `--cfgcheck` 11。
+- **这条缝为什么必须新加判据**（反向验的结果）：把 `FOLDERID_PublicDesktop` 换成 `FOLDERID_CommonPrograms` → 红 2 条（「两两不同」、「Public 那一棵」），`INFO` 那行当场把共用桌面打印成 ProgramData 那棵；把 `expandEnv` 改成 `return s` → 红 2 条。但第一版那两条占位符判据是**拿 expandEnv 自己的输出和自己比**，改成直通照样绿 —— 这就是"自己比自己"的判据，等于没判据。换成跟 `qEnvironmentVariable("SystemRoot")` / `QDir::homePath()` 这两个**外部真值**比之后，直通才被抓得住。
+- 顺手抓出两个连带问题：① `tools/make_sdk.py` 抄头文件时不建子目录，插件一旦 `#include "platform/Paths.h"`（现在有了）下次发 SDK 会当场抛 `FileNotFoundError`，已加建目录那一步，实跑到 `include/platform/` 两颗头齐；② CI 的判据清单是写死的那串旗标，新旗标不进去就等于只在开发机上跑过，`--seamtest` 已加进 `.github/workflows/build.yml` 那个循环。
+- Linux 端**还没到能编整个工程**：configure 停在 `find_package(unofficial-bit7z)`（vcpkg 那个端口不出 Linux  triplet），`ltool_target_setup` 里那 18 个 Win32 导入库已经先收进 `if(WIN32)`。下一刀（WP2）要处理的是依赖分档 + `Archives`/`SevenZip` 那条压缩链，而不是假装缝抽完就能编。

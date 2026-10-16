@@ -1,4 +1,5 @@
 #include "DownloadsPage.h"
+#include "platform/Launch.h"
 
 #include "DownloadManager.h"
 #include "FileOps.h"
@@ -105,7 +106,7 @@ DownloadsPage::DownloadsPage(QWidget* parent) : QWidget(parent)
     connect(openBtn, &QPushButton::clicked, this, [this]() {
         const QString dir = DownloadManager::instance().saveDir();
         QDir().mkpath(dir);
-        Utils::launch(dir, {}, {}, true);
+        Platform::launch(dir, {}, {}, true);
     });
     connect(&DownloadManager::instance(), &DownloadManager::changed, this,
             &DownloadsPage::refreshRows);
@@ -169,9 +170,9 @@ void DownloadsPage::rebuild()
                     dm.resume(id);
                 } else if (act == QLatin1String("open")) {
                     if (QFile::exists(file))
-                        Utils::revealInExplorer(file);
+                        Platform::reveal(file);
                     else
-                        Utils::launch(dm.saveDir(), {}, {}, true);
+                        Platform::launch(dm.saveDir(), {}, {}, true);
                 } else if (act == QLatin1String("del")) {
                     // remove() 会连没下完的半成品文件一起删掉，所以先问一句
                     if (QMessageBox::question(this, QStringLiteral("删除这条下载"),

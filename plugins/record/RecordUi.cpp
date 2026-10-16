@@ -1,4 +1,5 @@
 #include "RecordUi.h"
+#include "platform/Launch.h"
 
 #include "Recorder.h"
 #include "Utils.h"
@@ -648,7 +649,7 @@ void RecordBar::finish(const QString& error)
     disconnect(m_stop, nullptr, this, nullptr);
     connect(m_stop, &QPushButton::clicked, this, [this, error] {
         if (error.isEmpty())
-            Utils::revealInExplorer(m_path);
+            Platform::reveal(m_path);
         close();
     });
     auto* t = new QTimer(this);

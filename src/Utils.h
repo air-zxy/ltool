@@ -23,31 +23,15 @@ QString capturesDir();
 QString recordingsDir();
 void ensureDirs();
 
-enum class KnownFolder {
-    Desktop,
-    PublicDesktop,
-    UserStartMenuPrograms,
-    CommonStartMenuPrograms,
-};
-QString knownFolderPath(KnownFolder kf);
+// 「打开一个东西」「这些目录在哪儿」「展开带占位符的路径」不在 Utils 里 —— 那是平台层的事：
+// platform/Launch.h、platform/Paths.h。Windows 那边是 ShellExecuteExW + FOLDERID，
+// POSIX 没有 shell 这层，只能按能不能执行分流。
 
 // 从 exe/dll/ico 提取图标并保存为 PNG（用于缓存），成功返回 true
 bool extractIconToPng(const QString& iconFile, int iconIndex, const QString& pngOut);
 
 // 通用文件/文件夹图标（仅限 GUI 线程调用，内部有缓存）
 QIcon cachedFileIcon(const QString& path);
-
-// 用 ShellExecuteEx 打开文件/lnk/目录
-// async=true：让 shell 异步执行并立即返回。带 DDE 段的 .lnk（如 LX Music）同步调用
-// 会卡在 DDE 握手上等回调（实测 729ms），启动器回车必须用这个。
-bool launch(const QString& path, const QString& params = {}, const QString& workingDir = {},
-            bool async = false);
-bool launchAsAdmin(const QString& path, const QString& params = {}, const QString& workingDir = {});
-
-// 在资源管理器中定位文件
-void revealInExplorer(const QString& path);
-
-QString expandEnv(const QString& s);
 
 // 从注册表/服务里那种"命令行字符串"取出可执行文件本身。一堆软件把没加引号的空格路径
 // 直接写进注册表（C:\Program Files\...），所以不能见空格就切：先整条试、
