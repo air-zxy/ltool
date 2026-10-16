@@ -32,6 +32,24 @@ QString imageFilter()
     return QStringLiteral("图片 (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff)");
 }
 
+QString previewBgStyle(const QColor& c)
+{
+    const bool light = c.lightnessF() > 0.6;
+    return QStringLiteral("QPushButton{background:%1;color:%2;border:1px solid %3;border-radius:6px;"
+                          "padding:4px 10px;}QPushButton:hover{border:1px solid #3f6ae0;}")
+        .arg(c.name(), light ? QStringLiteral("#1b1d22") : QStringLiteral("#ffffff"),
+             light ? QStringLiteral("#c9ced8") : QStringLiteral("#3a3d45"));
+}
+
+QPixmap shrinkTo(const QImage& img, int w, int h)
+{
+    QPixmap pm = QPixmap::fromImage(img);
+    // 只缩不放大：图本来就小就按原尺寸摆，放大出来的糊图会让人以为存出去的也是糊的
+    if (pm.width() > w || pm.height() > h)
+        pm = pm.scaled(w, h, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    return pm;
+}
+
 } // namespace
 
 GridPage::GridPage(QWidget* parent)
@@ -56,13 +74,6 @@ GridPage::GridPage(QWidget* parent)
         m_slotBtns << b;
     }
     m_slotBtns.first()->setChecked(true);
-
-    head->addSpacing(10);
-    m_bgBtn = new QPushButton(QStringLiteral("背景色"), this);
-    m_bgBtn->setCursor(Qt::PointingHandCursor);
-    m_bgBtn->setMinimumWidth(96);
-    connect(m_bgBtn, &QPushButton::clicked, this, &GridPage::pickColor);
-    head->addWidget(m_bgBtn);
 
     auto* add = new QPushButton(QStringLiteral("添加图片…"), this);
     add->setCursor(Qt::PointingHandCursor);
@@ -124,7 +135,6 @@ GridPage::GridPage(QWidget* parent)
     foot->addWidget(m_dirBtn);
     lay->addLayout(foot);
 
-    setBackgroundColor(m_bg);
 }
 
 void GridPage::setSlots(int n)
@@ -146,23 +156,37 @@ void GridPage::setBackgroundColor(const QColor& c)
     if (!c.isValid())
         return;
     m_bg = c;
-    // 按钮上直接刷成那个颜色：让人看到"选的就是它"，而不是只有一句"背景色"
-    const bool light = m_bg.lightnessF() > 0.6;
-    m_bgBtn->setText(QStringLiteral("背景色 %1").arg(m_bg.name().toUpper()));
-    m_bgBtn->setStyleSheet(QStringLiteral(
-        "QPushButton{background:%1;color:%2;border:1px solid %3;border-radius:6px;padding:4px 10px;}"
-        "QPushButton:hover{border:1px solid #3f6ae0;}")
-        .arg(m_bg.name(), light ? QStringLiteral("#1b1d22") : QStringLiteral("#ffffff"),
-             light ? QStringLiteral("#c9ced8") : QStringLiteral("#3a3d45")));
 }
 
-void GridPage::pickColor()
+QString GridPage::commitPreview(const QImage& img, const QColor& bg)
 {
-    const QColor c = QColorDialog::getColor(m_bg, this, QStringLiteral("选一个背景色"));
+    // 按「保存」才认这个色：在弹框里换了色又按取消，页面这边什么都没发生过。
+    setBackgroundColor(bg);
+    return saveComposed(img);
+}
+
+void GridPage::pickPreviewBg()
+{
+    const QColor c = m_bgGate ? m_bgGate(m_previewBg)
+                              : QColorDialog::getColor(m_previewBg, this, QStringLiteral("选一个背景色"));
     if (!c.isValid())
-        return;                                   // 取消就是取消，别把颜色改了还说改了
-    setBackgroundColor(c);
-    showStatus(QStringLiteral("背景色改成 %1 了。空格子就是这块颜色。").arg(c.name().toUpper()));
+        return;                                 // 取消就是取消，别把颜色改了还说改了
+    m_previewBg = c;
+    m_previewImg = compose(m_cellPx, kOutGap, m_previewBg);
+    auto* dlg = findChild<QDialog*>(QStringLiteral("gridPreview"));
+    if (!dlg)
+        return;
+    if (auto* shot = dlg->findChild<QLabel*>(QStringLiteral("gridPreviewShot"))) {
+        QPixmap pm = QPixmap::fromImage(m_previewImg);
+        const QSize room = shot->size() - QSize(12, 12);
+        if (room.isValid() && (pm.width() > room.width() || pm.height() > room.height()))
+            pm = pm.scaled(room, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        shot->setPixmap(pm);
+    }
+    if (auto* cap = dlg->findChild<QLabel*>(QStringLiteral("gridPreviewCap")))
+        cap->setText(previewCaption(m_previewImg, m_previewBg));
+    if (auto* btn = dlg->findChild<QPushButton*>(QStringLiteral("gridPreviewBg")))
+        btn->setText(QStringLiteral("背景色 %1").arg(m_previewBg.name().toUpper()));
 }
 
 void GridPage::pickIntoCell(int index)
@@ -234,29 +258,42 @@ QImage GridPage::compose(int cellPx, int gap, const QColor& bg) const
     return out;
 }
 
-QString GridPage::previewCaption(const QImage& img) const
+QString GridPage::previewCaption(const QImage& img, const QColor& bg) const
 {
     // 弹框上面那行字说的是"存出去的那张"，不是屏上这块缩图 —— 两边数字不一样是应该的，
     // 但必须写明白，不然人以为存下来也只有这么大。
     return QStringLiteral("存出去的是 %1×%2 原尺寸（屏上这块是缩到放得下的样子），%3 格，背景 %4，落在 %5")
         .arg(img.width()).arg(img.height()).arg(m_board->slotCount())
-        .arg(m_bg.name().toUpper()).arg(Utils::capturesDir());
+        .arg(bg.name().toUpper()).arg(Utils::capturesDir());
 }
 
-// 弹框本体单独做成"造出来"而不是"弹出来"：判据要能在不 exec 的前提下检查那两颗按钮、
-// 那行字和那张缩图（离屏里 exec() 的返回值不作数，这条在卸载那一步已经栽过一次）。
-QDialog* GridPage::previewDialog(const QImage& img) const
+// 弹框本体单独做成"造出来"而不是"弹出来"：判据要能在不 exec 的前提下检查那三颗按钮、
+// 那行字、那张缩图，还要能在框里换一次背景色看它重不重画（离屏里 exec() 的返回值不作数）。
+QDialog* GridPage::previewDialog(const QImage& img)
 {
-    auto* box = new QDialog(const_cast<GridPage*>(this));
+    m_previewBg = m_bg;
+    m_previewImg = img;
+    auto* box = new QDialog(this);
     box->setObjectName(QStringLiteral("gridPreview"));
     box->setWindowTitle(QStringLiteral("效果图：看过再存"));
     auto* lay = new QVBoxLayout(box);
     lay->setContentsMargins(12, 10, 12, 10);
     lay->setSpacing(8);
 
-    auto* cap = new QLabel(previewCaption(img), box);
+    auto* capRow = new QHBoxLayout;
+    capRow->setSpacing(6);
+    auto* cap = new QLabel(previewCaption(img, m_previewBg), box);
     cap->setObjectName(QStringLiteral("gridPreviewCap"));
     cap->setWordWrap(true);
+    capRow->addWidget(cap, 1);
+    // 背景色的选择挪到这里：对着效果图挑才看得准（顶栏那颗是盲选）
+    auto* bgBtn = new QPushButton(QStringLiteral("背景色 %1").arg(m_previewBg.name().toUpper()), box);
+    bgBtn->setObjectName(QStringLiteral("gridPreviewBg"));
+    bgBtn->setCursor(Qt::PointingHandCursor);
+    bgBtn->setMinimumWidth(112);
+    bgBtn->setStyleSheet(previewBgStyle(m_previewBg));
+    connect(bgBtn, &QPushButton::clicked, box, [this] { pickPreviewBg(); });
+    capRow->addWidget(bgBtn);
 
     const QRect avail = QGuiApplication::primaryScreen()->availableGeometry();
     const int maxW = qMax(320, qMin(900, avail.width() - 260));
@@ -266,12 +303,7 @@ QDialog* GridPage::previewDialog(const QImage& img) const
     shot->setAlignment(Qt::AlignCenter);
     shot->setMinimumSize(maxW, maxH);
     shot->setStyleSheet(QStringLiteral("background:#101114;border:1px solid #3a3c45;border-radius:6px;"));
-    QPixmap pm = QPixmap::fromImage(img);
-    // 只缩不放大：图本来就小（比如自测那张 150 见方）就按原尺寸摆，
-    // 放大出来的糊图会让人以为存出去的也是糊的。
-    if (pm.width() > maxW - 12 || pm.height() > maxH - 12)
-        pm = pm.scaled(maxW - 12, maxH - 12, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    shot->setPixmap(pm);
+    shot->setPixmap(shrinkTo(img, maxW - 12, maxH - 12));
 
     auto* btns = new QHBoxLayout;
     btns->setSpacing(6);
@@ -288,20 +320,13 @@ QDialog* GridPage::previewDialog(const QImage& img) const
     btns->addWidget(cancel);
     btns->addWidget(save);
 
-    lay->addWidget(cap);
+    lay->addLayout(capRow);
     lay->addWidget(shot, 1);
     lay->addLayout(btns);
     box->resize(maxW + 40, maxH + 140);
     return box;
 }
 
-bool GridPage::confirmPreview(const QImage& img)
-{
-    QDialog* box = previewDialog(img);
-    const bool ok = box->exec() == QDialog::Accepted;
-    delete box;
-    return ok;
-}
 
 QString GridPage::generate()
 {
@@ -310,13 +335,24 @@ QString GridPage::generate()
         return QString();
     }
     const QImage img = compose(m_cellPx, kOutGap, m_bg);
-    const bool agreed = m_gate ? m_gate(img) : confirmPreview(img);
+    if (m_gate) {                                  // 判据那条路：不弹框，只问"存不存"
+        if (!m_gate(img)) {
+            showStatus(QStringLiteral("没存 —— 你在效果图那一步按了取消。摆的还在，改完再按一次「生成宫图」。"));
+            return QString();
+        }
+        return commitPreview(img, m_bg);
+    }
+    QDialog* box = previewDialog(img);
+    const bool agreed = box->exec() == QDialog::Accepted;
+    const QImage shown = m_previewImg;
+    const QColor bg = m_previewBg;
+    delete box;
     if (!agreed) {
         // 取消就是取消：别写文件、别把"打开这张"点亮、别说成已生成
         showStatus(QStringLiteral("没存 —— 你在效果图那一步按了取消。摆的还在，改完再按一次「生成宫图」。"));
         return QString();
     }
-    return saveComposed(img);
+    return commitPreview(shown, bg);        // 保存才认弹框里挑的那个色
 }
 
 QString GridPage::saveComposed(const QImage& img)

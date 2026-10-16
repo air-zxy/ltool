@@ -36,10 +36,15 @@ public:
     // 看得见，二是判据能绕开模态框直接验落盘那一步（离屏里 exec() 的返回值不作数）。
     QString saveComposed(const QImage& img);
     // 弹框上面那行字（尺寸 / 几宫 / 背景 / 落在哪个目录）—— 抽出来是因为它也得被断言。
-    QString previewCaption(const QImage& img) const;
+    QString previewCaption(const QImage& img, const QColor& bg) const;
 
-    // 弹框本体（造好但没弹）。判据拿它验"保存/取消两颗都在、那行字说的是全尺寸"。
-    QDialog* previewDialog(const QImage& img) const;
+    // 弹框本体（造好但没弹）。判据拿它验"保存/取消/背景色三颗都在、那行字说的是全尺寸、
+    // 换色当场重画"。造的时候把 m_previewBg / m_previewImg 摆成当前这套。
+    QDialog* previewDialog(const QImage& img);
+    QImage previewImage() const { return m_previewImg; }     // 弹框里当前那张（换过色就是新的）
+    QColor previewBackground() const { return m_previewBg; } // 弹框里正在挑的那个色
+    // 按「保存」才认这个色：把 m_bg 定下来并落盘（generate() 走的就是这一条，判据也走这一条）。
+    QString commitPreview(const QImage& img, const QColor& bg);
 
     // 弹框那一步的"门"。默认就是弹框问人；判据把它换成直接同意 / 直接回绝，
     // 这样**"没看过效果图就不许落盘"这条顺序本身**能被断言 —— 离屏里 exec() 不作数，
@@ -50,7 +55,10 @@ public:
     // 理由和上面那道门一样 —— 不然"点了空格子会把图放进**那一格**"这条只能靠人眼看。
     void setPickGate(std::function<QString()> gate) { m_pickGate = std::move(gate); }
 
-    void setBackgroundColor(const QColor& c);
+    // 弹框里那颗「背景色」的取色框：默认是 QColorDialog，判据换成给一个固定颜色。
+    void setPreviewBgGate(std::function<QColor(const QColor&)> gate) { m_bgGate = std::move(gate); }
+
+    void setBackgroundColor(const QColor& c);   // 就是定下这个色（选它的按钮在效果图弹框里）
     QColor backgroundColor() const { return m_bg; }
     void setCellPixels(int px) { m_cellPx = qBound(128, px, 4096); }
 
@@ -58,15 +66,13 @@ signals:
     void generated(const QString& file);        // 自测拿它确认"真写出来了"
 
 private:
-    bool confirmPreview(const QImage& img);   // 弹那张效果图；返回"要不要存"
+    void pickPreviewBg();             // 弹框里那颗：取色 → 重摆 → 重画那一块
     void pickIntoCell(int index);   // 板子发出 pickInto 之后：弹选图框，选中的交给那一格
-    void pickColor();
     void addFromFile();
     void showStatus(const QString& text);
 
     GridBoard* m_board = nullptr;
     QLabel* m_status = nullptr;
-    QPushButton* m_bgBtn = nullptr;
     QPushButton* m_openBtn = nullptr;
     QPushButton* m_dirBtn = nullptr;
     QVector<QPushButton*> m_slotBtns;           // 索引 0/1/2 = 四/六/九
@@ -74,5 +80,8 @@ private:
     int m_cellPx = 1080;
     std::function<bool(const QImage&)> m_gate;
     std::function<QString()> m_pickGate;
+    std::function<QColor(const QColor&)> m_bgGate;
+    QColor m_previewBg = Qt::white;     // 弹框里正在挑的（没按保存不算数）
+    QImage m_previewImg;                // 弹框里当前那张效果图
     QString m_lastFile;
 };

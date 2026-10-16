@@ -27,6 +27,27 @@
 
 namespace {
 
+bool reachedFrom(QWidget* root, QWidget* w)
+{
+    bool found = false;
+    std::function<void(QLayout*)> walk = [&](QLayout* l) {
+        if (!l || found)
+            return;
+        for (int i = 0; i < l->count(); ++i) {
+            QLayoutItem* it = l->itemAt(i);
+            if (!it)
+                continue;
+            if (QWidget* cw = it->widget()) {
+                if (cw == w) { found = true; return; }
+                walk(cw->layout());
+            } else if (QLayout* sub = it->layout())
+                walk(sub);
+        }
+    };
+    walk(root->layout());
+    return found;
+}
+
 void clickPageCell(GridPage& page, int i)
 {
     GridBoard* b = page.board();
@@ -60,7 +81,7 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
 
     // 造九张纯色图 + 一个假图片文件（后缀对、内容不是图）到临时目录
     const QString box = QDir::tempPath() + QStringLiteral("/ltool-grid-selftest");
-    QDir(box).removeRecursively();
+    (void)QDir(box).removeRecursively();   // 清不掉也不算这次判据的事（Qt6 上它带 nodiscard）
     QDir().mkpath(box);
     const QVector<QColor> colors = { QColor(220, 30, 30), QColor(30, 200, 30), QColor(30, 30, 210),
                                      QColor(230, 200, 20), QColor(200, 40, 200), QColor(20, 200, 200),
@@ -76,7 +97,7 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     const QString fake = box + QStringLiteral("/notimage.txt");
     {
         QFile f(fake);
-        f.open(QIODevice::WriteOnly);
+        check("夹具写得出来", f.open(QIODevice::WriteOnly) ? "yes" : "no", "yes");
         f.write("这不是图片");
     }
 
@@ -171,7 +192,7 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     const QString broken = box + QStringLiteral("/broken.png");
     {
         QFile f(broken);
-        f.open(QIODevice::WriteOnly);
+        check("夹具写得出来", f.open(QIODevice::WriteOnly) ? "yes" : "no", "yes");
         f.write("这不是 PNG 的字节");
     }
     page.board()->addImages({ broken });
@@ -224,7 +245,7 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
           QStringLiteral("%1/%2/%3").arg(saveBtn ? 1 : 0).arg(cancelBtn ? 1 : 0).arg(laid ? 1 : 0),
           QStringLiteral("1/1/1"));
     check("弹框那行字说的就是 previewCaption 那一句",
-          capLbl && capLbl->text() == page.previewCaption(previewImg) ? "yes" : "no", "yes");
+          capLbl && capLbl->text() == page.previewCaption(previewImg, page.backgroundColor()) ? "yes" : "no", "yes");
     check("那行字里有全尺寸（150×150）", capLbl && capLbl->text().contains(QStringLiteral("150×150"))
               ? "yes" : "no", "yes");
     check("弹框里那块缩图真有像素（不是空标签）",
@@ -270,6 +291,42 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
         QFile::remove(file);                    // 只删自己刚算出来那一个，不碰目录里别的
     check("保存之后「打开这张」那颗该能点", page.findChild<QPushButton*>(QStringLiteral("gridOpen"))
                   && page.findChild<QPushButton*>(QStringLiteral("gridOpen"))->isEnabled() ? "yes" : "no", "yes");
+
+    // ---- 背景色的选择挪进了这个弹框：对着效果图挑才看得准（顶栏那颗是盲选）----
+    int headBg = 0;
+    for (QPushButton* btn : page.findChildren<QPushButton*>())
+        if (btn->text().startsWith(QStringLiteral("背景色")))
+            ++headBg;
+    check("顶栏里不再有那颗「背景色」（是挪进弹框，不是两处都留）", QString::number(headBg), "0");
+    {
+        QDialog* d2 = page.previewDialog(previewImg);
+        auto* bgBtn = d2->findChild<QPushButton*>(QStringLiteral("gridPreviewBg"));
+        check("弹框里有「背景色」那颗，且摆在布局里",
+              bgBtn && reachedFrom(d2, bgBtn) ? "yes" : "no", "yes");
+        check("那颗上写着当前挑的色", bgBtn ? bgBtn->text() : QString(), QStringLiteral("背景色 #FFFFFF"));
+        page.setPreviewBgGate([](const QColor&) { return QColor(0, 0, 255); });
+        bgBtn->click();
+        check("在弹框里换色 = 效果图当场重画（角像素是新色）",
+              page.previewImage().pixelColor(2, 2).name(QColor::HexRgb), QStringLiteral("#0000ff"));
+        auto* cap2 = d2->findChild<QLabel*>(QStringLiteral("gridPreviewCap"));
+        check("那行字跟着换成新色号", cap2 && cap2->text().contains(QStringLiteral("#0000FF")) ? "yes" : "no", "yes");
+        check("那颗按钮的文字也跟着走", bgBtn->text(), QStringLiteral("背景色 #0000FF"));
+        check("没按保存之前，页面认的还是老色（取消就不算）",
+              page.backgroundColor().name(QColor::HexRgb), QStringLiteral("#ffffff"));
+        d2->reject();
+        delete d2;
+        check("取消之后页面记的还是老色", page.backgroundColor().name(QColor::HexRgb),
+              QStringLiteral("#ffffff"));
+        const QString saved = page.commitPreview(page.previewImage(), page.previewBackground());
+        page.setPreviewBgGate(nullptr);
+        check("按「保存」才认这个色", page.backgroundColor().name(QColor::HexRgb),
+              QStringLiteral("#0000ff"));
+        check("存出去那张的角像素就是新背景",
+              QImage(saved).pixelColor(2, 2).name(QColor::HexRgb), QStringLiteral("#0000ff"));
+        if (saved.startsWith(Utils::capturesDir()) && QFileInfo(saved).fileName().startsWith(QStringLiteral("grid-")))
+            QFile::remove(saved);
+        page.setBackgroundColor(Qt::white);      // 还回默认，别把后面的判据带跑
+    }
 
     // ---- 点空格子 = 往里放一张（原来点它什么都不发生）----
     // 这一组用一块**独立的板子**：页面那条连接会去弹真选图框，判据一点就把进程卡死在模态框里
@@ -348,7 +405,7 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     page.board()->setMinimumSize(320, 320);
     page.board()->setMaximumSize(QSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX));
 
-    QDir(box).removeRecursively();              // 这次自测造的临时图，绝对路径算出来的
+    (void)QDir(box).removeRecursively();   // 清不掉也不算这次判据的事（Qt6 上它带 nodiscard）              // 这次自测造的临时图，绝对路径算出来的
     std::printf("grid: 失败 %d 项\n", bad);
     std::fflush(stdout);
     return bad;
