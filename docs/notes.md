@@ -693,3 +693,16 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 数字：链接缺口 8 → **5**（元对象族 1 = `SettingsDialog::staticMetaObject`，那个 TU 还没进名单；真缺口 4：`DevEnv::applyProxy`、`DevEnv::installLocation`、`SevenZip::compress`、`ShellMenu::syncWithPlugin`）。离线判据 560 → **568** 条 0 红；装的那份 `--seamtest` 28/0、`--plugintest` 240/0。`abi` 仍缺 8 个符号（这轮只加名字没删名字，商店那批导入的符号一个没少）。闭环 24.7s、22.1MB、`install MATCH 678B269C76CA`，sync 后 19/19 与构建逐颗一致。
 - 这轮踩的一条工具链坑（`edit-anchor-newline-hazard` 的新变体）：用 bash heredoc 喂 python 往脚本里插代码时，源码里的「反斜杠 + n」被吃成"真换行"，于是 `seam_probe.sh` 里出现 C 字符串断成两行的 `std::printf` 和 g++ 命令行末尾一个裸的反斜杠 n（`ld: cannot find n`）。两处都是拿 Edit 落的才修好 —— 以后往脚本/源码里插带转义的代码，别走 heredoc-python 这条路。
 - 版本判断：**不升**。Windows 这侧是搬家（六个场景逐行相同、abi 没变），POSIX 那侧还没产出用户拿得到的东西。
+
+## 第九刀：DevEnv 的代理与安装根抽成第八道缝（2026-10-17，链接缺口 5 → 3）
+
+- 缝开在哪：`DevEnv::applyProxy` / `installLocation` 的**动作两边共用**，不一样的只有两件事 —— 系统代理从哪读、装东西的根在这台机器上长什么样。所以新增 `src/platform/SysConfig.h`：`systemProxyUrl()` + `defaultInstallRoot()` + `usableInstallRoot()` 各平台一份，`normalizeProxy()`（把 host:port 补成 URL 那条规矩）两边共用一份 inline，不抄第二遍。
+- 另外新建一个可移植 TU `src/DevEnvConfig.cpp`（Windows 的 core 名单和 Linux 的可移植名单里都有它）：`proxyUrl` / `applyProxy` / `installLocation` 住这儿。为什么非要新 TU：`src/DownloadManager.cpp` 和 `src/PluginStore.cpp` 早就在可移植名单里，链接期要找得到这几个符号，而 `src/DevEnv.cpp` 整个还卡在注册表那套 Win32 上。
+- `DevEnv::systemProxyUrl` 只剩一层转接，为什么不删：配置页那句「系统代理是 X」还在读这个名字，而且 **core 的导出面 = 已发布插件的 ABI，名字可以加不可以缩**（#91 那条）。这轮的 abi 实测仍是缺 8 个符号 —— 没删任何名字的直接证据。
+- 两条语义在这轮被明确钉住（都是以前只写在注释里的）：① **Windows 上「安装目录留空」= 不指定 --location**，不是"用默认根"；「没配过」才给默认根。搬家时把这两种情况分开处理（`cfg.contains` 而不是 `cfg.value(带默认)`），就是为了不改这条语义。② POSIX 上没有"不指定装哪"这回事，所以空 / Windows 盘符写法 / 相对路径一律退到 `~/software` —— 装的根必须真的能用，不能跟着工作目录跑。
+- POSIX 的代理是真对等不是降级：读 `http_proxy` / `HTTP_PROXY` / `https_proxy` / `HTTPS_PROXY`（curl、wget、pip、git 全认这套）。一条**宁缺不假**：值是 `socks5://…` 时返回空，因为下游 `applyProxy` 只会摆 `QNetworkProxy::HttpProxy`，把它报成 http 代理是骗人。PAC/自动发现两边都解不了（Windows 那半本来也解不了）。
+- Windows 行为零变化的证据：`--seamtest` 搬家前后各跑一遍，**逐行相同**（31 条时），包括新加的三条真值断言打出来的 `INFO 生效代理=[] 系统那半=[]` —— 这台机器 `net/proxy` 留空、注册表那个 9980 又没被设成系统代理，所以那三条走的是"没代理"那一支。**这就是为什么还要用夹具量规则本身**：`normalizeProxy` 三条 + `usableInstallRoot` 三条（Windows 的 `Z:` 退 `C:`、留空还是留空、C 盘和网络路径不动），否则"有代理"那一支永远没被人碰过 = 装饰性的绿。
+- 判据与工具：`--seamtest` 28 → **37**；POSIX 探针 `tools/seam_probe.sh` 63 → **69**（代理那四条用 `qputenv` 摆现场，不依赖跑的人机器上有没有代理）。链接缺口 **5 → 3**：只剩 `SevenZip::compress`、`ShellMenu::syncWithPlugin`（就是要他拍形状的那两个，#90）+ `SettingsDialog::staticMetaObject`（那个 TU 还没进名单，不算实现欠账）。可移植 TU **19 → 22**（+FileOps_posix、+SysConfig_posix、+DevEnvConfig）。
+- 顺手用真 CMake 在 WSL 复核了一遍（不只我那两个探针脚本）：`cmake -S . -B /tmp/... && cmake --build --target ltool_portable` 过了，configure 打出「名单里那 15 个 TU」。
+- 数字：离线判据 568 → **577** 条 0 红；装的那份 `--seamtest` 37/0、`--plugintest` 240/0、`--storenet` 16 过 1 红（又是「检查更新走网页 302」那条：GitHub 直连这台机器现在不通，走 9980 代理 0.83 秒就 302 —— 而商店清单那条走镜像是通的，`状态行` 里写着「走的是 镜像 gh-proxy.com」）。闭环 20.0s、22.11MB、`install MATCH A76D3BD0E3CB`，sync 后 19/19 与构建逐颗一致。
+- 版本判断：**不升**（Windows 侧行为逐行相同，POSIX 侧还没有用户拿得到的产物；插件号也没动 —— 这轮改的是 core）。

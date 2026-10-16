@@ -2,6 +2,7 @@
 #include "platform/ProcInfo.h"
 #include "platform/FileMeta.h"
 #include "platform/PluginNames.h"
+#include "platform/SysConfig.h"
 #include "QRegularExpression"
 #include "QCoreApplication"
 #include "platform/Autostart.h"
@@ -47,6 +48,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
+#include <QNetworkProxy>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QToolButton>
@@ -1876,6 +1878,85 @@ int main(int argc, char* argv[])
                     werr.toUtf8().constData());
         mine.close();
         QDir(box).removeRecursively();
+        // 6) DevEnv 那三颗（代理怎么套 / 装在哪）—— 搬家（第九刀）前后跑的是同一组断言，
+        //    期望值由"这台机器现在的配置"推出来，所以量到的是真值不是硬编码：
+        //    net/proxy 留空 = 跟系统代理走（他本机注册表里是 9980），装东西的根在 Windows
+        //    上是盘符、在 POSIX 上是家目录下一个真能用的路径。
+        const QString px = DevEnv::proxyUrl();
+        std::printf("INFO 生效代理=[%s] 系统那半=[%s]\n", px.toUtf8().constData(),
+                    DevEnv::systemProxyUrl().toUtf8().constData());
+        check("生效的代理要么没有、要么写成带主机的 URL",
+              (px.isEmpty()
+               || (QUrl(px).isValid() && !QUrl(px).host().isEmpty()))
+                  ? QStringLiteral("yes") : QStringLiteral("no"),
+              QStringLiteral("yes"));
+        const QString root = DevEnv::installLocation();
+#ifdef Q_OS_WIN
+        check("安装根非空，而且是这台机器上那种盘符写法",
+              (!root.isEmpty() && root.size() >= 2 && root.at(1) == QLatin1Char(':')
+               && QDir(root.left(2) + QLatin1Char('\\')).exists())
+                  ? QStringLiteral("yes") : QStringLiteral("no"),
+              QStringLiteral("yes"));
+#else
+        check("安装根非空，而且是绝对路径（POSIX 上没有盘符这回事）",
+              (!root.isEmpty() && root.startsWith(QLatin1Char('/'))) ? QStringLiteral("yes")
+                                                                     : QStringLiteral("no"),
+              QStringLiteral("yes"));
+#endif
+        {
+            QNetworkAccessManager nam;
+            DevEnv::applyProxy(&nam);
+            const QNetworkProxy got = nam.proxy();
+            const bool same = px.isEmpty()
+                                  ? got.type() == QNetworkProxy::NoProxy
+                                  : (got.type() == QNetworkProxy::HttpProxy
+                                     && got.hostName() == QUrl(px).host()
+                                     && got.port() == quint16(QUrl(px).port(
+                                            QUrl(px).scheme() == QLatin1String("https") ? 443 : 80)));
+            check("applyProxy 真的把同一个代理装到了管理器上",
+                  same ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
+        }
+        // 上面那三条量的是"这台机器现在的配置"，本机 net/proxy 留空、系统代理也读不到 ⇒
+        // 走的是"没代理"那一支。规则本身要用夹具量，不然这两支里的一支永远没被人碰过
+        // （装饰性的绿）：normalizeProxy 两边共用一份，usableInstallRoot 按平台各一份。
+        check("normalizeProxy：host:port 补成 http://（winget 和 QNAM 都只认 URL）",
+              Platform::normalizeProxy(QStringLiteral("127.0.0.1:9980")),
+              QStringLiteral("http://127.0.0.1:9980"));
+        check("normalizeProxy：已经是 URL 的原样留下",
+              Platform::normalizeProxy(QStringLiteral("https://proxy.internal:8443")),
+              QStringLiteral("https://proxy.internal:8443"));
+        check("normalizeProxy：空、以及连冒号都没有的写法都当没代理",
+              Platform::normalizeProxy(QStringLiteral()).isEmpty()
+                      && Platform::normalizeProxy(QStringLiteral("nocolonhere")).isEmpty()
+                          ? QStringLiteral("yes") : QStringLiteral("no"),
+              QStringLiteral("yes"));
+#ifdef Q_OS_WIN
+        check("Windows：安装根留空就是留空（= 不指定 --location，不是偷偷给个默认）",
+              Platform::usableInstallRoot(QString()), QString());
+        check("Windows：配的盘符不在这台机器上（Z:）退到 C 盘同一个路径",
+              Platform::usableInstallRoot(QStringLiteral("Z:\\software")),
+              QStringLiteral("C:\\software"));
+        check("Windows：C 盘自己和网络路径都不动",
+              Platform::usableInstallRoot(QStringLiteral("C:\\tools"))
+                      == QStringLiteral("C:\\tools")
+                  && Platform::usableInstallRoot(QStringLiteral("\\\\nas\\share"))
+                         == QStringLiteral("\\\\nas\\share")
+                  ? QStringLiteral("yes") : QStringLiteral("no"),
+              QStringLiteral("yes"));
+#else
+        check("POSIX：留空 / Windows 写法 / 相对路径都退到家目录下那个真能用的根",
+              Platform::usableInstallRoot(QString())
+                      == QDir::homePath() + QStringLiteral("/software")
+                  && Platform::usableInstallRoot(QStringLiteral("D:\\software"))
+                         == QDir::homePath() + QStringLiteral("/software")
+                  && Platform::usableInstallRoot(QStringLiteral("software"))
+                         == QDir::homePath() + QStringLiteral("/software")
+                  ? QStringLiteral("yes") : QStringLiteral("no"),
+              QStringLiteral("yes"));
+        check("POSIX：绝对路径原样用",
+              Platform::usableInstallRoot(QStringLiteral("/opt/dev")),
+              QStringLiteral("/opt/dev"));
+#endif
         std::printf("seamtest: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad;

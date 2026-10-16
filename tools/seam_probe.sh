@@ -22,6 +22,7 @@ cat > "$D/probe.cpp" <<'EOF'
 #include "platform/FileMeta.h"
 #include "platform/PluginNames.h"
 #include "platform/FileOpsShred.h"    // 第七道缝：FileOps::shred / whoHas / killProcess
+#include "platform/SysConfig.h"      // 第八道缝：系统代理 + 安装根
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -206,6 +207,33 @@ int main(int argc, char** argv) {
               !FileOps::killProcess(quint64(holder.processId()), &kerr2) && !kerr2.isEmpty());
     }
     QDir(box).removeRecursively();
+    // ---- 第八道缝（这台机器的代理在哪、装东西的根在哪）在 POSIX 上的答案 ----
+    // Windows 那半读注册表里那份 IE 设置，这里读 http_proxy 那一族环境变量：
+    // 同一个问题、两套机制，不是谁降级给谁。这几条都用 qputenv 摆出现场，
+    // 所以量的是规则本身，不依赖跑的人机器上有没有代理。
+    qputenv("http_proxy", QByteArray());
+    qputenv("HTTP_PROXY", QByteArray());
+    qputenv("https_proxy", QByteArray());
+    qputenv("HTTPS_PROXY", QByteArray());
+    check("四个都空 = 这台机器没配系统代理，返回空（不许猜一个）", Platform::systemProxyUrl().isEmpty());
+    qputenv("http_proxy", "127.0.0.1:7890");
+    check("host:port 那种写法补成 http:// 再交给下游",
+          Platform::systemProxyUrl() == QStringLiteral("http://127.0.0.1:7890"));
+    qputenv("http_proxy", "socks5://127.0.0.1:7891");
+    check("socks 不当 http 代理报（下游只会摆 QNetworkProxy::HttpProxy，报了就是骗人）",
+          Platform::systemProxyUrl().isEmpty());
+    qputenv("https_proxy", "http://proxy.internal:8443");
+    qputenv("http_proxy", QByteArray());
+    check("带方案的 URL 原样通过（这条规矩两边共用一份 normalizeProxy）",
+          Platform::systemProxyUrl() == QStringLiteral("http://proxy.internal:8443"));
+    qputenv("https_proxy", QByteArray());
+    const QString posixRoot = QDir::homePath() + QStringLiteral("/software");
+    check("安装根：留空 / Windows 那种盘符写法 / 相对路径都退到 ~/software",
+          Platform::usableInstallRoot(QString()) == posixRoot
+              && Platform::usableInstallRoot(QStringLiteral("D:\\software")) == posixRoot
+              && Platform::usableInstallRoot(QStringLiteral("software")) == posixRoot);
+    check("绝对路径原样用（那是用户明确指定的）",
+          Platform::usableInstallRoot(QStringLiteral("/opt/dev")) == QStringLiteral("/opt/dev"));
 std::printf("seam_probe: failed %d\n", bad);
     std::fflush(stdout);
     return bad;
@@ -217,7 +245,8 @@ cd "$SRC"
 g++ -std=c++20 -fPIC -Wall -Wextra -I src $(pkg-config --cflags Qt6Core Qt6Gui) \
     "$D/probe.cpp" src/platform/Paths_posix.cpp src/platform/Launch_posix.cpp \
     src/platform/Autostart_posix.cpp src/platform/ProcInfo_posix.cpp \
-    src/platform/FileMeta_posix.cpp src/platform/FileOps_posix.cpp src/Pinyin.cpp \
+    src/platform/FileMeta_posix.cpp src/platform/FileOps_posix.cpp src/platform/SysConfig_posix.cpp \
+    src/Pinyin.cpp \
     $(pkg-config --libs Qt6Core Qt6Gui) -o "$D/probe"
 "$D/probe"
 HOME=$(mktemp -d) "$D/probe" --autostart

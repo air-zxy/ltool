@@ -90,11 +90,12 @@ endif()
 if(WIN32)
     set(LTOOL_PLATFORM_SRC src/platform/Paths_win.cpp src/platform/Launch_win.cpp
         src/platform/Autostart_win.cpp src/platform/FileMeta_win.cpp src/platform/ProcInfo_win.cpp
-        src/platform/FileOps_win.cpp)
+        src/platform/FileOps_win.cpp src/platform/SysConfig_win.cpp)
 else()
     set(LTOOL_PLATFORM_SRC src/platform/Paths_posix.cpp src/platform/Launch_posix.cpp
         src/platform/Autostart_posix.cpp src/platform/FileMeta_posix.cpp
-        src/platform/ProcInfo_posix.cpp src/platform/FileOps_posix.cpp)
+        src/platform/ProcInfo_posix.cpp src/platform/FileOps_posix.cpp
+        src/platform/SysConfig_posix.cpp)
 endif()
 
 # ---- 非 Windows：台阶一，只编"量过确实可移植"的那些 TU，然后到此为止 ----
@@ -113,6 +114,8 @@ if(NOT WIN32)
         src/Archives.cpp        # 走系统 libarchive；bit7z 那颗后端只在 Windows 那边编
         src/CaptureHistory.cpp
         src/DownloadManager.cpp
+        src/DevEnvConfig.cpp    # 2026-10-17 第九刀：DevEnv 里「代理怎么生效、装东西的根在哪」那四颗
+                                # （动作两边共用，读的东西按平台走 platform/SysConfig.h）
         src/FileTools.cpp
         src/InfoRow.cpp
         src/PluginHost.cpp      # 2026-10-17 通读实测：装载走 QPluginLoader/QLibrary，本来就跨平台；
@@ -151,6 +154,7 @@ qt_add_library(ltoolcore SHARED
     src/UsnIndex.cpp
     src/WebShortcuts.cpp
     src/DevEnv.cpp
+    src/DevEnvConfig.cpp
     src/DownloadManager.cpp
     src/TaskScheduler.cpp
     src/WebsitesPage.cpp

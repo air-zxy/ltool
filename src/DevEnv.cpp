@@ -19,12 +19,8 @@
 #include <QRegularExpression>
 #include <QtGlobal>
 #include <QApplication>
-#include <QNetworkAccessManager>
-#include <QNetworkProxy>
-#include <QUrl>
 
 #include <windows.h>
-#include <winhttp.h>
 
 namespace {
 
@@ -379,73 +375,10 @@ QVector<LangVersion> detectVersions(const QString& langId)
     return out;
 }
 
-// 把 "127.0.0.1:10808" 这类写法补成 winget/QNetworkAccessManager 认的 URL
-static QString normalizeProxy(QString p)
-{
-    p = p.trimmed();
-    if (p.isEmpty() || !p.contains(QLatin1Char(':')))
-        return {};
-    if (!p.startsWith(QLatin1String("http://"), Qt::CaseInsensitive)
-        && !p.startsWith(QLatin1String("https://"), Qt::CaseInsensitive))
-        p = QLatin1String("http://") + p;
-    return p;
-}
+// 代理那四颗（normalizeProxy / systemProxyUrl / proxyUrl / applyProxy）搬进了
+// src/DevEnvConfig.cpp + src/platform/SysConfig_{win,posix}.cpp（第八道缝）：
+// DownloadManager 和 PluginStore 已在可移植名单里，链接期要在那边找得到它们。
 
-// Windows 系统代理（设置里那个静态代理）。PAC/自动检测这里解不了，只能忽略。
-QString systemProxyUrl()
-{
-    WINHTTP_CURRENT_USER_IE_PROXY_CONFIG pc = {};
-    if (!WinHttpGetIEProxyConfigForCurrentUser(&pc))
-        return {};
-    QString raw = pc.lpszProxy ? QString::fromWCharArray(pc.lpszProxy) : QString();
-    GlobalFree(pc.lpszAutoConfigUrl);
-    GlobalFree(pc.lpszProxy);
-    GlobalFree(pc.lpszProxyBypass);
-    raw = raw.trimmed();
-    if (raw.isEmpty())
-        return {};
-    // 可能写成 "http=127.0.0.1:10808;https=127.0.0.1:10808"，也可能直接是 "host:port"
-    QString host;
-    for (const QString& part : raw.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
-        const int eq = part.indexOf(QLatin1Char('='));
-        const QString key = eq < 0 ? QString() : part.left(eq).trimmed().toLower();
-        const QString val = (eq < 0 ? part : part.mid(eq + 1)).trimmed();
-        if (val.isEmpty() || key == QLatin1String("ftp") || key == QLatin1String("socks"))
-            continue;
-        if (key.isEmpty() || key == QLatin1String("https") || key == QLatin1String("http")) {
-            host = val;
-            break;
-        }
-    }
-    if (host.isEmpty())
-        host = raw;
-    return normalizeProxy(host);
-}
-
-QString proxyUrl()
-{
-    QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
-    const QString manual = normalizeProxy(cfg.value("net/proxy").toString());
-    if (!manual.isEmpty())
-        return manual;
-    return systemProxyUrl();
-}
-
-void applyProxy(QNetworkAccessManager* nam)
-{
-    if (!nam)
-        return;
-    const QString px = proxyUrl();
-    if (px.isEmpty()) {
-        nam->setProxy(QNetworkProxy::NoProxy);
-        return;
-    }
-    const QUrl u(px);
-    if (!u.isValid() || u.host().isEmpty())
-        return;
-    nam->setProxy(QNetworkProxy(QNetworkProxy::HttpProxy, u.host(),
-                                quint16(u.port(u.scheme() == QLatin1String("https") ? 443 : 80))));
-}
 
 // 把某个语言"接进"开发环境：PATH / JAVA_HOME / pyenv / rustup 默认工具链。
 // activate=true 表示"把这个版本设为当前使用"（下拉切换版本），false 表示"刚装完，先让它可用"。
@@ -560,20 +493,9 @@ bool wingetAvailable()
     return available;
 }
 
-QString installLocation()
-{
-    QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
-    QString root = cfg.value("install/path", "D:\\software").toString().trimmed();
-    // 配置里的盘符在这台机器上不存在（换机器、没插盘、虚拟机）→ 同一路径退到 C 盘：
-    // D:\software → C:\software，E:\tools → C:\tools
-    if (root.size() >= 3 && root.at(1) == QLatin1Char(':')
-        && root.at(0) != QLatin1Char('C') && !root.startsWith(QStringLiteral("\\\\"))) {
-        const QString drive = QString(root.left(2) + QLatin1Char('\\'));
-        if (!QDir(drive).exists())
-            root = QLatin1Char('C') + root.mid(1);
-    }
-    return root;
-}
+// installLocation 搬进 src/DevEnvConfig.cpp：动作两边共用，只有「根目录长什么样、
+// 配的路径在这台机器上能不能用」按平台走（platform::usableInstallRoot）。
+
 
 // 装之前把目标目录建出来：MSI 的 INSTALLDIR 指向不存在的多级路径会直接失败
 static QString ensureInstallDirFor(const QString& subdirName)
