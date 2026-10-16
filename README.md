@@ -61,7 +61,7 @@ cmake --build build --config Release
 ## 打包 + 安装
 
 ```powershell
-powershell -File build\verify\deliver.ps1        # 构建 → 打包 → 停旧实例 → 静默装 → 逐文件比 SHA256 → 重起
+powershell -File build\verify\deliver.ps1        # 构建 → **abi（新 core 对商店那批 dll 的导入表）** → 打包 → 停旧实例 → 静默装 → 逐文件比 SHA256 → 重起
 ```
 
 - 约 20~25 秒一圈。档位：默认 normal **22.08MB**（1.0.x 起是「开箱零插件」包：里面一颗插件 dll 都没有，只建一个空 `ltool-plugins\`，插件由商店按需拉）｜ `-Final` 21.8MB 那档是十二个 dll 都在包里时量的，没重测 ｜ `-Quick` 26.9MB ｜ `-NoBuild` 跳过构建。

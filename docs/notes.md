@@ -585,3 +585,13 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 反向验（三处故意改动，两边各自红自己那几条）：Windows 值名 `ltool`→`ltool-disabled` → 红「落点是 Run 键下的 ltool 值」；条目不转原生分隔符 → 红「条目写的就是当前这个 exe」；Linux `xdgQuote` 直接 return → 红「空格被转义」；文件名 `ltool.desktop`→`ltoolX.desktop` → 红「文件名就是 ltool.desktop」。**最后这条判据是这一轮新加的**：我先只做"写和读都用同一个函数"，那样改文件名是量不出来的（写读一起错就自洽）—— 又是一次"自洽的判据等于没判据"。
 - 对照数一条没动：`--plugintest` 221 / `--pinyin` 52 / `--cfgcheck` 11 / `--storetest` 67 / `--cliptest` 56。装的那份同步到本次构建后 `--plugintest` 那 12 红还是"右键动作被他卸掉了"那一族（不是这轮带的）。
 - 还欠着的：`Utils` 里剩下的 Windows 依赖（`extractIconToPng` 的 `PrivateExtractIconsW`、`fileTargetMissing` 的 `SearchPathW`、`killProcessTree`、`workingSetMB`、`trimWorkingSet`）＋ `src/pch.h` 之外那 38 个 `#include <windows.h>` 的 TU ＋ WP2 那个 bit7z configure 坎。
+
+## 发版前那道 ABI 闸：`tools/abi_check.py`（2026-10-16 夜）
+
+- 起因就是这一轮那一刀：core 少了一个导出符号名 = 已发布的插件 dll 当场 `LoadLibrary` 失败，而现场只报"加载失败"、不报缺哪个符号。我不想再靠事故回忆，所以把"这份新 core 能不能喂饱商店那批 dll"写成一个能跑的数。
+- 做法是纯 PE 解析（python，不需要 dumpbin/WinDbg）：读插件的 `IMAGE_DIRECTORY_ENTRY_IMPORT`，挑出模块名是 `ltoolcore.dll` 的那些符号，再和本机那份 core 的导出表比。**退出码就是缺的符号数**（0 = 都能加载）。
+- 拿真东西量了两头：对本机这批（19 颗，都是同一棵树编的）缺 **0**；对商店已经发布的那批（`C:\work\ltool_plugin\dist`，14 颗）缺 **7 个引用槽 = 2 个不同符号**，坏 **6 颗**（capture / language / record / registry / repair / startup）：`Utils::revealInExplorer` 被 5 颗 import，`Utils::launch` 被 2 颗。
+- 比我先前口头说的"9 颗 / 3 个名字"更准：他机器上当场坏 9 颗，是因为里面还有 3 颗（downloads / grid / software）是本机构建那份、**商店清单里还没有**（#78 那五颗没进去的坑）；而 `expandEnv` 其实没有已发布 dll 用到它（那三个调用点都在 core 内部）。**口头数字再次因为没实测而偏**，这次是拿导入表实测的。
+- 已经挂进交付闭环（[build/verify/deliver.ps1](file:///D:/project/cpp/ltool/build/verify/deliver.ps1) 的 `abi` 那一栏，52-83ms）：目录不在就 `SKIP ... 没查，不是通过`，绝不静默放行。**不 throw** —— 这一栏说的是"发版前要不要重发插件"，装到他自己机器上这件事不受它管。
+- 顺带一条 PowerShell 的坑（我第一次就把这栏写成了假数字）：`python` 打出来的中文进了 PS 会被 GBK 码页搅成乱码，用中文行去 `Select-String` 数就数出 **0**，于是那一栏打印"缺 0 个符号"、而它上面刚列出 7 个。改成让 python 额外打一行纯 ASCII 的 `MISSING_SYMBOLS=<n>` / `BAD <dll> <n>`，PS 只数那个。**要跨进程传数就别用中文当键。**
+- #91 现在有了数字可以拍：① 重发那 6 颗（要走插件仓库 CI，顺带把 #78 欠的五颗补齐）；② core 里留 `Utils::launch` / `revealInExplorer` 两个转发名（商店里那批永远不断，代价是两个没人调的壳）。我的倾向是 ①，因为 1.1.0 还没发、这一版正好把 #78 一起收掉。

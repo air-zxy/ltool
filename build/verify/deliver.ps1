@@ -36,6 +36,26 @@ if (-not $NoBuild) {
   }
 }
 
+# ---- core 的导出面就是已发布插件的 ABI：拿这份新 core 去对商店那批 dll 的导入表 ----
+# 少一个符号 = 换上去当场 LoadLibrary 失败，而现场只报"加载失败"、不报缺哪个符号
+# （2026-10-16 真踩过：删掉 Utils::launch / revealInExplorer 之后装的那份 9 颗起不来）。
+# 商店产物在插件仓库的 dist\ 下；那个目录不在就**点名跳过**，不许当成通过。
+$pub = 'C:\work\ltool_plugin\dist'
+if (Test-Path $pub) {
+  $abi = & python "$root\tools\abi_check.py" "$root\build\Release\ltoolcore.dll" $pub 2>&1
+  $abiCode = $LASTEXITCODE
+  # 数只能从 python 打的那行纯 ASCII 结论里取：按中文行数会数出 0（控制台 GBK 把 UTF-8
+  # 中文搅成乱码，正则一条都不匹配 —— 实测就这么把"缺 7 个"报成了"缺 0 个"）。
+  $missLine = ($abi | Select-String 'MISSING_SYMBOLS=(\d+)')
+  $miss = if ($missLine) { [int]$missLine.Matches[0].Groups[1].Value } else { -1 }
+  $note = if ($miss -lt 0) { ' -> 这一栏没数出来（python 没打 MISSING_SYMBOLS=），别当成通过' } `
+          elseif ($abiCode -ne 0) { ' -> 发版前必须重发这批插件' } else { ' -> 都能加载' }
+  Phase 'abi' $sw ('商店那批对这份 core：缺 ' + $miss + ' 个符号' + $note)
+  if ($abiCode -ne 0) { (($abi | Select-String 'BAD|MISSING_SYMBOLS') -join [Environment]::NewLine) | Write-Host }
+} else {
+  Phase 'abi' $sw ('SKIP 没有 ' + $pub + ' —— 没查，不是通过')
+}
+
 $iscc = 'D:\software\InnoSetup6\ISCC.exe'
 # 档位见 ltool.iss 里那张实测表：默认 normal（6.7 秒 / 22.2MB），-Quick 出快包，
 # -Final 回到 max+solid 出最小体积的正式包（9.9 秒 / 21.5MB）
