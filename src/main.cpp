@@ -2651,6 +2651,27 @@ int main(int argc, char* argv[])
                 cfg.sync();
             }
             check("待删表读得出来", QString::number(PluginStore::pendingRemoves().size()), "1");
+            // 排过队的那颗必须在自己卡片上说出来：文件还在、进程还加载着，点第二下也不会有
+            // 别的解释。以前这句只写给那张已经要被重建掉的标签看，界面上就是"点了没反应"。
+            makeFile(box + "/ltool-notpending.dll", QByteArray("没排队的对照"));
+            const auto noteOf = [box](const QString& file) {
+                for (const PluginStore::Row& r : PluginStore::localRows(box))
+                    if (r.remote.file == file)
+                        return r.note;
+                return QStringLiteral("<没有这一行>");
+            };
+            check("排过卸载队的那颗，状态里写明「下次启动真删掉」",
+                  noteOf(QStringLiteral("ltool-pending.dll")).contains(
+                      QStringLiteral("下次启动真删掉")) ? QStringLiteral("yes") : QStringLiteral("no"),
+                  "yes");
+            check("没排队的那颗不许也被说成排队中",
+                  noteOf(QStringLiteral("ltool-notpending.dll")).contains(
+                      QStringLiteral("下次启动真删掉")) ? QStringLiteral("yes") : QStringLiteral("no"),
+                  "no");
+            check("对照那颗自己得在列表里（不然上一条是空列表假绿）",
+                  noteOf(QStringLiteral("ltool-notpending.dll")) == QStringLiteral("<没有这一行>")
+                      ? QStringLiteral("no") : QStringLiteral("yes"),
+                  "yes");
             const int gone = PluginStore::applyPendingRemoves(box);
             check("下次启动那一步真把排队的删掉了",
                   gone == 1 && !QFile::exists(box + "/ltool-pending.dll")

@@ -385,6 +385,8 @@ QVector<Row> rows(const QVector<Entry>& entries, const QString& dir)
     return out;
 }
 
+namespace { QStringList pendingList(); }   // 卸载排队那张表，定义在下面（uninstall 那一段）
+
 QVector<Row> localRows(const QString& dir)
 {
     const QString d = local(dir);
@@ -421,6 +423,12 @@ QVector<Row> localRows(const QString& dir)
         r.note = off ? QStringLiteral("%1 被改名成 .off（%2），下次启动不会加载它")
                         .arg(base, humanSize(r.remote.bytes))
                      : QStringLiteral("%1 · %2").arg(base, humanSize(r.remote.bytes));
+        // 排过卸载队的那颗要说实话：文件还在、进程还加载着它，所以它现在既没"已卸载"也
+        // 不是"还能再卸一次"。这句原先只写进卡片那颗标签（applyUninstall 的 state 参数），
+        // 而点击之后整格会重建，那句就跟着旧标签一起没了 —— 界面上看起来就是"点了没反应"。
+        if (pendingList().contains(base))
+            r.note = QStringLiteral("%1 已安排卸载 · 这个进程还加载着它，下次启动真删掉（%2）")
+                         .arg(base, humanSize(r.remote.bytes));
         out.append(r);
     }
     return out;
