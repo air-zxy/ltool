@@ -649,3 +649,11 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 修法是回到数据层，不是放宽阈值：`ToolsPage::makeCard` 给卡片挂 `ltoolState` 属性（状态那个枚举），判据**先认属性、再要求界面那句里确实出现了对应的词**（允许 `↑` 前缀与 `(v…)` 后缀）。箭头那条同样改法。两边都要对上：状态有、字没画，照样红。
 - 数字：`--storenet` 13 过 4 红 → **17 过 0 红**（`可更新 14 张，缺箭头 0 张` 第一次是真数出来的）；其余判据一字没动（221 / 68 / 20 / 11 / 52 / 56+SKIP / 64 / 44 = 536，0 红）。
 - 为什么一直没被发现：`--storenet` 要联网，**不在 CI 那串旗标里**；而且它红的时候退出码非 0、没人跑。教训一条：**"这条判据上次跑是什么时候"要说得出**，否则它是不是在测东西没人知道（这次 `upCards=0` 就是装饰了很久的绿）。
+
+## 链接缺口从 54 掉到 8：#93 的真相是探针少给了两样依赖（2026-10-17 凌晨）
+
+- 起因是 #93 那条"54 个里 12 个是 moc 产物，先脑内减掉"。**减掉不如补上**：脚本现在自己跑 moc（名单里每个 TU 的同名头，带 `Q_OBJECT` 就过一次，实测 5 个），再把 `pkg-config --libs libarchive` 链上 —— CMake 那边 portable 库本来就 `find_package(LibArchive)` 链着，探针不链就会多算十来个 `archive_*`"缺口"。
+- 结果：**54 → 8**（元对象族 1 个 = `SettingsDialog::staticMetaObject`，那是那个类的 TU 还没进名单；真缺口 7 个）。剩下就是四个类族：`DevEnv::applyProxy` / `installLocation`、`FileOps::killProcess` / `shred` / `whoHas`、`SevenZip::compress`、`ShellMenu::syncWithPlugin`。
+- **我上两轮报出去的 59 和 54，大头是测量方法自己造的**，不是实现缺那么多。归因顺序记一条：报"还差 N 个"之前，先核对**探针的依赖集和真实构建一致不一致**（moc、第三方库、编译旗标），差一样就虚高一截；能补进探针就别写在注释里让人脑内减。
+- 顺手核实掉一条我以为的真缺口：`Archives.cpp` 调的 `archive_write_open_filename_w` 这类宽字符入口，**Linux 的 libarchive 也导出**（`nm -D /usr/lib/x86_64-linux-gnu/libarchive.so` 里命中 1 个），所以它不是 #90 的活。写这句前先查过，别再拿"Windows 才有的 API"当直觉结论。
+- 这一改**只动 `tools/link_gap.sh`**：没碰任何 C++、没有产品代码变化，所以没跑 deliver（产物与上一轮逐字节相同，跑了只会白杀一次他的实例）。
