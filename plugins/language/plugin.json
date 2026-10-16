@@ -3,7 +3,7 @@
  "Name": "开发语言与环境",
  "Desc": "检测、安装并配置 Java、C++、Node.js、Python、Rust 等开发语言与环境",
  "Api": 3,
- "Version": "1.0.0",
+ "Version": "1.0.1",
  "Keywords": [
   "语言",
   "环境",

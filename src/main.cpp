@@ -806,6 +806,13 @@ int main(int argc, char* argv[])
                 continue;
             check((id + "：插件自报的 API 版本").toUtf8().constData(),
                   QString::number(p->apiVersion()), QString::number(LTOOL_PLUGIN_API_VERSION));
+            // plugin.json 那颗 Version 是商店判定的主判据（PluginStore::compare 先比版本、哈希只用来
+            // 区分同号的两份）。写成空或垃圾，这颗在商店里永远只能报「说不清有没有新版」，
+            // 所以形状要当场量 —— 每颗自己递增那条纪律要有个能红的地方。
+            check((id + "：plugin.json 的版本号是 x.y.z 形状 [" + m->version + "]").toUtf8().constData(),
+                  QRegularExpression(QStringLiteral("^\\d+\\.\\d+\\.\\d+$")).match(m->version).hasMatch()
+                      ? QStringLiteral("yes") : QStringLiteral("no"),
+                  QStringLiteral("yes"));
             // plugin.json 那份和 C++ 里那五个 override 是同一件事的两处写法，对不上就是漂移
             check((id + "：plugin.json 与插件自报的名字/描述/关键词一致").toUtf8().constData(),
                   QStringLiteral("%1/%2/%3").arg(p->name(), p->desc())
@@ -3557,6 +3564,8 @@ int main(int argc, char* argv[])
                 // 逐张卡看：状态词说什么，按钮就该给什么。这是这次"一张列表"的正面判据 ——
                 // 装了的不许出现「装」，没装的不许出现「禁用」，可更新的两颗都得有。
                 int states = 0, nMissing = 0, nOnDisk = 0, wrong = 0;
+                int perState[7] = {0};
+                int diffNewer = 0;
                 QStringList wrongs;
                 for (QFrame* card : page.findChildren<QFrame*>(QStringLiteral("row"))) {
                     int idx = -1;
@@ -3603,6 +3612,12 @@ int main(int argc, char* argv[])
                         continue;
                     }
                     ++states;
+                    ++perState[idx];
+                    // 「与商店不同」其实两回事：本机号比商店高（新号已经发了、商店还没重打那批产物），
+                    // 和同号但内容不同（本机构建 vs CI 构建，天生两串哈希）。这两句只写在悬停里，
+                    // 不量就得人手开界面逐张看 —— 「每颗自己递增」到底生效没有就靠这两个数说话。
+                    if (idx == 6 && card->toolTip().contains(QStringLiteral("还新")))
+                        ++diffNewer;
                     const bool wantInstall = idx == 0 || idx == 1;
                     const bool wantToggle = idx >= 1 && idx != 4;   // 装了的（含可更新、清单外、已禁用）都能动
                     // 「卸载」跟着 toggle 走：本机真有那个文件（含 .off）才谈得上删它
@@ -3624,6 +3639,12 @@ int main(int argc, char* argv[])
                                            wantUninstall ? QStringLiteral("有") : QStringLiteral("没"));
                     }
                 }
+                QString dist;
+                for (int i = 0; i < 7; ++i)
+                    if (perState[i] > 0)
+                        dist += QStringLiteral(" %1=%2").arg(words[i]).arg(perState[i]);
+                std::printf("INFO 这一面各档：%s（其中「与商店不同」里本机号更高、等商店重发产物的是 %d 张）\n",
+                            dist.trimmed().toUtf8().constData(), diffNewer);
                 check("每张卡的状态词都认得出", states == nowCards,
                       QStringLiteral("有状态 %1 / 卡片 %2").arg(states).arg(nowCards));
                 check("每张卡的按钮和自己那句状态对得上（装了的不给装、没装的不给禁用/卸载）", wrong == 0,

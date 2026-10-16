@@ -668,3 +668,15 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 判据：`--storetest` 68 → **73**（新增"借一颗真插件读自己版本号" + 清单更高/一样/更旧/读不到 四档）。第一版把借来的真 dll 放进了别人要数插件颗数的那个目录，**红了两条**（`6 应 4`、`5/1 应 3/1`）—— 新夹具改放自己的子目录。`--storenet` 17/0，且那条「可更新有绿箭头」不再假设世界上一定有可更新的卡，改成把**本次量的张数**写进名字与实值（现在是 `可更新 0 张`，诚实的 0）。
 - 真清单实测（装好的那份）：状态行 `19 张卡 · 能装或可更新 0 · 拒收 0 · 清单外 5`，14 张走「与商店不同」——**这就是他现在界面会看到的样子**。
 - 欠着的一条（#78 落地时要一起拍）：19 颗 `plugin.json` 的 `Version` 全写死 `1.0.0`，没人负责递增；发版纪律不加，这套版本判定就永远是 `Different`。
+
+## 插件版本号改成「每颗自己递增」，并给它立一道闸（2026-10-17，他拍的形状）
+
+- 形状：号不跟 core 走，改了哪颗那颗自己 +1（末位；接口或行为大改自己进位）。core 那边改了不动插件号 —— 插件 dll 是导入 `ltoolcore.dll` 的，core 变了它字节也没变，那不在这条纪律的范围里。
+- 闸：`tools/plugin_version_gate.sh [基线ref]`，默认基线 = 最近一个 tag（发出去过、用户按那批号装过的那个时刻）。只管 `plugins/<id>/` 里除 `plugin.json` 之外的文件：源码改了而 `Version` 一模一样 → `NEEDS_BUMP <id>`；号往回走 → `VERSION_WENT_BACK <id>`；基线上没这颗（tag 之后新建）→ `NEW_SINCE_BASE`，1.0.0 就是它第一号，不要求递增。计数行一律 ASCII（`GATE_PLUGINS=` 等），这台机器 PowerShell 码页 GBK，拿中文行 grep 计数会读出 0。
+- 标签那次 run 的空转防线：基线 tag 正好指着 HEAD 时（CI 里 tag push 就长这样）自动往前退一个 tag，否则差集永远是空集 —— 那是装饰性的绿。实测 `bash tools/plugin_version_gate.sh $(git rev-parse HEAD)` 打印「基线退到 v1.0.3」，量的还是那 19 颗。
+- 一次性基线：v1.0.3 之后源码动过的 12 颗里，9 颗（capture / downloads / language / record / registry / repair / shell / software / startup）1.0.0 → 1.0.1；另 3 颗（clipboard / grid / linuxdo）是 v1.0.3 之后新建的，留在 1.0.0。bump 前闸报 `NEEDS_BUMP=9`，bump 后报 0。
+- 反向验证：shell 改回 1.0.0 → 闸点名 shell、`NEEDS_BUMP=1`、退出码 1；capture 改成 0.9.0 → `VERSION_WENT_BACK`、退出码 1；还原后回到 0。两个分支都在真对象上红过，不是写着好看。
+- 判据：`--plugintest` 加一条「plugin.json 的版本号是 x.y.z 形状 [实值]」，在 19 颗上量的（221 → **240**）。拿一颗真插件（json）把 Version 写成 `1.0` 重编，那条当场红且把 `[1.0]` 印在名字里；还原重编回到 240/0。为什么要判形状：`PluginStore::compare` 里一侧版本号空或垃圾就走「说不清有没有新版」，那颗永远等不到「可更新」。
+- CI：`.github/workflows/build.yml` 的 checkout 改 `fetch-depth: 0` + `fetch-tags: true`（默认那次浅克隆里 `git describe --tags` 直接失败，闸会报 `GATE_BASELINE=none` 而不是假装通过），闸放在装依赖之前，秒级失败。**插件仓库那份 workflow 没装这道闸**：它 `plugins/` 是从本仓库拷过去的快照，基线该跟谁比不归这条纪律管 —— 要装就连 #78 那批对外动作一起定。
+- 后果说清：商店清单 14 条版本号还是 1.0.0（现拉的那份 index.json 逐条看过：ads base64 capture clipboard disk json language network record registry repair shell startup user）⇒「与商店不同」那 14 张里 **7 张**现在写的是"本机 v1.0.1 比商店 v1.0.0 还新…按它会降级"：capture / language / record / registry / repair / shell / startup。bump 了的另两颗（software、downloads）清单里根本没有，走「清单外」——这一面 5 张就是 downloads grid linuxdo software tasks。这两个数是 `--storenet` 新加的 INFO 行现量的（各档分布 + 那个 7），不是我拿 9 减出来猜的（猜的那一遍真错了：software 其实不在清单里，startup 在）。等他把插件产物重发一批（#78 对外的下一步），两边同号才回到「已安装」。`Version` 是嵌在 dll 里的元数据 ⇒ 那 9 颗产物字节确实变了，装的那份要重新同步（本轮 sync 后 19/19 与构建逐颗一致）。
+- 数字：`--plugintest` 240/0、`--storetest` 73/0、seamtest 20/0、cfgcheck 11/0、gridtest 64/0、pinyin 52/0、linuxdotest 44/0、cliptest 56/0+1 SKIP；`--storenet` 16 过 1 红，红的是一条判据之外的东西 —— `检查更新走网页 302` 拿到 HTTP 0。同一条 curl 分测两条路：直连 8.0s 超时（code=000），经本机 9980 代理 0.83s 拿到 302。同一轮 40 分钟前那条还是 200，所以红的是**这台的出口**，不是这轮的刀；`--storenet` 要联网又不在 CI 里，这条以后还得靠"上次跑是什么时候"盯着。
