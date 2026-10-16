@@ -612,3 +612,10 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - **Linux 侧的 TU 名单从 12 涨到 13**：`Utils.cpp` 进来了（WSL 复测 `g++ -fsyntax-only` 逐个 TU 量：还是那 12 个 + Utils，其余 22 个照旧卡在 `windows.h`）。CMake 的 `LTOOL_CORE_PORTABLE_SRC` 跟着加了一行。
 - **ABI 闸当场涨了价**：`deliver` 的 `abi` 栏从"缺 7 个符号"变成**缺 8 个**（capture 从缺 1 变缺 2）。这轮又删了六个 `Utils::` 名字，已发布的那批里 import 到的多了一个。#91 现在更贵了 —— 越往后抽缝，要重发的插件越多。这不是停止的理由，但它是"什么时候停手重发一轮产物"的定价信号。
 - 对照数与交付：Windows 221 / 52 / 11 / 67 / 56 + `--seamtest` 20 全绿；闭环 18.9s、22.09MB、SHA `MATCH 5B7CA22BD43D`，装的那份同步到本次构建（`--plugintest` 那 12 红还是"右键动作已卸载"那一族，不是新伤）。
+
+## 链接缺口地图：`tools/link_gap.sh`（2026-10-16 深夜）
+
+- 只编不链（CMake 那个 OBJECT 库）回答不了"离能链出 core 还差几步"：编得过的 TU 会引用编不过的那批，链接期才暴露。这个脚本把可移植那 18 个 TU 真去 `-shared -Wl,--no-undefined` 链接一次，让**链接器自己列缺口**。
+- 实测结果：**59 个未定义符号**，按归属数下来主要是 —— `PluginHost::*`（`page` / `meta` / `feed` / `reload` / `pluginsDir` …，外加它的 vtable/staticMetaObject）、`FileOps::*`（`whoHas` / `shred` / `killProcess`）、`ShellMenu::syncWithPlugin`、`DevEnv::installLocation` / `applyProxy`、`DownloadManager::changed()` 与 `InfoRow::checkToggled(bool)` 这类 **moc 生成物**（对应 TU 没进来就会缺）。剩下 8 个是 vtable/typeinfo/staticMetaObject —— 那不是函数缺，是"这个 QObject 类的 moc 编译单元没进这批"。
+- 所以下一级该做的顺序也清楚了：**先 `PluginHost`**（它是插件能不能加载的核心，而 `QPluginLoader`/`dlopen` 在 Linux 上有真对等物，是最有回报的一道缝），再 `FileOps`（`whoHas` 在 Linux 是 `/proc/*/fd` 扫、`killProcess` 是 `kill(2)`、`shred` 有对等物），`ShellMenu`/`DevEnv` 那两处要么给空实现要么让调用方在别的平台上不引用 —— 那是能力问题，不是工作量问题。
+- 用法：`wsl -e bash tools/link_gap.sh`。名单跟 `CMakeLists.txt` 的 `LTOOL_CORE_PORTABLE_SRC` 同源，**改那边要改这边**（脚本里那行注释就是提醒这件事的）。
