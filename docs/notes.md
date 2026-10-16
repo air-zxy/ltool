@@ -503,7 +503,7 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 | `--cfgcheck` | 11 条：离屏建一次配置页，数每一行在不在、那两颗按钮是不是**各只有一颗**、每个分组框能不能从布局走到；另数设置窗菜单那四行（顺序、每行点开有内容、**只有「插件商店」那颗换成了画出来的袋子**），并把四颗图标拼成一条 PNG 存到 `%TEMP%\ltool-cfgshots\menu-icons.png` 供肉眼复核。 |
 | `--storetest` | 67 条（2026-10-16 数的；文档原来写 60，加"排队那句写进卡片"三条之前实测已经是 64）：插件商店离线那半条链 —— 清单解析（收两条、拒三条，拒的每条说一句）、`localRows`（目录里 `*.dll` 算已装、`*.dll.off` 算已禁用、旁边的 `*.bin` 不算）、和本地目录比（能装/已装/可更新/装不了）、`.part` 验哈希再改名（哈希或字节数不符就删掉半成品）、`<file>`↔`<file>.off` 改名禁用/恢复、索引地址留空回内置。**一次都不联网**。 |
 | `--storenet` | 17 条：真拉一次 `dist/index.json` 并离屏点「刷新清单」，**逐张卡**核对「那句状态词 ↔ 那颗按钮」——没装的只给「装」、装了的只给「禁用/启用」、可更新的两颗都要，再对状态行里的卡片数 / 能装数 / 拒收数 / 清单外数；三条新的盯这次改版：卡片上不许留裸字节数、本机装着的那几张都得写出 MB、**每颗按钮都在卡片最底下一行**（离屏量几何）。**要联网，没网就是红，所以不进 CI**。 |
-| `--seamtest` | 平台层那三道缝自己（`src/platform/Paths.h`、`Launch.h`、`Autostart.h`）16 条：四个已知目录问得到且**两两不同**、Windows 上各自落点、占位符换成系统里那个真值、夹在句子里的也换、认不出的原样留着、空路径不许启动/不许提权。Linux 侧 23 条走 `wsl -e bash tools/seam_probe.sh`（开机自启那 9 条是真往返：HOME 指临时目录，勾上→文件真在→关掉→文件没了）。细节与反向验见文末 **跨平台移植：平台层那道缝**。 |
+| `--seamtest` | 平台层那三道缝自己（`src/platform/Paths.h`、`Launch.h`、`Autostart.h`）16 条：四个已知目录问得到且**两两不同**、Windows 上各自落点、占位符换成系统里那个真值、夹在句子里的也换、认不出的原样留着、空路径不许启动/不许提权。Linux 侧 33 条走 `wsl -e bash tools/seam_probe.sh`（拼音 10 + 缝 14 + 自启 9 条真往返：HOME 指临时目录，勾上→文件真在→关掉→文件没了）。细节与反向验见文末 **跨平台移植：平台层那道缝**。 |
 | `--storemulti [颗数]` | 5 条：连着点几颗「装/更新」（他那次是九颗），然后**当场把卡片墙拆掉重排** —— 回调连的是页面（还活着）、卡片是 deleteLater 掉的，用裸控件指针就是往已删的 QWidget 上写。回退版跑出来 `rc=-1073741819`（0xC0000005 访问违例），修复版全绿。要联网、会往运行目录真写 dll，所以 `build/verify/storemulti.ps1` 先拷一份临时副本；不进 CI。 |
 | `--uninst [id]` | 11 条：卸载那条路整个走到底 —— 先 `PluginHost::page()` 把那张页开出来（dll 就此映射进进程）、回商店、`applyUninstall`、重排、再切回那张页；另一颗没打开过的直接卸。两种都得活着，且"当场删掉"与"排到下次启动"必有一条成立。跑在临时副本里（它会真删文件），不进 CI。 |
 | `--pintool` | 19 条几何断言：置顶窗那两个「收起」开关（离屏，一次都不 `show()`）。 |
@@ -581,7 +581,7 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - macOS 那一支**只写文件、不 `launchctl bootstrap`**：文件写上只是"注册"，真装载要么等下次登录、要么另外调 launchctl。所以那句"已开启开机自启"在 macOS 上只能说"注册上了"，界面上别说"已经生效"。这条限制写在 [src/platform/Autostart.h](file:///D:/project/cpp/ltool/src/platform/Autostart.h) 的注释里，不是埋在代码里。
 - 两个纯函数是**为了能被问才抽出来的**：`autostartTarget()`（落点）和 `autostartEntry(exe)`（内容）。这条缝的失败模式只有"勾了没反应"，不会报错、不会崩，路径拼错就等于功能不存在。
 - `.desktop` 的 `Exec=` 走 unix 引号规则：空格、制表、换行、双引号、反引号都要转义（`xdgQuote`），否则装到带空格的目录里那一行会被切成两个参数；plist 那一支要过 XML 转义（`xmlEscape`）。
-- 判据：Windows 侧 `--seamtest` 14 → **16 条**，**只问落点和内容、绝不调 `setAutostart`** —— 它会真去动他机器的 HKCU Run 键（顺手 INFO 打一句这台机器当前是"已开/没开"，让他看见自测没替他改）。Linux 侧 `tools/seam_probe.sh` 14 → **23 条**，其中自启那 9 条是**真往返**：`HOME` 指到一个临时目录 → 勾上 → 文件真在 `autostartTarget()` 说的那个路径上、`Exec=` 里是当前 exe → 关掉 → 文件没了、`autostartEnabled()` 跟着说没开。
+- 判据：Windows 侧 `--seamtest` 14 → **16 条**，**只问落点和内容、绝不调 `setAutostart`** —— 它会真去动他机器的 HKCU Run 键（顺手 INFO 打一句这台机器当前是"已开/没开"，让他看见自测没替他改）。Linux 侧 `tools/seam_probe.sh` 14 → **33 条**（2026-10-16 夜又并进拼音那 10 条），其中自启那 9 条是**真往返**：`HOME` 指到一个临时目录 → 勾上 → 文件真在 `autostartTarget()` 说的那个路径上、`Exec=` 里是当前 exe → 关掉 → 文件没了、`autostartEnabled()` 跟着说没开。
 - 反向验（三处故意改动，两边各自红自己那几条）：Windows 值名 `ltool`→`ltool-disabled` → 红「落点是 Run 键下的 ltool 值」；条目不转原生分隔符 → 红「条目写的就是当前这个 exe」；Linux `xdgQuote` 直接 return → 红「空格被转义」；文件名 `ltool.desktop`→`ltoolX.desktop` → 红「文件名就是 ltool.desktop」。**最后这条判据是这一轮新加的**：我先只做"写和读都用同一个函数"，那样改文件名是量不出来的（写读一起错就自洽）—— 又是一次"自洽的判据等于没判据"。
 - 对照数一条没动：`--plugintest` 221 / `--pinyin` 52 / `--cfgcheck` 11 / `--storetest` 67 / `--cliptest` 56。装的那份同步到本次构建后 `--plugintest` 那 12 红还是"右键动作被他卸掉了"那一族（不是这轮带的）。
 - 还欠着的：`Utils` 里剩下的 Windows 依赖（`extractIconToPng` 的 `PrivateExtractIconsW`、`fileTargetMissing` 的 `SearchPathW`、`killProcessTree`、`workingSetMB`、`trimWorkingSet`）＋ `src/pch.h` 之外那 38 个 `#include <windows.h>` 的 TU ＋ WP2 那个 bit7z configure 坎。
@@ -595,3 +595,11 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 已经挂进交付闭环（[build/verify/deliver.ps1](file:///D:/project/cpp/ltool/build/verify/deliver.ps1) 的 `abi` 那一栏，52-83ms）：目录不在就 `SKIP ... 没查，不是通过`，绝不静默放行。**不 throw** —— 这一栏说的是"发版前要不要重发插件"，装到他自己机器上这件事不受它管。
 - 顺带一条 PowerShell 的坑（我第一次就把这栏写成了假数字）：`python` 打出来的中文进了 PS 会被 GBK 码页搅成乱码，用中文行去 `Select-String` 数就数出 **0**，于是那一栏打印"缺 0 个符号"、而它上面刚列出 7 个。改成让 python 额外打一行纯 ASCII 的 `MISSING_SYMBOLS=<n>` / `BAD <dll> <n>`，PS 只数那个。**要跨进程传数就别用中文当键。**
 - #91 现在有了数字可以拍：① 重发那 6 颗（要走插件仓库 CI，顺带把 #78 欠的五颗补齐）；② core 里留 `Utils::launch` / `revealInExplorer` 两个转发名（商店里那批永远不断，代价是两个没人调的壳）。我的倾向是 ①，因为 1.1.0 还没发、这一版正好把 #78 一起收掉。
+
+## 台阶一：Linux 上 configure 过了，编出来的第一批 TU 有名单（2026-10-16 夜）
+
+- 做法是把"哪些 TU 现在就可移植"变成**量出来的名单**，不是我印象里的数：在 WSL 上对 core 的 36 个 TU 逐个 `g++ -std=c++20 -fsyntax-only -I src $(pkg-config --cflags Qt6*)` → **13 过 / 23 不过**。过的：`Pinyin` `Archives` `CaptureHistory` `DownloadManager` `FileTools` `InfoRow` `PluginStore` `SilentInstallLog` `SysTools` `ToolsPage` `WebShortcuts` `WebsitesPage`（+ 平台层那三道缝）。不过的 23 个全卡在同一类：`#include <windows.h>`，也就是注册表 / USN-MFT / WGC+MF / HKCU verb / COM 这五族机制还没抽缝。
+- `Archives.cpp` 居然过了：它吃的是**系统 libarchive**（WSL 里 `/usr/include/archive.h` 在），bit7z 那颗后端在 `SevenZip.cpp` 里，那一颗照样 FAIL —— 所以"7z 压缩"这一路在 Linux 上还没有后端，别当成已经能用了。
+- CMake 的形状：非 Windows 走到 `add_library(ltool_portable OBJECT 缝 + 名单)` 然后 **`return()`**，core / exe / 插件那几段一行都不执行。为什么用 OBJECT：这批名单里还有一堆调用 `Utils::` 那些**还没进缝**的函数，做成 `.so` 要么链接报未定义符号，要么（Linux 默认允许 .so 留未定义符号）**"链接成功"却根本跑不起来** —— 后者比现在老老实实说"编到这里为止"更像假绿。
+- 实测（WSL Ubuntu 24.04 / gcc 13.3 / cmake 3.28）：`cmake -S . -B /tmp/lp2` **CONFIGURE OK**（那条 status 打的是"只编平台层那三道缝 + 名单里那 12 个 TU"），`cmake --build --target ltool_portable` **BUILD OK**。Windows 那一整条路径一个字没动：`--seamtest` 16 / `--plugintest` 221 / `--pinyin` 52 / `--cfgcheck` 11 / `--storetest` 67 / `--cliptest` 56 全绿、退出码 0，闭环 20.9s、包 22.09MB、SHA `MATCH 3A5404E9F16D`。
+- 顺手让 Linux 那侧第一次**跑起来**验了行为而不是只编译：`tools/seam_probe.sh` 从 23 涨到 **33 条**，新并进去的 10 条是拼音引擎（`usableQuery` 三条闸门、全拼/首字母/中段、`An` 不抢「广告弹窗」的直达、`renwu` 不抢「开机启动分析」、表和码点对齐的"垃圾/任务"抽查、多音字两个读音）—— 全绿。**这十条是有分量的**：搜索框那一整路是可移植的，Linux 上不用重写。

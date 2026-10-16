@@ -95,6 +95,40 @@ else()
         src/platform/Autostart_posix.cpp)
 endif()
 
+# ---- 非 Windows：台阶一，只编"量过确实可移植"的那些 TU，然后到此为止 ----
+# 这份名单不是猜的：2026-10-16 在 WSL 上对 core 的 36 个 TU 逐个跑
+# `g++ -std=c++20 -fsyntax-only -I src $(pkg-config --cflags Qt6*)`，13 过 23 不过。
+# 不过的那 23 个全卡在同一类东西上：#include <windows.h> —— 注册表 / USN-MFT /
+# WGC+Media Foundation / HKCU verb / COM 计划任务与防火墙这五族机制，还没抽成缝。
+# 为什么用 OBJECT 而不是 .so：这批 TU 里有一堆还在调用 Utils:: 那些**还没搬进缝**的函数，
+# 链接期要么报未定义符号、要么（Linux 默认允许 .so 留未定义符号）"链接成功"却根本跑不起来。
+# 那两种形状都比现在老实说"编到这里为止"更像假绿。
+if(NOT WIN32)
+    set(LTOOL_CORE_PORTABLE_SRC
+        src/Pinyin.cpp          # 搜索框的拼音匹配（表在 pinyin_data.h，只吃 QString）
+        src/Archives.cpp        # 走系统 libarchive；bit7z 那颗后端只在 Windows 那边编
+        src/CaptureHistory.cpp
+        src/DownloadManager.cpp
+        src/FileTools.cpp
+        src/InfoRow.cpp
+        src/PluginStore.cpp
+        src/SilentInstallLog.cpp
+        src/SysTools.cpp
+        src/ToolsPage.cpp
+        src/WebShortcuts.cpp
+        src/WebsitesPage.cpp)
+    find_package(LibArchive QUIET)
+    add_library(ltool_portable OBJECT ${LTOOL_PLATFORM_SRC} ${LTOOL_CORE_PORTABLE_SRC})
+    target_include_directories(ltool_portable PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(ltool_portable PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Network)
+    if(TARGET LibArchive::LibArchive)
+        target_link_libraries(ltool_portable PRIVATE LibArchive::LibArchive)
+    endif()
+    set_target_properties(ltool_portable PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    message(STATUS "非 Windows：只编平台层那三道缝 + 名单里那 12 个 TU；core/exe/插件要等注册表、USN、WGC、COM 和 bit7z 的对等实现")
+    return()
+endif()
+
 qt_add_library(ltoolcore SHARED
     ${LTOOL_PLATFORM_SRC}
     src/Utils.cpp

@@ -17,6 +17,7 @@ cat > "$D/probe.cpp" <<'EOF'
 #include "platform/Paths.h"
 #include "platform/Launch.h"
 #include "platform/Autostart.h"
+#include "Pinyin.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -55,6 +56,29 @@ int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     if (argc > 1 && QString(argv[1]) == QLatin1String("--autostart"))
         return autostartRoundTrip();
+    // ---- 拼音引擎在 Linux 上给出同样的答案（搜索框那一路是可移植的，实测过才敢说）----
+    const QString renwuGuanli = QString::fromUtf8("任务管理器");
+    const QString renwu = QString::fromUtf8("任务");
+    const QString guanggaotanchuang = QString::fromUtf8("广告弹窗");
+    const QString qidongdongfenxi = QString::fromUtf8("开机启动分析");
+    const QString laji = QString::fromUtf8("垃圾");
+    check("usableQuery：两个纯字母才开这条路", Pinyin::usableQuery(QStringLiteral("rw")));
+    check("usableQuery：单个字母不开（开了每个中文名都中）", !Pinyin::usableQuery(QStringLiteral("r")));
+    check("usableQuery：夹数字/符号不开", !Pinyin::usableQuery(QStringLiteral("r1")));
+    check("renwu 全拼命中「任务管理器」", Pinyin::match(renwuGuanli, QStringLiteral("renwu")) == Pinyin::Full);
+    check("rw 首字母命中「任务」", Pinyin::match(renwu, QStringLiteral("rw")) == Pinyin::Initial);
+    check("中段也命中（应用那一档要召回：guanli）",
+          Pinyin::match(renwuGuanli, QStringLiteral("guanli")) == Pinyin::Full);
+    check("An 不当「广告弹窗」的直达（广的主读音是 guang）",
+          Pinyin::matchStart(guanggaotanchuang, QStringLiteral("an")) == Pinyin::None);
+    check("直达只认开头：renwu 不抢「开机启动分析」",
+          Pinyin::matchStart(qidongdongfenxi, QStringLiteral("renwu")) == Pinyin::None);
+    check("表和码点对齐：la ji 中「垃圾」，renwu 不中",
+          Pinyin::match(laji, QStringLiteral("laji")) == Pinyin::Full
+              && Pinyin::match(laji, QStringLiteral("renwu")) == Pinyin::None);
+    const QStringList cq = Pinyin::fullReadings(QString::fromUtf8("重庆"));
+    check("多音字两个读音都留（chongqing / zhongqing）",
+          cq.contains(QStringLiteral("chongqing")) && cq.contains(QStringLiteral("zhongqing")));
     const QString desk = Platform::knownDir(Platform::KnownDir::UserDesktop);
     const QString shared = Platform::knownDir(Platform::KnownDir::SharedDesktop);
     const QString ua = Platform::knownDir(Platform::KnownDir::UserApps);
@@ -87,6 +111,6 @@ SRC=$(cd "$(dirname "$0")/.." && pwd)
 cd "$SRC"
 g++ -std=c++20 -fPIC -Wall -Wextra -I src $(pkg-config --cflags Qt6Core) \
     "$D/probe.cpp" src/platform/Paths_posix.cpp src/platform/Launch_posix.cpp \
-    src/platform/Autostart_posix.cpp $(pkg-config --libs Qt6Core) -o "$D/probe"
+    src/platform/Autostart_posix.cpp src/Pinyin.cpp $(pkg-config --libs Qt6Core) -o "$D/probe"
 "$D/probe"
 HOME=$(mktemp -d) "$D/probe" --autostart
