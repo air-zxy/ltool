@@ -434,6 +434,9 @@ QString ToolsPage::reinstallHint(const PluginStore::Row& r) const
 QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
 {
     auto* card = new ShopCard(r.remote.name, r.remote.desc, colorOf(r.remote.color, r.remote.id), r.remote.version, this);
+    // 状态是数据层那个枚举，判据不该靠猜文案认它（"↑ 可更新"带个箭头前缀，startsWith 就认不出了，
+    // 2026-10-17 那 4 条红就是这里来的）。文案想怎么排版都行，这一颗钉住"这张卡说的是什么状态"。
+    card->setProperty("ltoolState", static_cast<int>(r.state));
     QString stateWord = PluginStore::stateWord(r.state);
     if (!r.remote.version.isEmpty()) {
         if (r.state == PluginStore::State::Update)

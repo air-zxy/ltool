@@ -3509,20 +3509,35 @@ int main(int argc, char* argv[])
                     PluginStore::stateWord(PluginStore::State::ApiMismatch),  // 4 装不了
                     PluginStore::stateWord(PluginStore::State::LocalOnly),    // 5 清单外
                 };
+                // words 的下标要和这张表一一对上：判据认的是**数据层那个枚举**，不是文案
+                const PluginStore::State stateOrder[6] = {
+                    PluginStore::State::Missing, PluginStore::State::Update,
+                    PluginStore::State::Installed, PluginStore::State::Disabled,
+                    PluginStore::State::ApiMismatch, PluginStore::State::LocalOnly,
+                };
                 // 逐张卡看：状态词说什么，按钮就该给什么。这是这次"一张列表"的正面判据 ——
                 // 装了的不许出现「装」，没装的不许出现「禁用」，可更新的两颗都得有。
                 int states = 0, nMissing = 0, nOnDisk = 0, wrong = 0;
                 QStringList wrongs;
                 for (QFrame* card : page.findChildren<QFrame*>(QStringLiteral("row"))) {
                     int idx = -1;
-                    for (QLabel* l : card->findChildren<QLabel*>()) {
-                        if (idx >= 0)
-                            continue;
-                        for (int i = 0; i < words.size(); ++i)
-                            if (l->text().startsWith(words[i])) {
+                    // 先认数据层那颗状态（makeCard 挂在卡片属性上），再要求界面**确实把那个词画出来了**：
+                    // 两边都得对上，缺一边就是"卡片说的和给的不一致"。
+                    // 旧写法只拿 startsWith 认文案，"↑ 可更新"那个箭头前缀一加上，14 张卡全成"没有状态词的卡"，
+                    // 而第 3 条「可更新那几张有绿箭头」一直在"可更新 0 张"上空转 —— 假绿比假红更贵。
+                    const QVariant st = card->property("ltoolState");
+                    if (st.isValid()) {
+                        for (int i = 0; i < 6; ++i)
+                            if (st.toInt() == static_cast<int>(stateOrder[i]))
                                 idx = i;
-                                break;
-                            }
+                        if (idx >= 0) {
+                            bool drawn = false;
+                            for (QLabel* l : card->findChildren<QLabel*>())
+                                if (l->text().contains(words[idx]))
+                                    drawn = true;
+                            if (!drawn)
+                                idx = -1;      // 状态有、字没画 = 界面在骗人，照样按"认不出"报
+                        }
                     }
                     bool hasInstall = false, hasToggle = false, hasUninstall = false;
                     for (QPushButton* b : card->findChildren<QPushButton*>()) {
@@ -3538,7 +3553,14 @@ int main(int argc, char* argv[])
                     }
                     if (idx < 0) {
                         ++wrong;
-                        wrongs << QStringLiteral("(一张没有状态词的卡)");
+                        // 取证要带上那张卡自己写了什么：上一版只说"一张没有状态词的卡"，
+                        // 于是"文案换了个头"和"状态真的没画出来"长得一模一样，来回两轮才分清。
+                        QString seen;
+                        for (QLabel* l : card->findChildren<QLabel*>())
+                            if (!l->text().isEmpty())
+                                seen += QStringLiteral(" [%1]").arg(l->text().left(24));
+                        wrongs << QStringLiteral("(没有状态词的卡:%1)").arg(seen.isEmpty()
+                                                                      ? QStringLiteral(" 全空") : seen);
                         continue;
                     }
                     ++states;
@@ -3612,7 +3634,13 @@ int main(int argc, char* argv[])
                     for (QLabel* l : card->findChildren<QLabel*>())
                         if (l->property("shopState").toBool())
                             st = l;
-                    if (!st || !st->text().startsWith(PluginStore::stateWord(PluginStore::State::Update)))
+                    // 是不是"可更新"看卡片属性那颗（数据层），文案只要求**出现了**那个词：
+                    // 画出来的是「↑ 可更新 v1.0.0 · 0.10 MB」，拿 startsWith 认整句会把 14 张全漏掉，
+                    // 于是这条判据一直在 upCards=0 上空转（"0 张可更新、缺箭头 0 张"看着像绿的）。
+                    if (!st || card->property("ltoolState").toInt()
+                                  != static_cast<int>(PluginStore::State::Update))
+                        continue;
+                    if (!st->text().contains(PluginStore::stateWord(PluginStore::State::Update)))
                         continue;
                     ++upCards;
                     if (st->text().contains(neqGlyph))
