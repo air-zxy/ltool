@@ -847,6 +847,15 @@ int main(int argc, char* argv[])
             check((QStringLiteral("右键动作 %1 有人接（谁）").arg(action)).toUtf8().constData(),
                   PluginHost::actionOwner(action), QStringLiteral("shell"));
         }
+        // 右键那几项"该不该在"= 用户那个勾 × 提供者（plugins/shell）在不在。
+        // 卸载了插件，文件夹右键里就不该再有 ltool —— 静态注册表项不会自己判断，得有人执行这条。
+        check("右键菜单：勾了且插件在 = 该写", ShellMenu::menuShouldBe(true, true) ? "yes" : "no", "yes");
+        check("右键菜单：勾了但插件被卸载/禁用 = 不该有（用户报的就是这一条）",
+              ShellMenu::menuShouldBe(true, false) ? "yes" : "no", "no");
+        check("右键菜单：没勾 = 不该有（哪怕插件装着）", ShellMenu::menuShouldBe(false, true) ? "yes" : "no", "no");
+        check("右键菜单：两个都不 = 不该有", ShellMenu::menuShouldBe(false, false) ? "yes" : "no", "no");
+        check("右键菜单：这台机器上提供者是谁（plugins/shell 在不在）",
+              ShellMenu::providerPresent() ? "yes" : "no", "yes");
         check("没人声明的动作老实返回空（不是随便抓一个插件顶上）",
               PluginHost::actionOwner(QStringLiteral("compress-lzx")), QString());
         // F2 那一档（2026-10-15 录屏本体进了 plugins/record）：热键还在这层薄壳里，
@@ -2780,7 +2789,9 @@ int main(int argc, char* argv[])
 
     // 右键菜单是静态注册表项：表里新加了项（比如"压缩为 .lzx"），已经集成过的机器
     // 不会自己长出来，启动时补写一次
-    ShellMenu::refreshIfStale();
+    // 右键那几项该不该在 = 用户那个勾 × 「右键动作」插件在不在（卸载/禁用就撤掉，
+    // 装回来自动写上）。里面顺带做了老那件"表里加了项、老机器不会自己变"的重写。
+    ShellMenu::syncWithPlugin();
 
     // 托盘气泡提示当前实际热键
     std::function<void()> updateMenuHotkey = [] {}; // 托盘创建后赋值

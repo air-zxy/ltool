@@ -223,7 +223,7 @@ installer\ltool-<版本>-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 
 编译要求（不是建议，是"凑不齐就崩在两边的堆上"）：**同一个 MSVC 工具集、同一份按 /MD 运行的
 Qt6\*.dll、同为 Release**；跨边界只递 Qt 类型，不递 `std::string`/`std::vector`。
-自测入口 `ltool.exe --plugintest`（202 条，全程离屏、一次都不 `show()`）：十八个插件逐个验
+自测入口 `ltool.exe --plugintest`（207 条，全程离屏、一次都不 `show()`）：十八个插件逐个验
 "元数据通过 → 真加载 → 建页 → 没显示 → 缓存命中 → 两边元数据一致"，外加递文本、
 卡片墙张数与几何（`WA_DontShowOnScreen` 走完整布局但不往屏幕上贴像素）。
 判据反证做过：把 `ltool-disk.dll` 藏掉 → 4 条红（含"九个工具都在卡片墙上 got=[8]"）；
@@ -433,7 +433,7 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 | `--diskscale` | 拿环境变量 `LTOOL_DISKTHREADS` 把同一棵树按 1/2/4/8/16 线程各扫一遍，量扩展性。 |
 | `--diskbranch` | 4 条：边扫边报的那几个分支数，和最后定稿的树是不是同一回事。 |
 | `--diskui` | 7 条：磁盘页整条链（点「整理」→ 途中就出行 → 定稿 → 换盘让位 → 换回来吃缓存）。慢，要真扫一整盘。 |
-| `--plugintest` | 十八个插件逐个验「元数据 → 真加载 → 建页 → 没显示 → 缓存命中 → 两边一致」+ 卡片墙张数与几何 + 动作路由（现在 202 条）。 |
+| `--plugintest` | 十八个插件逐个验「元数据 → 真加载 → 建页 → 没显示 → 缓存命中 → 两边一致」+ 右键菜单该不该在的四组合 + 卡片墙张数与几何 + 动作路由（现在 207 条）。 |
 | `--username` | 27 条：「Windows 用户名」那一页，**一次都不真的改账户 / 建账户**。 |
 | `--rowmenu` | 9 条：磁盘页两栏列表的右键该弹什么、点开的是不是这一行自己的目录。 |
 | `--archivetest` | `--archivetest extract / make / probe / progress`：压缩包读写回归；`make` 第 5 个参数是 7z 档位 0-9。 |

@@ -390,11 +390,17 @@ void ConfigPage::load()
     refreshPathInfo();
     m_clip->setChecked(ClipboardStore::instance().enabled());
     m_clipInfo->setText(QString("%1 条记录 · 图片存在 clipimg\\").arg(ClipboardStore::instance().items().size()));
-    m_shellMenu->setChecked(ShellMenu::installed());
+    m_shellMenu->setChecked(ShellMenu::intent());
     m_archiveProgress->setChecked(cfg.value("ui/archiveProgress", false).toBool());
+    // 三件事分开说：勾是你想要的，注册表里有没有是另一回事 —— 提供右键那几项的
+    // 「右键动作」插件被卸载/禁用了，勾还留着，但右键里此刻没有 ltool。
     m_shellInfo->setText(ShellMenu::installed()
                               ? QStringLiteral("已集成。%1").arg(ShellMenu::locationHint())
-                              : QStringLiteral("未集成（默认）。勾上并保存才会写入；取消勾选再保存即撤销。"));
+                              : ShellMenu::intent()
+                                    ? QStringLiteral("你勾了，但「右键动作」插件不在了（卸载或禁用）—— "
+                                                     "右键里此刻没有 ltool，装回来会自动写上。%1")
+                                          .arg(ShellMenu::locationHint())
+                                    : QStringLiteral("未集成（默认）。勾上并保存才会写入；取消勾选再保存即撤销。"));
     showImeState(m_imePunct, m_imePunctInfo);
 }
 
@@ -402,10 +408,13 @@ void ConfigPage::onSave()
 {
     QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
     Utils::setAutostart(m_autostart->isChecked());
-    if (m_shellMenu->isChecked() != ShellMenu::installed()) {
-        const QString r = m_shellMenu->isChecked() ? ShellMenu::install() : ShellMenu::remove();
-        m_shellInfo->setText(r);
-        m_shellMenu->setChecked(ShellMenu::installed());
+    if (m_shellMenu->isChecked() != ShellMenu::intent()) {
+        // 只记下"你想不想要"；注册表那侧由 intent × 插件在不在 一起决定（syncWithPlugin）
+        ShellMenu::setIntent(m_shellMenu->isChecked());
+        const QString r = ShellMenu::syncWithPlugin();
+        if (!r.isEmpty())
+            m_shellInfo->setText(r);
+        m_shellMenu->setChecked(ShellMenu::intent());
     }
 
     // 快捷键

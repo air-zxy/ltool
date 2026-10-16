@@ -16,11 +16,23 @@ bool installed();
 QString install();
 QString remove();
 
-// 已经集成过、但表里新加了项（老机器的右键里不会自己长出来）—— 启动时调一下，
-// 发现缺项就整表重写一遍（install 本身是幂等的）
+// 只在"该有"的时候用：已经集成过、但表里新加了项或删了项（老机器的右键不会自己变）——
+// 发现对不上就整表重写一遍（install 本身是幂等的）。启动时由 syncWithPlugin() 顺带调用。
 void refreshIfStale();
 
 // 给配置页显示"会往哪儿写"
 QString locationHint();
+
+// 右键那几项的"该不该在"是两件事的与：**用户想不想要**（配置里那个勾，落盘在 shell/intent）
+// 和**提供者在不在了**（「右键动作」那个插件装着且没禁用）。
+// 卸载了插件就要从右键里消失 —— 静态注册表项不会自己判断，所以得有人按这个规则写/删。
+bool providerPresent();                 // plugins/<shell> 在且没被改名 .off
+bool intent();                          // 用户那个勾（不是注册表现状）
+void setIntent(bool on);
+inline bool menuShouldBe(bool intent, bool provider) { return intent && provider; }
+
+// 按上面那条规则把注册表对齐（该有而没有就写，不该有却还在就删干净）。
+// 启动时、以及插件装了/卸了/禁用/启用之后各调一次。回一句给人看的话（没动就回空串）。
+QString syncWithPlugin();
 
 } // namespace ShellMenu

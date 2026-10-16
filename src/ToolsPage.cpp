@@ -1,5 +1,7 @@
 #include "ToolsPage.h"
 
+#include "ShellMenu.h"
+
 #include "DevEnv.h"
 #include "PluginHost.h"
 #include "PluginStore.h"
@@ -219,6 +221,7 @@ void addToggleButton(ToolsPage* page, ShopCard* card, const QString& file, bool 
                             err.isEmpty() ? QString() : QStringLiteral(" 失败：") + err));
         if (err.isEmpty()) {
             PluginHost::reload();
+            ShellMenu::syncWithPlugin();     // 禁用「右键动作」= 右键里那几项也该没了
             page->rebuildGrid();
         }
     });
@@ -266,6 +269,7 @@ void ToolsPage::applyUninstall(const QString& file, const QString& name, QLabel*
     }
     Utils::log(QStringLiteral("store: 卸载 %1（%2）完成，重扫目录").arg(file, name));
     PluginHost::reload();
+    ShellMenu::syncWithPlugin();             // 卸载了「右键动作」，文件夹右键里就不该再有 ltool
     rebuildGrid();
 }
 
@@ -697,6 +701,7 @@ void ToolsPage::startNextInstall()
 void ToolsPage::finishInstalls()
 {
     PluginHost::reload();
+    ShellMenu::syncWithPlugin();     // 把「右键动作」装回来 = 右键里那几项也该跟着回来
     rebuildGrid();
 }
 

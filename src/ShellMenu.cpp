@@ -1,9 +1,13 @@
 #include "ShellMenu.h"
 
+#include "PluginHost.h"
+
 #include "Utils.h"
 
 #include <QSet>
 #include <QVector>
+
+#include <QSettings>
 
 #include <windows.h>
 
@@ -226,6 +230,56 @@ QString remove()
     return gone ? QStringLiteral("已撤销：右键菜单里的 ltool 子菜单已删除（%1）").arg(locationHint())
                 : QStringLiteral("删除后仍然能读到我们的键，可能没删干净，请到 %1 里看一眼")
                       .arg(locationHint());
+}
+
+namespace {
+
+QString intentPath()
+{
+    return Utils::dataDir() + "/config.ini";
+}
+
+} // namespace
+
+bool providerPresent()
+{
+    const PluginHost::Meta* m = PluginHost::meta(QStringLiteral("shell"));
+    return m && m->ok() && !PluginHost::isDisabled(QStringLiteral("shell"));
+}
+
+bool intent()
+{
+    // 缺键时**以注册表现状为准**：老机器上右键里已经有 ltool（那时还没有这个开关），
+    // 默认成 false 会在下次启动时把人家正在用的菜单悄悄撤掉。
+    return QSettings(intentPath(), QSettings::IniFormat)
+        .value(QStringLiteral("shell/intent"), installed())
+        .toBool();
+}
+
+void setIntent(bool on)
+{
+    QSettings st(intentPath(), QSettings::IniFormat);
+    st.setValue(QStringLiteral("shell/intent"), on);
+    st.sync();
+}
+
+QString syncWithPlugin()
+{
+    const bool want = menuShouldBe(intent(), providerPresent());
+    if (want && installed()) {
+        refreshIfStale();        // 表里加过项/删过项，老机器上不会自己变
+        return QString();
+    }
+    if (want)
+        return install();
+    if (!installed())
+        return QString();
+    const QString why = intent()
+        ? QStringLiteral("「右键动作」插件不在了（卸载或禁用了），右键菜单里的 ltool 先撤掉；装回来会自动写上")
+        : QStringLiteral("配置里没勾这个开关");
+    const QString r = remove();
+    Utils::log(QStringLiteral("shellmenu: 撤掉右键菜单（%1）→ %2").arg(why, r));
+    return why;
 }
 
 void refreshIfStale()
