@@ -110,7 +110,8 @@ public:
                 "border: 1px solid rgba(6, 182, 212, 0.32); "
                 "border-radius: 4px; "
                 "padding: 1px 6px; "
-                "font-size: 8.5pt; "
+                "font-family: Consolas, 'Courier New', monospace; "
+                "font-size: 9pt; "
                 "font-weight: 600;"));
             keysLay->addWidget(tag);
         }
@@ -171,7 +172,8 @@ WebsitesPage::WebsitesPage(QWidget* parent) : QWidget(parent)
     titleCol->setSpacing(3);
     auto* heading = new QLabel(QStringLiteral("网站关键字直达"), this);
     heading->setObjectName(QStringLiteral("pageTitle"));
-    auto* tip = new QLabel(QStringLiteral("输入关键字直接打开网址（如 ld 打开 LINUX DO），或输入关键词后按空格进行站内搜索（如 gh qt6）。"),
+    auto* tip = new QLabel(QStringLiteral("这些关键字打在启动器搜索框里（按 Alt+Space 呼出）：输入关键字回车直接打开网站（如 ld），"
+                                          "后面加一个空格再打词就在该站里搜（如 gh qt6）。"),
                            this);
     tip->setObjectName(QStringLiteral("tip"));
     tip->setWordWrap(true);

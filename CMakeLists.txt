@@ -310,6 +310,9 @@ ltool_add_tool(grid GridPlugin           plugins/grid/GridBoard.cpp plugins/grid
                                          plugins/grid/gridplugin.cpp plugins/grid/gridselftest.cpp)
 ltool_add_tool(language LanguagePlugin   plugins/language/LanguagePage.cpp
                                          plugins/language/languageplugin.cpp)
+ltool_add_tool(clipboard ClipboardPlugin plugins/clipboard/ClipboardPage.cpp
+                                         plugins/clipboard/clipboardplugin.cpp
+                                         plugins/clipboard/clipselftest.cpp)
 # 第一个"后台自己会跑"的插件：plugin.json 里挂了 "Activate":true，启动时由
 # PluginHost::startBackground() 按名字叫它（LinuxdoWatch 那个定时器不靠页面活着）。
 ltool_add_tool(linuxdo LinuxdoPlugin     plugins/linuxdo/LinuxdoWatch.cpp
@@ -323,7 +326,7 @@ ltool_add_tool(linuxdo LinuxdoPlugin     plugins/linuxdo/LinuxdoWatch.cpp
 add_dependencies(ltool ltool-repair ltool-ads ltool-disk ltool-network ltool-registry
                         ltool-startup ltool-user ltool-json ltool-base64 ltool-shell ltool-record
                         ltool-capture ltool-software ltool-downloads ltool-tasks ltool-grid
-                        ltool-language ltool-linuxdo)
+                        ltool-language ltool-linuxdo ltool-clipboard)
 
 # ---- Qt 运行库部署：把 exe 所需的 Qt DLL / platform 插件复制到输出目录，
 #      避免 "no Qt platform plugin could be initialized" ----

@@ -281,8 +281,22 @@ void setIntent(bool on)
     st.sync();
 }
 
+bool intentExplicitlySet()
+{
+    return QSettings(intentPath(), QSettings::IniFormat).contains(QStringLiteral("shell/intent"));
+}
+
 QString syncWithPlugin()
 {
+    // 先认领意图再算该不该写：缺键时那个默认值以前读的是注册表现状，而现状是这条规则自己
+    // 删出来的 —— 卸载一次就把"想要"永久锁成"不想要"（他报的"装了右键动作，文件夹右键里没有 ltool"）。
+    // 放在最前面、且只在这里放一次，四个调用点（启动 / 装 / 卸 / 禁用启用）都走这同一条。
+    if (shouldAdoptIntent(intentExplicitlySet(), providerPresent())) {
+        setIntent(true);
+        Utils::log(QStringLiteral("shellmenu: 配置里这个开关从没被人为动过，而「右键动作」插件在 —— "
+                                  "把意图写成\"要\"（不写就解不开：缺键的默认值读的是注册表现状，"
+                                  "而那正是上一次撤销改掉的）"));
+    }
     const bool want = menuShouldBe(intent(), providerPresent());
     if (want && installed()) {
         refreshIfStale();        // 表里加过项/删过项，老机器上不会自己变

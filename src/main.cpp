@@ -617,7 +617,7 @@ int main(int argc, char* argv[])
             || a == QLatin1String("--pathcfg") || a == QLatin1String("--pintool")
             || a == QLatin1String("--appdirs") || a == QLatin1String("--cfgcheck")
             || a == QLatin1String("--storetest") || a == QLatin1String("--linuxdotest")
-            || a == QLatin1String("--linuxdonet")) {
+            || a == QLatin1String("--linuxdonet") || a == QLatin1String("--cliptest")) {
             const QString sandbox = QDir::tempPath() + "/" + a.mid(2);
             QDir(sandbox).removeRecursively();
             QDir().mkpath(sandbox);
@@ -728,6 +728,12 @@ int main(int argc, char* argv[])
     if (args.contains("--gridtest"))
         return runPluginSelftest(QStringLiteral("grid"));
 
+    // --cliptest：「剪贴板」那一页的判据（过滤那条纯函数、**行号↔存储下标**的映射、
+    // 状态行说实话、双击复用 / Delete 删这条 / 清空 三条动作真落到数据上）。
+    // 跑在沙箱 APPDATA 里：它要往 clipboard.json 写夹具、要点清空，碰不到他真实的剪贴板历史。
+    if (args.contains("--cliptest"))
+        return runPluginSelftest(QStringLiteral("clipboard"));
+
     // --linuxdotest：「linux.do 盯帖」那一路的判据（解析/命中/去重/前缀拼法/配置夹紧/
     // 页面摆控件）。**一次网都不上、一个气泡都不弹** —— 真取回那条在 --linuxdonet。
     // 它跑在沙箱 APPDATA 里（上面那串名单），因为这一路要写 linuxdo/* 那一节。
@@ -765,7 +771,8 @@ int main(int argc, char* argv[])
         static const char* const kTools[] = { "repair", "ads", "disk", "network", "registry",
                                               "startup", "user", "json", "base64", "shell",
                                               "record", "capture", "software", "downloads",
-                                              "tasks", "grid", "language", "linuxdo" };
+                                              "tasks", "grid", "language", "linuxdo",
+                                              "clipboard" };
         const QDir dir(PluginHost::pluginsDir());
         std::printf("INFO 插件目录：%s\n", dir.absolutePath().toUtf8().constData());
         const auto& metas = PluginHost::scan();
@@ -856,6 +863,21 @@ int main(int argc, char* argv[])
         check("右键菜单：两个都不 = 不该有", ShellMenu::menuShouldBe(false, false) ? "yes" : "no", "no");
         check("右键菜单：这台机器上提供者是谁（plugins/shell 在不在）",
               ShellMenu::providerPresent() ? "yes" : "no", "yes");
+        // 2026-10-16 他报"装了右键动作，文件夹右键里没有 ltool"：根因不在上面那张与表，
+        // 在**缺键时的默认值**读的是注册表现状，而现状正是这条规则自己删出来的 ——
+        // 卸载一次 → 菜单删掉 → 默认变成 false → 再装回来永远解不开（单向闩锁）。
+        // 认领规则单独抽成纯函数，就是为了让这四格能离线钉住（真写注册表没法沙箱）。
+        check("意图认领：开关从没动过 + 插件在 = 认领成\"要\"（装了这把插件就是为了右键）",
+              ShellMenu::shouldAdoptIntent(false, true) ? "yes" : "no", "yes");
+        check("意图认领：人明确勾掉过（键存在）就不许认领 —— 绝不替他打开",
+              ShellMenu::shouldAdoptIntent(true, true) ? "yes" : "no", "no");
+        check("意图认领：插件不在就别凭空写个\"要\"（撤销/禁用那一步不能被顶回去）",
+              ShellMenu::shouldAdoptIntent(false, false) ? "yes" : "no", "no");
+        check("意图认领：键存在且为 false、插件也不在 = 什么都不做",
+              ShellMenu::shouldAdoptIntent(true, false) ? "yes" : "no", "no");
+        // 这条盯的是"别把默认值又改回读注册表现状"：那条路就是这次那个闩锁本身。
+        check("意图认领那条规则必须在算之前就走（这台机器实测：键存在与否不该影响与表的结论）",
+              ShellMenu::menuShouldBe(ShellMenu::shouldAdoptIntent(false, true), true) ? "yes" : "no", "yes");
         check("没人声明的动作老实返回空（不是随便抓一个插件顶上）",
               PluginHost::actionOwner(QStringLiteral("compress-lzx")), QString());
         // F2 那一档（2026-10-15 录屏本体进了 plugins/record）：热键还在这层薄壳里，
