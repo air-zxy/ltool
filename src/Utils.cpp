@@ -364,23 +364,6 @@ QIcon bagIcon(const QColor& color)
     return QIcon(pm);
 }
 
-void setAutostart(bool on)
-{
-    QSettings run("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                  QSettings::NativeFormat);
-    if (on)
-        run.setValue("ltool", QDir::toNativeSeparators(QCoreApplication::applicationFilePath()));
-    else
-        run.remove("ltool");
-}
-
-bool autostartEnabled()
-{
-    QSettings run("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                  QSettings::NativeFormat);
-    return run.contains("ltool");
-}
-
 bool killProcessTree(qint64 pid)
 {
     if (pid <= 0)

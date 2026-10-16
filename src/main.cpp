@@ -1,4 +1,5 @@
 #include "AppScanner.h"
+#include "platform/Autostart.h"
 #include "platform/Paths.h"
 #include "platform/Launch.h"
 #include "AdBlocker.h"
@@ -1736,6 +1737,30 @@ int main(int argc, char* argv[])
         check("没有占位符的普通路径原样回去",
               Platform::expandEnv(QStringLiteral("/tmp/plain")) == QStringLiteral("/tmp/plain")
               ? "yes" : "no", "yes");
+        // 3) 开机自启：这条缝的可观测面只有"落点在哪"和"条目写了什么"，勾一下没反应这种事
+        //    永远不会报错。所以**只问这两个纯事实，不调 setAutostart** —— 它会真去动
+        //    HKCU 的 Run 键（那是他机器的开机自启，不该被一次自测改掉）。
+        const QString autoTarget = Platform::autostartTarget();
+#ifdef Q_OS_WIN
+        check("自启落点是 HKCU 那个 Run 键下的 ltool 值",
+              autoTarget.contains(QStringLiteral("CurrentVersion\\Run"))
+                  && autoTarget.endsWith(QStringLiteral("\\ltool")) ? "yes" : "no", "yes");
+        check("自启条目写的就是当前这个 exe（挪过安装目录要跟着走）",
+              Platform::autostartEntry(QStringLiteral("C:/x/y/ltool.exe"))
+                  == QStringLiteral("C:\\x\\y\\ltool.exe") ? "yes" : "no", "yes");
+        std::printf("INFO 自启落点=[%s] 这台机器当前=%s（自测只读不写，不替他勾）\n",
+                    autoTarget.toUtf8().constData(),
+                    Platform::autostartEnabled() ? "已开" : "没开");
+#else
+        check("自启落点在 HOME 下那个自启动目录里",
+              autoTarget.startsWith(QDir::homePath())
+                  && (autoTarget.endsWith(QStringLiteral("/ltool.desktop"))
+                      || autoTarget.endsWith(QStringLiteral("/com.ltool.autostart.plist")))
+              ? "yes" : "no", "yes");
+        const QString entry = Platform::autostartEntry(QStringLiteral("/tmp/My Apps/ltool"));
+        check("Exec 那一行带上 exe，且空格被转义（不然那一行会被切成两个参数）",
+              entry.contains(QStringLiteral("Exec=/tmp/My\\ Apps/ltool")) ? "yes" : "no", "yes");
+#endif
         check("空路径不许启动（launch）", Platform::launch(QString()) ? "yes" : "no", "no");
         check("空路径不许提权启动（launchAsAdmin）",
               Platform::launchAsAdmin(QString()) ? "yes" : "no", "no");
@@ -3102,8 +3127,8 @@ int main(int argc, char* argv[])
     QObject::connect(logAction, &QAction::triggered, [] { SilentInstallLog::showLog(); });
     QAction* autoRun = menu.addAction("开机自启");
     autoRun->setCheckable(true);
-    autoRun->setChecked(Utils::autostartEnabled());
-    QObject::connect(autoRun, &QAction::toggled, &Utils::setAutostart);
+    autoRun->setChecked(Platform::autostartEnabled());
+    QObject::connect(autoRun, &QAction::toggled, &Platform::setAutostart);
     menu.addSeparator();
     QObject::connect(menu.addAction("退出"), &QAction::triggered, &QApplication::quit);
     tray.setContextMenu(&menu);

@@ -1,4 +1,5 @@
 #include "ConfigPage.h"
+#include "platform/Autostart.h"
 #include "ShellMenu.h"
 #include "ClipboardStore.h"
 #include "DevEnv.h"
@@ -389,7 +390,7 @@ ConfigPage::ConfigPage(QWidget* parent)
 void ConfigPage::load()
 {
     QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
-    m_autostart->setChecked(Utils::autostartEnabled());
+    m_autostart->setChecked(Platform::autostartEnabled());
     m_hotkey->setKeySequence(QKeySequence(cfg.value("general/hotkey", "Alt+Space").toString()));
     m_installPath->setText(cfg.value("install/path", "D:\\software").toString());
     m_proxy->setText(cfg.value("net/proxy").toString());
@@ -431,7 +432,7 @@ void ConfigPage::load()
 void ConfigPage::onSave()
 {
     QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
-    Utils::setAutostart(m_autostart->isChecked());
+    Platform::setAutostart(m_autostart->isChecked());
     if (m_shellMenu->isChecked() != ShellMenu::intent()) {
         // 只记下"你想不想要"；注册表那侧由 intent × 插件在不在 一起决定（syncWithPlugin）
         ShellMenu::setIntent(m_shellMenu->isChecked());

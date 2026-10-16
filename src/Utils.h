@@ -77,9 +77,9 @@ struct ConsoleLines {
     QString tail();   // 收尾：把没有换行符的残余也解出来
 };
 
-// 开机自启（HKCU Run 键）
-void setAutostart(bool on);
-bool autostartEnabled();
+// 开机自启不在这里：那是平台层第三道缝，见 platform/Autostart.h
+// （Windows 是 HKCU 的 Run 值，Linux 是 ~/.config/autostart/ltool.desktop，
+//  macOS 是 ~/Library/LaunchAgents 那个 plist —— 三个平台各有各的机制，不是降级）
 
 // 终止进程及其全部子孙（winget 只是壳，真正在装的是它拉起的 msiexec/setup.exe，
 // 只杀父进程装还是会跑完）。已提权的子进程杀不动，返回 false 让调用方如实说。

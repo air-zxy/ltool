@@ -88,9 +88,11 @@ endif()
 # （行为零变化，判据不该因为搬个家就红）；POSIX 那两份走 XDG 目录 + xdg-open / open / pkexec。
 # 缝的规格写在 src/platform/*.h 里，不在这里重复。
 if(WIN32)
-    set(LTOOL_PLATFORM_SRC src/platform/Paths_win.cpp src/platform/Launch_win.cpp)
+    set(LTOOL_PLATFORM_SRC src/platform/Paths_win.cpp src/platform/Launch_win.cpp
+        src/platform/Autostart_win.cpp)
 else()
-    set(LTOOL_PLATFORM_SRC src/platform/Paths_posix.cpp src/platform/Launch_posix.cpp)
+    set(LTOOL_PLATFORM_SRC src/platform/Paths_posix.cpp src/platform/Launch_posix.cpp
+        src/platform/Autostart_posix.cpp)
 endif()
 
 qt_add_library(ltoolcore SHARED
