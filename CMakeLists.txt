@@ -114,6 +114,9 @@ if(NOT WIN32)
         src/DownloadManager.cpp
         src/FileTools.cpp
         src/InfoRow.cpp
+        src/PluginHost.cpp      # 2026-10-17 通读实测：装载走 QPluginLoader/QLibrary，本来就跨平台；
+                                # 卡住的只有一处漏 include 的 QJsonDocument（MSVC 靠传递包含糊过去，
+                                # GCC 当场报错）和写死的 .dll 文件名，两者都已补/抽进 platform/PluginNames.h
         src/PluginStore.cpp
         src/SilentInstallLog.cpp
         src/SysTools.cpp
@@ -128,7 +131,9 @@ if(NOT WIN32)
         target_link_libraries(ltool_portable PRIVATE LibArchive::LibArchive)
     endif()
     set_target_properties(ltool_portable PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    message(STATUS "非 Windows：只编平台层那三道缝 + 名单里那 12 个 TU；core/exe/插件要等注册表、USN、WGC、COM 和 bit7z 的对等实现")
+    # 数目从名单算，不写死：写死过两次都腐烂了（一度是 12、名单实际 13，再加 PluginHost 是 14）
+    list(LENGTH LTOOL_CORE_PORTABLE_SRC LTOOL_PORTABLE_N)
+    message(STATUS "非 Windows：只编平台层五道缝 + 名单里那 ${LTOOL_PORTABLE_N} 个 TU；core/exe/插件要等注册表、USN、WGC、COM 和 bit7z 的对等实现")
     return()
 endif()
 

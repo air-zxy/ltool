@@ -6,7 +6,10 @@
 
 #include "ltool-plugin.h"
 
-// DLL 插件的宿主：扫 `<exe 目录>/ltool-plugins/*.dll`，先只读元数据（不实例化，不占启动时间），
+// DLL 插件的宿主：扫 `<exe 目录>/ltool-plugins/` 里按平台命名的那一族产物
+// （Windows `ltool-<id>.dll`，Linux `libltool-<id>.so`，macOS `.dylib` —— 规则在
+// platform/PluginNames.h，装载本身用 QPluginLoader/QLibrary，不需要平台缝），
+// 先只读元数据（不实例化，不占启动时间），
 // 点开某张卡片时才 createInstance + createPage，并把那个页面缓存下来复用。
 //
 // 故意**不卸载**：Qt 插件的 dll 一旦 unload，里面还活着的 QWidget/定时器就是悬空指针，

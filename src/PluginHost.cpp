@@ -1,12 +1,14 @@
 #include "PluginHost.h"
 
 #include "Utils.h"
+#include "platform/PluginNames.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QHash>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLibrary>
 #include <QPluginLoader>
@@ -58,7 +60,7 @@ const QVector<Meta>& scan()
     const QDir dir(pluginsDir());
     if (!dir.exists())
         return g_metas;
-    const auto files = dir.entryList({QStringLiteral("*.dll")}, QDir::Files, QDir::Name);
+    const auto files = dir.entryList(Platform::pluginFileGlobs(), QDir::Files, QDir::Name);
     for (const QString& f : files) {
         const QString path = dir.absoluteFilePath(f);
         Meta m;
@@ -180,9 +182,11 @@ const Meta* meta(const QString& id)
 bool isDisabled(const QString& id)
 {
     const QString dir = pluginsDir();
-    if (QFileInfo::exists(dir + QStringLiteral("/ltool-") + id + QStringLiteral(".dll.off")))
+    const QString off = QLatin1Char('.') + Platform::pluginFileSuffix() + QStringLiteral(".off");
+    if (QFileInfo::exists(dir + QLatin1Char('/') + Platform::pluginFileName(id) + QStringLiteral(".off")))
         return true;
-    if (QFileInfo::exists(dir + QLatin1Char('/') + id + QStringLiteral(".dll.off")))
+    // 早先禁用那一路留下过"文件名就是 id"这一颗，不能因为它换了后缀就看不见
+    if (QFileInfo::exists(dir + QLatin1Char('/') + id + off))
         return true;
     if (const Meta* m = meta(id)) {
         if (!m->file.isEmpty()) {
@@ -261,7 +265,9 @@ void* entry(const QString& id, const char* symbol)
     if (!plugin(id))       // 先真加载，符号只在已装载的 dll 上找得到
         return nullptr;
     QLibrary* lib = libFor(id);
-    return lib ? lib->resolve(symbol) : nullptr;
+    // 这里必须 reinterpret_cast：QLibrary::resolve 给的是 QFunctionPointer（void (*)()），
+    // 函数指针转 void* 不是标准 C++ —— MSVC 当扩展收下，GCC 直接 -fpermissive 报错。
+    return lib ? reinterpret_cast<void*>(lib->resolve(symbol)) : nullptr;
 }
 
 int startBackground()
