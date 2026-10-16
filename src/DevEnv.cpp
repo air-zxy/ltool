@@ -3,6 +3,7 @@
 #include "InstallLogDialog.h"
 #include "SilentInstallLog.h"
 #include "Utils.h"
+#include "platform/Launch.h"
 
 #include <QDir>
 #include <QFile>
@@ -204,9 +205,7 @@ void detect(DevPlugin* p)
         QProcess proc;
         proc.setProgram(it.cmd.first());
         proc.setArguments(it.cmd.mid(1));
-        proc.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* a) {
-            a->flags |= CREATE_NO_WINDOW;
-        });
+        Platform::runWithoutConsole(&proc);
         proc.start();
         if (!proc.waitForStarted(2000)) {
             it.ok = false;
@@ -274,9 +273,7 @@ ProbeResult probe(const QStringList& cmd)
     proc.setProcessEnvironment(env);
     proc.setProgram(r.program);
     proc.setArguments(r.args);
-    proc.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* a) {
-        a->flags |= CREATE_NO_WINDOW;
-    });
+    Platform::runWithoutConsole(&proc);
     proc.start();
     if (!proc.waitForStarted(3000)) {
         r.output = QString("起不来：%1（%2）")
@@ -407,9 +404,7 @@ bool applyEnvFor(const QString& langId, const QString& path, const QString& labe
         QProcess p;
         p.setProgram(exe);
         p.setArguments(args);
-        p.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* a) {
-            a->flags |= CREATE_NO_WINDOW;      // 不弹黑窗口
-        });
+        Platform::runWithoutConsole(&p);
         p.start();
         if (!p.waitForStarted(5000)) {
             if (outErr) *outErr = QStringLiteral("无法启动 %1").arg(exe);
@@ -484,9 +479,7 @@ bool wingetAvailable()
         QProcess p;
     p.setProgram("winget");
     p.setArguments({"--version"});
-    p.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* a) {
-        a->flags |= CREATE_NO_WINDOW;
-    });
+    Platform::runWithoutConsole(&p);
         p.start();
         return p.waitForStarted(3000) && p.waitForFinished(10000) && p.exitCode() == 0;
     }();
@@ -703,9 +696,7 @@ bool startSilentInstall(const QString& wingetId, const QString& version,
                : QStringLiteral("代理：%1（但 winget 不接受命令行代理，本次不带）\n").arg(px)))
                                    .toUtf8());
     auto* p = new QProcess(qApp);   // 归 app 管：切页/关日志窗都不影响安装
-    p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* a) {
-        a->flags |= CREATE_NO_WINDOW;
-    });
+    Platform::runWithoutConsole(p);
     p->setProcessChannelMode(QProcess::MergedChannels);
     auto out = std::make_shared<QByteArray>();
     QObject::connect(p, &QProcess::readyReadStandardOutput, p, [p, jobId, out] {
@@ -805,9 +796,7 @@ void saveVersionCache(const QString& wingetId, const QStringList& versions)
 void fetchVersionsAsync(const QString& wingetId, std::function<void(QStringList)> done)
 {
     auto* p = new QProcess(qApp);
-    p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* a) {
-        a->flags |= CREATE_NO_WINDOW;
-    });
+    Platform::runWithoutConsole(p);
     QObject::connect(p, &QProcess::finished, p, [p, wingetId, done](int) {
         const QString out = QString::fromLocal8Bit(p->readAllStandardOutput()
                                                    + p->readAllStandardError());

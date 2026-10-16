@@ -1,5 +1,6 @@
 #include "TaskScheduler.h"
 #include "Utils.h"
+#include "platform/Launch.h"
 
 #include <QThreadPool>
 #include <QDateTime>
@@ -13,19 +14,11 @@
 #include <QTimer>
 #include <QUuid>
 
-#include <windows.h>
 
 namespace {
 
 QString tasksFile() { return Utils::dataDir() + "/tasks.json"; }
 QString taskLogDir() { return Utils::dataDir() + "/tasklogs"; }
-
-void noWindow(QProcess* p)
-{
-    p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* a) {
-        a->flags |= CREATE_NO_WINDOW;
-    });
-}
 
 QString shortStamp()
 {
@@ -36,7 +29,7 @@ QString shortStamp()
 bool compile(const QString& program, const QStringList& args, QString* err)
 {
     QProcess p;
-    noWindow(&p);
+    Platform::runWithoutConsole(&p);
     p.setProgram(program);
     p.setArguments(args);
     p.start();
@@ -204,7 +197,7 @@ QString TaskScheduler::runTask(const ScheduledTask& t, QString* err)
 
     if (!program.isEmpty()) {
         auto* p = new QProcess;
-        noWindow(p);
+        Platform::runWithoutConsole(p);
         p->setWorkingDirectory(fi.absolutePath());
         p->setProgram(program);
         p->setArguments(args);
@@ -256,7 +249,7 @@ QString TaskScheduler::runTask(const ScheduledTask& t, QString* err)
             return;
         }
         auto* p = new QProcess;
-        noWindow(p);
+        Platform::runWithoutConsole(p);
         p->setWorkingDirectory(QFileInfo(task.script).absolutePath());
         p->setProgram(exe);
         p->setProcessChannelMode(QProcess::MergedChannels);

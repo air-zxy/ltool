@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QProcess>
 
 #include <windows.h>
 #include <shellapi.h>
@@ -67,6 +68,15 @@ void reveal(const QString& path)
     QString native = QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath());
     QString params = "/select,\"" + native + "\"";
     ShellExecuteW(nullptr, L"open", L"explorer.exe", (LPCWSTR)params.utf16(), nullptr, SW_SHOWNORMAL);
+}
+
+void runWithoutConsole(QProcess* p)
+{
+    if (!p)
+        return;
+    p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* a) {
+        a->flags |= CREATE_NO_WINDOW;
+    });
 }
 
 } // namespace Platform

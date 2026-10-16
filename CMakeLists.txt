@@ -126,11 +126,22 @@ if(NOT WIN32)
         src/SysTools.cpp
         src/ToolsPage.cpp
         src/WebShortcuts.cpp
-        src/WebsitesPage.cpp)
+        src/WebsitesPage.cpp
+        src/AboutPage.cpp       # 2026-10-17 第十刀：它自己一个 Win32 入口都没有，卡在"LTOOL_VERSION
+                                # 没传进来"那条 #error 上 —— 宏给上就过了（版本号仍然只有 iss 一个来源）
+        src/InstallLogDialog.cpp
+        src/TaskScheduler.cpp)  # 这两棵以前挂着 #include <windows.h>，只为一句 CREATE_NO_WINDOW；
+                                # 那句收进 platform/Launch.h::runWithoutConsole 之后就没别的地方用 Win32 了
+                                # （计划任务其实是起 schtasks 进程，不是 COM）。
+                                # ClipboardStore 留在名单外：它靠 GetClipboardSequenceNumber 判断
+                                # "剪贴板到底变了没"，POSIX 没有对等的计数器 ⇒ 那是 #90 要拍形状的第五件。
     find_package(LibArchive QUIET)
     add_library(ltool_portable OBJECT ${LTOOL_PLATFORM_SRC} ${LTOOL_CORE_PORTABLE_SRC})
     target_include_directories(ltool_portable PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(ltool_portable PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Network)
+    # 名单里有 AboutPage.cpp 了，它就要求拿到同一个版本串（没定义它自己 #error，
+    # 绝不让界面显示一个"忘了改的旧版本"）。来源仍是 ltool.iss 那一处。
+    target_compile_definitions(ltool_portable PRIVATE LTOOL_VERSION="${LTOOL_VERSION_STRING}")
     if(TARGET LibArchive::LibArchive)
         target_link_libraries(ltool_portable PRIVATE LibArchive::LibArchive)
     endif()

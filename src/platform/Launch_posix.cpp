@@ -124,4 +124,10 @@ void reveal(const QString& path)
 #endif
 }
 
+// 这个问题在这个平台上不存在：POSIX 起子进程不会弹出一个控制台窗口，所以没动作可做。
+// （真要"脱离控制终端"是 setsid 那一类事，不归这条缝，也别在这儿假装做了。）
+void runWithoutConsole(QProcess*)
+{
+}
+
 } // namespace Platform

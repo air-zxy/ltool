@@ -706,3 +706,14 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 顺手用真 CMake 在 WSL 复核了一遍（不只我那两个探针脚本）：`cmake -S . -B /tmp/... && cmake --build --target ltool_portable` 过了，configure 打出「名单里那 15 个 TU」。
 - 数字：离线判据 568 → **577** 条 0 红；装的那份 `--seamtest` 37/0、`--plugintest` 240/0、`--storenet` 16 过 1 红（又是「检查更新走网页 302」那条：GitHub 直连这台机器现在不通，走 9980 代理 0.83 秒就 302 —— 而商店清单那条走镜像是通的，`状态行` 里写着「走的是 镜像 gh-proxy.com」）。闭环 20.0s、22.11MB、`install MATCH A76D3BD0E3CB`，sync 后 19/19 与构建逐颗一致。
 - 版本判断：**不升**（Windows 侧行为逐行相同，POSIX 侧还没有用户拿得到的产物；插件号也没动 —— 这轮改的是 core）。
+
+## 第十刀：能进的先进来（可移植 TU 15 → 18，链接缺口仍是 3）
+
+- 先量地图而不是猜：对 core 的每个 TU 跑 `g++ -fsyntax-only`，结果是"能编的 15 个 == 名单里的 15 个"，也就是说没有白捡的；然后按 Win32 触点给剩下 20 个排了个厚度（RegOpenKeyEx/HKEY 一堆的：RegClean 60 处、ShellMenu 12、StartupAudit 20、ConfigPage/EnvPath；只有 HANDLE/DWORD 几个的：DiskScan、AdBlocker）。
+- **我第一版结论是错的，被 MSVC 打回来的**：三个 TU（ClipboardStore / InstallLogDialog / TaskScheduler）挂着 `#include <windows.h>` 却"grep 不到任何 Win32 入口"，我就写下"这是早期留下的空壳"。删掉 include 之后 GCC 那边过了、MSVC 当场报 `GetClipboardSequenceNumber 找不到标识符` 和 `CREATE_NO_WINDOW 未声明` —— 我的 token 名单是自己编的，不在名单里的 API 就等于"不存在"，这不算测量。真正的测法是**把 include 删掉、两个编译器各跑一遍**，只有一个编译器说话不算。
+- 收的一道新缝：`Platform::runWithoutConsole(QProcess*)`（`platform/Launch.h`）。原来临时起的进程要藏控制台窗口，全项目写了 **8 遍**同一个三行 lambda（DevEnv 6、InstallLogDialog 1、TaskScheduler 1，外加 TaskScheduler 自己那个 `noWindow` 小别名）；现在 8 处都走缝，Windows 那份挂 CREATE_NO_WINDOW，POSIX 那份是**空动作**（这里没有控制台窗口可藏，不是降级）。黑窗弹没弹在无界面下量不到，所以判据只盯能量的一半：过了这道缝的进程照样起得来、输出读得到（`--seamtest` 37 → **38**）。
+- 三颗 TU 真进名单：`AboutPage.cpp`（自己一个 Win32 入口都没有，卡的只是 `LTOOL_VERSION` 那条 `#error` —— CMake 那边这个宏本来就 PUBLIC 挂在 ltoolcore 上，portable 目标也得给同一个串，来源仍是 ltool.iss 一处）、`InstallLogDialog.cpp`、`TaskScheduler.cpp`（后两颗要的"不弹控制台"进了缝之后就没别的 Win32 了；计划任务其实是起 schtasks 进程，不是 COM）。
+- `ClipboardStore.cpp` **留在名单外**：它靠 `GetClipboardSequenceNumber()` 判"剪贴板到底变了没有"（界面上那条"自己写的不算"就靠它，注释里写得很细 —— restore() 会同步发 dataChanged，序号是写完才变的）。POSIX 没有对等的计数器，硬做等于换一套机制、改行为 ⇒ 记成 #90 要拍形状的第五件。
+- 探针跟着修了两处自己的失真：`tools/link_gap.sh` 以前不认名单里的**行尾注释**（我加 TU 时带了说明，awk 的"这行以 ) 结尾"判断被注释带偏，最后一颗整条漏掉，awk 25 / grep 26 —— 幸好那条独立核对还在，把解析漏洞当场抓出来了）；两边现在都先剥 `#` 后面的内容再数。另一处是 AboutPage 进名单后探针不给 `LTOOL_VERSION`，那 1 个 TU 的 `#error` 会被念成实现缺口 —— 和当初 moc / libarchive 是同一类错。
+- 数字：可移植 TU core 15 → **18**（+7 道缝文件 = 探针里 25 个），`g++ -fsyntax-only` 全过、**真 CMake 在 WSL 上 `--target ltool_portable` 构建过了**；链接缺口仍是 **3**（`SevenZip::compress`、`ShellMenu::syncWithPlugin` 这两个要拍形状 + `SettingsDialog::staticMetaObject` 那个 TU 还没进名单）。POSIX 探针 69/0。Windows 侧离线判据 **578 条 0 红**（`--plugintest` 240、`--storetest` 73、`--seamtest` 38、cfgcheck 11、gridtest 64、pinyin 52、linuxdotest 44、cliptest 56+1 SKIP）。abi 仍缺 8（没删名字）。闭环 19.0s、22.11MB、`install MATCH FDF38B0E1BD6`，sync 后 19/19 与构建逐颗一致。
+- 版本判断：**不升**。Windows 侧 8 处调用是同一句旗标应用搬进缝（进程照常起、输出照常读，578 条判据一字没变），POSIX 侧还没有用户拿得到的产物。

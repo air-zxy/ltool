@@ -18,6 +18,9 @@ SRC=$(awk '
 /set\(LTOOL_CORE_PORTABLE_SRC/ { f = 1 }
 /set\(LTOOL_PLATFORM_SRC/      { f = 1 }
 f {
+    sub(/#.*/, "")   # 名单里可以写行尾注释（2026-10-17 加了四个 TU  each 带说明），
+                    # 不先剥掉的话"这行以 ) 结尾"那个收尾判断会被注释带偏，
+                    # 于是最后一颗 TU 整条漏掉 —— 两份取法必须看同一份文本才核对得出条数
     for (i = 1; i <= NF; i++) {
         t = $i
         sub(/\)$/, "", t)   # 收尾括号常贴在最后一个文件名上，不剥掉就整条跳过（第一版就漏了它）
@@ -31,6 +34,7 @@ f {
 N=$(printf '%s\n' "$SRC" | wc -l)
 M=$( (sed -n '/set(LTOOL_PLATFORM_SRC src\/platform\/Paths_posix/,/^endif/p' CMakeLists.txt
       sed -n '/set(LTOOL_CORE_PORTABLE_SRC/,/find_package(LibArchive QUIET)/p' CMakeLists.txt) \
+     | sed 's/#.*//' \
      | grep -oE 'src/[A-Za-z0-9_/]+\.cpp' | grep -v _win.cpp | sort -u | wc -l)
 if [ "$N" != "$M" ]; then
     echo "名单对不上：awk 取到 $N 个，grep 取到 $M 个 —— 解析漏了，下面那串未定义符号别当数"
@@ -45,6 +49,11 @@ L=$(pkg-config --libs Qt6Core Qt6Gui Qt6Widgets Qt6Network Qt6Concurrent)
 # 探针不链就会多算十来个 archive_* "缺口"（2026-10-17 实测 41 个里占 10 个）——
 # 和上面 moc 那档是同一类失真：探针少给一样依赖，缺口数字就虚高一截。
 LA=$(pkg-config --libs libarchive 2>/dev/null || true)
+# AboutPage.cpp 进了可移植名单（2026-10-17 第十刀），它没拿到 LTOOL_VERSION 就当场 #error ——
+# CMake 那边这一定义是 PUBLIC 挂在 ltoolcore 上的，探针不给就是"少给一样依赖"，
+# 于是 1 个 TU 编不过被念成"实现缺口"。这条规矩和上面 moc / libarchive 是同一类失真。
+# 探针只是语法与链接，不是界面，所以版本号在这里是什么不重要。
+VER='-DLTOOL_VERSION="0.0.0-linkgap"'
 if [ -n "$LA" ]; then
     L="$L $LA"
     echo "libarchive：链上了（$LA）"
@@ -57,7 +66,7 @@ echo "名单现读自 CMakeLists.txt，共 $(echo $SRC | wc -w) 个 TU："
 echo "$SRC" | tr '\n' ' '
 echo
 for f in $SRC; do
-  if g++ -std=c++20 -fPIC -I src $C -c "$f" -o "$D/$(basename "$f").o" 2>"$D/err"; then
+  if g++ -std=c++20 -fPIC -I src $C $VER -c "$f" -o "$D/$(basename "$f").o" 2>"$D/err"; then
     n=$((n+1))
   else
     echo "COMPILE-FAIL $f"

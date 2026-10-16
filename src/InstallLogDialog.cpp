@@ -1,5 +1,6 @@
 #include "InstallLogDialog.h"
 #include "Utils.h"
+#include "platform/Launch.h"
 
 #include <QLabel>
 #include <QPlainTextEdit>
@@ -7,7 +8,6 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
-#include <windows.h>
 
 #include <memory>
 
@@ -37,9 +37,7 @@ InstallLogDialog::InstallLogDialog(QWidget* parent, const QString& title,
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
 
     auto* proc = new QProcess(this);
-    proc->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* a) {
-        a->flags |= CREATE_NO_WINDOW; // 不弹控制台
-    });
+    Platform::runWithoutConsole(proc);
     auto lines = std::make_shared<Utils::ConsoleLines>();
     connect(proc, &QProcess::readyReadStandardOutput, this, [log, proc, lines] {
         const QString out = lines->feed(proc->readAllStandardOutput());

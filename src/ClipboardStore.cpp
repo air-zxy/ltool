@@ -21,7 +21,7 @@
 
 #include <algorithm>
 
-#include <windows.h>
+#include <windows.h>   // GetClipboardSequenceNumber：POSIX 没有对等计数器（#90 第五件）
 
 namespace {
 

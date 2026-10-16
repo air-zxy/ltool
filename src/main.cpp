@@ -1916,6 +1916,27 @@ int main(int argc, char* argv[])
             check("applyProxy 真的把同一个代理装到了管理器上",
                   same ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
         }
+        // 这轮还收了一道"起进程别弹控制台"（原来 8 处各写一遍 CREATE_NO_WINDOW 的 lambda）：
+        // Windows 挂旗标，POSIX 没这个概念 ⇒ 空动作。黑窗弹没弹在无界面下量不到，
+        // 这里量能量的那半：过了这道缝的进程照样起得来、输出照样读得到。
+        {
+            QProcess hidden;
+            Platform::runWithoutConsole(&hidden);
+#ifdef Q_OS_WIN
+            hidden.start(QStringLiteral("cmd"),
+                         {QStringLiteral("/c"), QStringLiteral("echo seamok")});
+#else
+            hidden.start(QStringLiteral("/bin/echo"), {QStringLiteral("seamok")});
+#endif
+            const bool up = hidden.waitForStarted(3000);
+            const bool done = up && hidden.waitForFinished(3000);
+            check("过了「不弹控制台」那道缝的进程照样起得来、输出读得到",
+                  (done && QString::fromLocal8Bit(hidden.readAllStandardOutput())
+                                .contains(QStringLiteral("seamok")))
+                      ? QStringLiteral("yes")
+                      : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+        }
         // 上面那三条量的是"这台机器现在的配置"，本机 net/proxy 留空、系统代理也读不到 ⇒
         // 走的是"没代理"那一支。规则本身要用夹具量，不然这两支里的一支永远没被人碰过
         // （装饰性的绿）：normalizeProxy 两边共用一份，usableInstallRoot 按平台各一份。
