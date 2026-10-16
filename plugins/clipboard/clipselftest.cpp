@@ -14,6 +14,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QImage>
 #include <QJsonArray>
@@ -27,6 +28,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QStringList>
+#include <QTimer>
 
 #include <cstdio>
 #include <functional>
@@ -321,6 +323,49 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     check("天数是 0 时状态行写「天数不限」，不许只报条数",
           page.statusText().contains(QStringLiteral("天数不限")) ? "yes" : "no", "yes");
     cs.setEnabled(false);
+
+    // ---- 自写不重入：只有真剪贴板才测得出来 ----
+    // 盯的是 2026-10-16 那次闪退的形状：restore() 往剪贴板写的那一下，在真实 Windows 上也会
+    // 回发一个 dataChanged（外壳把所有窗口都通知，包括写的那个），旧接法在同一个线程里立刻
+    // 回头收自己刚写的内容 —— 既白重编码一遍（图片是几百毫秒的"点一下卡住"），又会在
+    // restore 还拿着 m_items 引用的时候把这个 vector 挪走。
+    // **offscreen 的 clipboard 是个内存桩**：setText 不发 dataChanged、也不碰真剪贴板，
+    // 所以这几条跑在离屏里必然"绿得毫无意义"，这里点名跳过（同 --recordui 要真屏幕那条规矩）。
+    if (QApplication::platformName() == QLatin1String("offscreen")) {
+        std::printf("SKIP 自写不重入这 4 条：offscreen 的剪贴板是桩，测不到（要 QT_QPA_PLATFORM=windows 跑）\n");
+    } else {
+        cs.setEnabled(true);
+        // 收自己那一路现在推迟了一个事件循环回合（见 ClipboardStore::start 里那段注释），
+        // 一次 processEvents() 里刚挂上的 0ms 定时器不一定算过期，所以真的转一圈事件循环。
+        const auto spin = [](int msec) {
+            QEventLoop loop;
+            QTimer::singleShot(msec, &loop, &QEventLoop::quit);
+            loop.exec();
+        };
+        const QString clipBackup = QApplication::clipboard()->text();
+        QApplication::clipboard()->setText(QStringLiteral("ZZZreentr 甲"));
+        spin(80);
+        QApplication::clipboard()->setText(QStringLiteral("ZZZreentr 乙"));
+        spin(80);
+        check("开着收集时外部复制的文本收得到（推迟一个回合之后这条路仍然通）",
+              cs.items().size() >= 2 ? "yes" : "no", "yes");
+        check("两条的顺序是新的在前", cs.items().isEmpty() ? QString() : cs.items().at(0).text,
+              QStringLiteral("ZZZreentr 乙"));
+        if (cs.items().size() >= 2) {
+            const QString headBefore = cs.items().first().text;
+            const QString target = cs.items().at(1).text;
+            const int nBefore = static_cast<int>(cs.items().size());
+            cs.restore(1);                   // 复用中间那条：会往剪贴板写，等于自我通知一次
+            spin(120);
+            check("复用放进剪贴板的就是那一条本身", QApplication::clipboard()->text(), target);
+            check("自我那次写不把历史顺序搅动（旧写法会把它重新置顶）",
+                  cs.items().first().text == headBefore ? "yes" : "no", "yes");
+            check("自我那次写也不往历史里多塞一条重复内容", QString::number(cs.items().size()),
+                  QString::number(nBefore));
+        }
+        cs.setEnabled(false);
+        QApplication::clipboard()->setText(clipBackup);   // 这条路上动过真剪贴板，尽量原样还回去
+    }
 
     std::printf("clipboard: 失败 %d 项\n", bad);
     std::fflush(stdout);

@@ -56,9 +56,20 @@ void ClipboardStore::start()
     // 轮询只问一次 GetClipboardSequenceNumber()：Windows 维护的计数器，剪贴板没变就几微秒返回。
     // 不加这道闸门时，一张 2560x1440 截图躺在剪贴板上会让每 2 秒重读+重编码一次，
     // 实测稳定烧掉 13.8% 单核（4125ms/30s），而且全在 GUI 线程上。
+    //
+    // 这一路**必须推到下一个事件循环回合**，不能在信号里直接 capture()：我们自己的
+    // restore() 往剪贴板里写的那一下也会同步发 dataChanged，而那时 m_seq 还没更新
+    // （序号是写完才变的），于是同一线程里立刻回头读自己刚写的剪贴板、再给历史做一次
+    // 重编码 —— 图片那条实测要几百毫秒（他看到的"点一下卡住"），更要紧的是它会在
+    // restore() 还拿着 m_items 引用时就把这个 vector 挪走。
     connect(QApplication::clipboard(), &QClipboard::dataChanged, this, [this] {
-        m_seq = GetClipboardSequenceNumber();
-        capture();
+        QTimer::singleShot(0, this, [this] {
+            const UINT s = GetClipboardSequenceNumber();
+            if (s == m_seq)
+                return;                 // 自己写的那一下（restore 已经把 m_seq 追平了），或已经收过
+            m_seq = s;
+            capture();
+        });
     });
     auto* poll = new QTimer(qApp);
     poll->setInterval(2000);
@@ -315,7 +326,11 @@ void ClipboardStore::restore(int index)
 {
     if (index < 0 || index >= m_items.size())
         return;
-    const Item& it = m_items[index];
+    // 拿**副本**，不拿引用：往剪贴板里写这一步会同步发出 dataChanged，我们的槽就在同一个
+    // 线程里跑 capture() —— 它把这一条挪到最前（先 removeAt 再 prepend），m_items 就此搬家，
+    // 引用会指向已经释放的内存，而最后那行日志还在读它的字段。2026-10-16 他那次闪退
+    // （异常地址落在 Qt6Core.dll 里）最符合这个形状。
+    const Item it = m_items[index];
     QClipboard* cb = QApplication::clipboard();
     if (it.isImage) {
         const QImage img(it.imagePath);
