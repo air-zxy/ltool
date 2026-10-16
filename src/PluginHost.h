@@ -36,6 +36,9 @@ QString pluginsDir();                 // <exe 目录>/ltool-plugins
 const QVector<Meta>& scan();          // 只读元数据；结果缓存，reload() 才重扫
 void reload();
 const Meta* meta(const QString& id);
+// 问某个**文件**自己声明的 Version（读嵌在产物里那份 plugin.json，不实例化、不装载）。
+// 商店那侧要判"清单这份是不是比本机新"就得出这个数；读不到返回空串，调用方宁可说"说不清"。
+QString metaVersionOf(const QString& path);
 bool isDisabled(const QString& id);
 QWidget* page(const QString& id, QWidget* parent, QString* err);   // 懒创建 + 缓存
 LToolPlugin* plugin(const QString& id);

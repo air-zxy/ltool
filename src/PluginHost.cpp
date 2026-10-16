@@ -179,6 +179,13 @@ const Meta* meta(const QString& id)
     return nullptr;
 }
 
+QString metaVersionOf(const QString& path)
+{
+    // metaData() 只读嵌在产物里那份 plugin.json，不会 LoadLibrary、不会建对象
+    const QJsonObject md = QPluginLoader(path).metaData();
+    return metaOf(md).value(QLatin1String("Version")).toString().trimmed();
+}
+
 bool isDisabled(const QString& id)
 {
     const QString dir = pluginsDir();

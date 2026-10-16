@@ -76,4 +76,11 @@ struct ConsoleLines {
 // 改不动时返回 false，*error 是给界面看的实话（半成品留在原地，路径进调用方的 target）。
 bool renameStaged(const QString& stagedPath, const QString& destPath, QString* error);
 
+// 版本号比较：<0 / 0 / >0。原来长在「关于」页里，插件商店判"清单这份是不是比本机新"
+// 也要同一套规矩，抄第二遍迟早分叉（商店那侧第一次要它，就挪到公用的这一层）。
+// 规则：每段按**数字**比（当字符串比 "10" < "9" 会反）；带预发后缀的（0.8.1-beta.1）
+// 先只比数字段，数字全等才比后缀，而且**带后缀的那个更旧**（beta 是"奔着正式版去的"）。
+// 垃圾输入按 0 段算，绝不抛 —— 这两处都是界面按钮后面的功能。
+int compareVersions(const QString& a, const QString& b);
+
 } // namespace Utils

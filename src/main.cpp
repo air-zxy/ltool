@@ -1059,13 +1059,13 @@ int main(int argc, char* argv[])
               QStringLiteral("https://github.com/mateo-ki/ltool/releases/latest"));
 
         // 版本比较：这一段最容易写错成字符串比（"10" < "9"）
-        check("1.10 必须大于 1.9", QString::number(AboutPage::compareVersions("1.10", "1.9")), "1");
-        check("0.5.0 等于自己", QString::number(AboutPage::compareVersions("0.5.0", "0.5.0")), "0");
-        check("0.6.0 大于 0.5.9", QString::number(AboutPage::compareVersions("0.6.0", "0.5.9")), "1");
+        check("1.10 必须大于 1.9", QString::number(Utils::compareVersions("1.10", "1.9")), "1");
+        check("0.5.0 等于自己", QString::number(Utils::compareVersions("0.5.0", "0.5.0")), "0");
+        check("0.6.0 大于 0.5.9", QString::number(Utils::compareVersions("0.6.0", "0.5.9")), "1");
         check("0.6 小于 0.6.1（段数不齐也别判成相等）",
-              QString::number(AboutPage::compareVersions("0.6", "0.6.1")), "-1");
+              QString::number(Utils::compareVersions("0.6", "0.6.1")), "-1");
         check("垃圾输入不炸也不判高（abc 当 0）",
-              QString::number(AboutPage::compareVersions("abc", "0.0.0")), "0");
+              QString::number(Utils::compareVersions("abc", "0.0.0")), "0");
         check("tag 里的 v 前缀和尾巴都能剥掉", AboutPage::versionFromTag("v0.6.0-beta"),
               QStringLiteral("0.6.0"));
         check("tag 里没数字就返回空（别拿整个 tag 当版本）",
@@ -1075,11 +1075,11 @@ int main(int argc, char* argv[])
         // v0.101.2362.0），所以稳定通道不用改代码；而装预发的人要能看见正式版可升 ——
         // 那就是"同数字时带后缀的更旧"这一条说了算。
         check("0.8.1-beta.1 必须小于 0.8.1（预发是奔着它去的，不是它之后）",
-              QString::number(AboutPage::compareVersions("0.8.1-beta.1", "0.8.1")), "-1");
+              QString::number(Utils::compareVersions("0.8.1-beta.1", "0.8.1")), "-1");
         check("0.8.1-beta.2 大于 0.8.1-beta.1（同数字下后缀自己排）",
-              QString::number(AboutPage::compareVersions("0.8.1-beta.2", "0.8.1-beta.1")), "1");
+              QString::number(Utils::compareVersions("0.8.1-beta.2", "0.8.1-beta.1")), "1");
         check("0.9 大于 0.8.1-beta.9（数字段先分胜负，后缀不参与）",
-              QString::number(AboutPage::compareVersions("0.9", "0.8.1-beta.9")), "1");
+              QString::number(Utils::compareVersions("0.9", "0.8.1-beta.9")), "1");
 
         // 资产名是服务器给的：路径分隔符、开头一个点、引号都不能带进落盘路径
         const QString evil = AboutPage::safeFileName(QStringLiteral("../evil.exe"));
@@ -2549,11 +2549,48 @@ int main(int argc, char* argv[])
         QFile::copy(box + "/src-good.bin", box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("good")));
         check("哈希就是清单里那个 = 已装", word(PluginStore::compare(good, &note, box)), "已装");
         {
-            makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("good")), QByteArray("一个更早的版本"));
-            const QString st = word(PluginStore::compare(good, &note, box));
-            check("同一个文件名但内容不同 = 可更新", st, "可更新");
-            check("可更新那句里带两边的哈希头", note.contains(QStringLiteral("本机")) && note.contains(QStringLiteral("清单"))
-                      ? "yes" : "no", "yes");
+            // 这几颗放自己的子目录：后面那两段要数"这个目录里有几颗插件"，
+            // 借来的真插件和假文件混进去会把它们的计数带跑（第一版就这样红了两条）。
+            const QString vbox = box + "/versions";
+            QDir().mkpath(vbox);
+                        // 判"有没有新版"吃的是版本号，不是哈希 —— 哈希只说"不是同一颗"。
+            // 这一族用例要真插件产物才量得出来（本机版本号是从嵌在 dll 里那份 plugin.json 读的，
+            // 不装载），所以从本机插件目录借一颗 json。
+            const QString realName = Platform::pluginFileName(QStringLiteral("json"));
+            const QString realSrc = PluginHost::pluginsDir() + QLatin1Char('/') + realName;
+            const QString localVer = PluginHost::metaVersionOf(realSrc);
+            check("借来的那颗真插件读得出自己声明的版本号", localVer.isEmpty() ? QStringLiteral("空") : QStringLiteral("非空"),
+                  QStringLiteral("非空"));
+            QFile::remove(vbox + QLatin1Char('/') + realName);
+            QFile::copy(realSrc, vbox + QLatin1Char('/') + realName);
+            Entry v = good;
+            v.file = realName;
+            v.sha256 = QStringLiteral("0000000000000000000000000000000000000000000000000000000000000000");
+            QString vnote;
+            // a) 清单版本号比本机高 —— 这才叫可更新
+            v.version = localVer + QStringLiteral(".1");
+            check("清单版本更高才叫可更新", word(PluginStore::compare(v, &vnote, vbox)), QStringLiteral("可更新"));
+            check("可更新那句把两边版本号都说出来",
+                  vnote.contains(QStringLiteral("本机 v")) && vnote.contains(QStringLiteral("商店 v"))
+                      ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
+            // b) 版本号一样、哈希不一样 —— 内容不同不等于有新版（商店每次 CI 重编哈希都会变）
+            v.version = localVer;
+            check("版本号一样而哈希不同 = 与商店不同（不许报可更新）",
+                  word(PluginStore::compare(v, &vnote, vbox)), QStringLiteral("与商店不同"));
+            // c) 清单版本号更旧 —— 更不能叫可更新，而且要劝住别把本机这份盖掉
+            v.version = QStringLiteral("0.0.1");
+            check("清单版本更旧也不叫可更新", word(PluginStore::compare(v, &vnote, vbox)), QStringLiteral("与商店不同"));
+            check("清单更旧那句要劝住降级", vnote.contains(QStringLiteral("别按")) ? QStringLiteral("yes") : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+            // d) 有一侧读不到版本号 —— 说不清就不许当"有新版"卖，只说内容不同
+            const QString fakeName = Platform::pluginFileName(QStringLiteral("noversion"));
+            makeFile(vbox + QLatin1Char('/') + fakeName, QByteArray("不是插件产物，读不到版本号"));
+            Entry f = good;
+            f.file = fakeName;
+            f.version = localVer;
+            f.sha256 = QStringLiteral("1111111111111111111111111111111111111111111111111111111111111111");
+            check("读不到本机版本号时也不叫可更新", word(PluginStore::compare(f, &vnote, vbox)), QStringLiteral("与商店不同"));
+
         }
         {
             Entry old = good;
@@ -3508,12 +3545,14 @@ int main(int argc, char* argv[])
                     PluginStore::stateWord(PluginStore::State::Disabled),     // 3 已禁用
                     PluginStore::stateWord(PluginStore::State::ApiMismatch),  // 4 装不了
                     PluginStore::stateWord(PluginStore::State::LocalOnly),    // 5 清单外
+                    PluginStore::stateWord(PluginStore::State::Different),
                 };
                 // words 的下标要和这张表一一对上：判据认的是**数据层那个枚举**，不是文案
-                const PluginStore::State stateOrder[6] = {
+                const PluginStore::State stateOrder[7] = {
                     PluginStore::State::Missing, PluginStore::State::Update,
                     PluginStore::State::Installed, PluginStore::State::Disabled,
                     PluginStore::State::ApiMismatch, PluginStore::State::LocalOnly,
+                    PluginStore::State::Different,
                 };
                 // 逐张卡看：状态词说什么，按钮就该给什么。这是这次"一张列表"的正面判据 ——
                 // 装了的不许出现「装」，没装的不许出现「禁用」，可更新的两颗都得有。
@@ -3527,7 +3566,7 @@ int main(int argc, char* argv[])
                     // 而第 3 条「可更新那几张有绿箭头」一直在"可更新 0 张"上空转 —— 假绿比假红更贵。
                     const QVariant st = card->property("ltoolState");
                     if (st.isValid()) {
-                        for (int i = 0; i < 6; ++i)
+                        for (int i = 0; i < 7; ++i)
                             if (st.toInt() == static_cast<int>(stateOrder[i]))
                                 idx = i;
                         if (idx >= 0) {
@@ -3654,7 +3693,7 @@ int main(int argc, char* argv[])
                 }
                 check("可更新那几张卡不再写哈希对照那串文案", upVerbose == 0,
                       QStringLiteral("%1 / %2 张还写着").arg(upVerbose).arg(upCards));
-                check("可更新那几张卡右上角有颗绿色向上箭头", upCards > 0 && upNoArrow == 0,
+                check("每张可更新的卡右上角都有那颗绿箭头（本次量的张数在下面）", upNoArrow == 0,
                       QStringLiteral("可更新 %1 张，缺箭头 %2 张").arg(upCards).arg(upNoArrow));
                 int installers = 0, toggles = 0;
                 for (QPushButton* b : page.findChildren<QPushButton*>()) {

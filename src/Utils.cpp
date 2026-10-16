@@ -313,4 +313,33 @@ bool renameStaged(const QString& stagedPath, const QString& destPath, QString* e
     return false;
 }
 
+int compareVersions(const QString& a, const QString& b)
+{
+    // 版本号某段开头的数字（"10-beta" 取到 10；开头不是数字按 0 算，不抛出去）
+    const auto segNum = [](const QString& part) {
+        int i = 0;
+        while (i < part.size() && part.at(i).isDigit())
+            ++i;
+        return i == 0 ? 0 : part.left(i).toInt();
+    };
+    const int dashA = a.indexOf(QLatin1Char('-'));
+    const int dashB = b.indexOf(QLatin1Char('-'));
+    const QStringList pa = (dashA < 0 ? a : a.left(dashA)).split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    const QStringList pb = (dashB < 0 ? b : b.left(dashB)).split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    const int n = qMax(pa.size(), pb.size());
+    for (int i = 0; i < n; ++i) {
+        const int va = i < pa.size() ? segNum(pa[i]) : 0;
+        const int vb = i < pb.size() ? segNum(pb[i]) : 0;
+        if (va != vb)
+            return va < vb ? -1 : 1;
+    }
+    if (dashA < 0 && dashB < 0)
+        return 0;
+    if (dashA < 0)
+        return 1;                    // 同数字：稳定版赢
+    if (dashB < 0)
+        return -1;
+    return QString::compare(a.mid(dashA + 1), b.mid(dashB + 1));   // 都带后缀：beta.2 > beta.1
+}
+
 } // namespace Utils

@@ -41,13 +41,6 @@ namespace {
 const char kRepoOwner[] = "mateo-ki";
 const char kRepoName[] = "ltool";
 
-// 版本号某段开头的数字（"10-beta" 取到 10；解不出来按 0 算，不抛出去）
-int segNum(const QString& part)
-{
-    static const QRegularExpression re(QStringLiteral("^(\\d+)"));
-    return int(re.match(part).captured(1).toInt());
-}
-
 } // namespace
 
 AboutPage::AboutPage(QWidget* parent)
@@ -185,33 +178,6 @@ QString AboutPage::releasesPageUrl()
         .arg(QLatin1String(kRepoOwner), QLatin1String(kRepoName));
 }
 
-int AboutPage::compareVersions(const QString& a, const QString& b)
-{
-    // 带预发后缀的号（0.8.1-beta.1）先只比数字段，数字全相等才看后缀，而且**带后缀的那个更旧**
-    // —— 0.8.1-beta.1 是"奔着 0.8.1 去"的，不是它之后。
-    // 以前直接把整串按 '.' 拆开取段："1-beta" 被 segNum 读成 1、尾巴上那段 ".1" 还多出一位，
-    // 于是预发被当成比稳定版**更新**，装预发的人再也收不到"有正式版可升"。
-    const int dashA = a.indexOf(QLatin1Char('-'));
-    const int dashB = b.indexOf(QLatin1Char('-'));
-    const QStringList pa = (dashA < 0 ? a : a.left(dashA)).split(QLatin1Char('.'), Qt::SkipEmptyParts);
-    const QStringList pb = (dashB < 0 ? b : b.left(dashB)).split(QLatin1Char('.'), Qt::SkipEmptyParts);
-    const int n = qMax(pa.size(), pb.size());
-    for (int i = 0; i < n; ++i) {
-        // 每段按数字比：当字符串比的话 "10" < "9"，版本一到两位数就反了。
-        // 解不出数字（"0-beta"、垃圾输入）按 0 算，绝不抛出去 —— 这是个界面按钮后面的功能。
-        const int va = i < pa.size() ? segNum(pa[i]) : 0;
-        const int vb = i < pb.size() ? segNum(pb[i]) : 0;
-        if (va != vb)
-            return va < vb ? -1 : 1;
-    }
-    if (dashA < 0 && dashB < 0)
-        return 0;
-    if (dashA < 0)
-        return 1;                    // 同数字：稳定版赢
-    if (dashB < 0)
-        return -1;
-    return QString::compare(a.mid(dashA + 1), b.mid(dashB + 1));   // 都带后缀：beta.2 > beta.1
-}
 
 QString AboutPage::versionFromTag(const QString& tag)
 {
@@ -338,7 +304,7 @@ void AboutPage::startCheck()
         m_assetName = assetName;
         m_assetSize = 0;      // 网页那条给不出资产大小；下载时 DownloadManager 会报真实的
 
-        const int cmp = compareVersions(ver, currentVersion());
+        const int cmp = Utils::compareVersions(ver, currentVersion());
         m_lastCheck = QDateTime::currentDateTime();
         // 以前这句里还有"发布 <日期>"和"· <大小> MB"，那是 api 才给的字段 —— 换成网页那条就没了，
         // 宁可少说一项，也不为一行字把限流的那条路请回来。

@@ -438,12 +438,13 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
     // 2026-10-17 那 4 条红就是这里来的）。文案想怎么排版都行，这一颗钉住"这张卡说的是什么状态"。
     card->setProperty("ltoolState", static_cast<int>(r.state));
     QString stateWord = PluginStore::stateWord(r.state);
-    if (!r.remote.version.isEmpty()) {
-        if (r.state == PluginStore::State::Update)
-            stateWord = QStringLiteral("\u2191 可更新 v%1").arg(r.remote.version);
-        else
-            stateWord = QStringLiteral("%1 (v%2)").arg(stateWord, r.remote.version);
-    }
+    // 可更新 / 与商店不同 这两档各带着两个版本号（本机一个、商店一个）。
+    // 往状态词后面拼一个孤零零的 (v1.0.0) 会让人以为"要更新到 1.0.0"，
+    // 而那印的本来就是本机自己那份 —— 版本对照写在悬停提示里（note 那句）。
+    const bool twoVersions = r.state == PluginStore::State::Update
+                             || r.state == PluginStore::State::Different;
+    if (!r.remote.version.isEmpty() && !twoVersions)
+        stateWord = QStringLiteral("%1 (v%2)").arg(stateWord, r.remote.version);
     QString noteText;
     if (r.state == PluginStore::State::Installed) {
         const int idx = r.note.lastIndexOf(QLatin1String(" · "));
@@ -457,7 +458,7 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
         } else {
             noteText = r.note;
         }
-    } else if (r.state == PluginStore::State::Update) {
+    } else if (r.state == PluginStore::State::Update || r.state == PluginStore::State::Different) {
         // 「↑ 可更新」那颗绿箭头本身就是答复，不需要再把"本机 xxxx… ≠ 清单 yyyy…"那串写在脸上。
         // 大小留着（他要看得见装的是多大一份），哈希对照挪进悬停。
         noteText = PluginStore::humanSize(r.remote.bytes);
@@ -480,7 +481,8 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
     // 已装但没通过检查的那条也得老实承认打不开，不能给一只手形然后什么都发生不了。
     const PluginHost::Meta* md = PluginHost::meta(id);
     const bool openable = md && md->ok();
-    const bool installed = r.state == S::Installed || r.state == S::Update || r.state == S::LocalOnly;
+    const bool installed = r.state == S::Installed || r.state == S::Update
+                         || r.state == S::LocalOnly || r.state == S::Different;
 
     switch (r.state) {
     case S::Missing:
@@ -505,6 +507,19 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
             // 「可更新」是装了但哈希不同：那张页本来就能看，正文照常打开，更新交给按钮
             card->setBodyClick(openable ? [this, id] { showTool(id); } : std::function<void()>());
         }
+        break;
+    }
+    case S::Different: {
+        // 本机装着、哈希与商店那份不一样，但商店版本号不比本机新 —— 这不叫"有更新"。
+        // 出路还是要给：开发机上手工同步过、或本机这份是更旧的测试产物时，能换回商店那份。
+        auto* swap = card->addButton(QStringLiteral("换成商店那份"), /*isPrimary=*/true);
+        connect(swap, &QPushButton::clicked, this, [this, e, card, swap] {
+            swap->setEnabled(false);
+            installEntry(e, swap, card->stateLabel());
+        });
+        addToggleButton(this, card, file, /*enableIt=*/false);
+        addUninstallButton(this, card, e.name, file, reinstallHint(r));
+        card->setBodyClick(openable ? [this, id] { showTool(id); } : std::function<void()>());
         break;
     }
     case S::Disabled:

@@ -36,7 +36,6 @@ public:
     static QString versionFromReleasesUrl(const QString& finalUrl);
     static QString releasesPageUrl();         // 给人用浏览器打开的那页
     // 逐段按数字比：1.10 必须大于 1.9（当字符串比就反了）；非数字段按 0 处理，不抛异常
-    static int compareVersions(const QString& a, const QString& b);
     static QString versionFromTag(const QString& tag);   // "v0.6.0"/"ltool 0.6.0-beta" → "0.6.0"
     // release 资产的文件名只留 [A-Za-z0-9._-]，别让它变成 "../" 或者带引号的参数
     static QString safeFileName(const QString& raw);

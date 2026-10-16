@@ -56,6 +56,7 @@ QString stateWord(PluginStore::State s)
     case S::Disabled: return QStringLiteral("已禁用");
     case S::ApiMismatch: return QStringLiteral("装不了");
     case S::LocalOnly: return QStringLiteral("清单外");
+    case S::Different: return QStringLiteral("与商店不同");
     case S::Blocked: return QStringLiteral("条目不能用");
     }
     return QStringLiteral("条目不能用");
@@ -357,11 +358,34 @@ State compare(const Entry& e, QString* note, const QString& dir)
                             .arg(humanSize(QFileInfo(live).size()));
             return State::Installed;
         }
+        // 哈希不同只证明"不是同一颗"，不证明"有新版本"。商店每跑一次 CI 就重编一遍，
+        // MSVC 的产物哈希天生变 —— 拿哈希当"可更新"会让所有人每次发版都看到一片「可更新」，
+        // 而版本号一动不动（2026-10-17 实测：清单 14 条 version 全是 1.0.0，14 张全报可更新）。
+        const QString localVer = PluginHost::metaVersionOf(live);
+        const QString wantVer = e.version.trimmed();
+        if (localVer.isEmpty() || wantVer.isEmpty()) {
+            if (note)
+                *note = QStringLiteral("本机 %1… ≠ 清单 %2…，而且有一侧读不到版本号（本机=%3 清单=%4）"
+                                        "—— 说不清有没有新版，只说内容不同")
+                            .arg(got.left(8), e.sha256.left(8),
+                                 localVer.isEmpty() ? QStringLiteral("无") : localVer,
+                                 wantVer.isEmpty() ? QStringLiteral("无") : wantVer);
+            return State::Different;
+        }
+        const int cmp = Utils::compareVersions(wantVer, localVer);
+        if (cmp > 0) {
+            if (note)
+                *note = QStringLiteral("本机 v%1 → 商店 v%2 · %3")
+                            .arg(localVer, wantVer, humanSize(QFileInfo(live).size()));
+            return State::Update;
+        }
         if (note)
-            *note = QStringLiteral("本机 %1… ≠ 清单 %2…（%3）")
-                        .arg(got.left(8), e.sha256.left(8))
-                        .arg(humanSize(QFileInfo(live).size()));
-        return State::Update;
+            *note = cmp < 0
+                ? QStringLiteral("本机 v%1 比商店 v%2 还新（商店那份更旧）—— 按它会降级，别按")
+                      .arg(localVer, wantVer)
+                : QStringLiteral("版本号都是 v%1，但本机 %2… ≠ 商店 %3…（内容不同，没有新版）")
+                      .arg(localVer, got.left(8), e.sha256.left(8));
+        return State::Different;
     }
     if (QFileInfo::exists(live + QStringLiteral(".off"))) {
         if (note)
