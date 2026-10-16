@@ -53,6 +53,7 @@ private:
     QLineEdit* m_recDir = nullptr;
     QLabel* m_dirInfo = nullptr;
     QCheckBox* m_clip = nullptr;
+    QSpinBox* m_clipDays = nullptr;
     QLabel* m_clipInfo = nullptr;
     QCheckBox* m_imePunct = nullptr;
     QCheckBox* m_favorites = nullptr;

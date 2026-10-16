@@ -121,6 +121,15 @@ int dirItemCount(QListWidget* list)
     return n;
 }
 
+// 剪贴板那一格的状态行：条数 + 保留多久一起说，别让人以为 200 条是永远不倒的。
+QString clipInfoText()
+{
+    auto& cs = ClipboardStore::instance();
+    return QString("%1 条记录 · 保留 %2 · 图片存在 clipimg\\")
+        .arg(cs.items().size())
+        .arg(cs.keepDays() > 0 ? QString("%1 天").arg(cs.keepDays()) : QStringLiteral("不限（只按 200 条）"));
+}
+
 } // namespace
 
 ConfigPage::ConfigPage(QWidget* parent)
@@ -331,6 +340,15 @@ ConfigPage::ConfigPage(QWidget* parent)
                        "%APPDATA%\\ltool\\clipboard.json 和 clipimg\\ 下（最多 200 条）。\n"
                        "启动器里输 clip 就能翻历史。关掉只是停止收集，已有历史保留。");
     clipLay->addRow(m_clip);
+    m_clipDays = new QSpinBox(clip);
+    m_clipDays->setObjectName("clipDays");
+    m_clipDays->setRange(0, 3650);
+    m_clipDays->setSuffix(QStringLiteral(" 天"));
+    m_clipDays->setSpecialValueText(QStringLiteral("不限"));
+    m_clipDays->setToolTip("两条上限取交集：超过这个天数的一律清掉，没超龄的仍然受「最多 200 条」兜底。\n"
+                           "选「不限」就只按条数算。改完当场裁一次，超龄条目那张图片文件也跟着删；\n"
+                           "裁掉的就是裁掉了，改回「不限」不会把它们找回来。");
+    clipLay->addRow(QStringLiteral("保留天数："), m_clipDays);
     m_clipInfo = new QLabel(clip);
     m_clipInfo->setObjectName("muted");
     clipLay->addRow("当前：", m_clipInfo);
@@ -359,6 +377,11 @@ ConfigPage::ConfigPage(QWidget* parent)
     connect(clipClear, &QPushButton::clicked, this, [this] {
         ClipboardStore::instance().clear();
         m_clipInfo->setText(QString("已清空 · 现在 %1 条").arg(ClipboardStore::instance().items().size()));
+    });
+    // 保留天数不等「保存」：它就是引擎的一条上限，改了当场生效才对得上那句话。
+    connect(m_clipDays, qOverload<int>(&QSpinBox::valueChanged), this, [this](int days) {
+        ClipboardStore::instance().setKeepDays(days);
+        m_clipInfo->setText(clipInfoText());
     });
     load();
 }
@@ -389,7 +412,8 @@ void ConfigPage::load()
                            .arg(m_appDepth->value()));
     refreshPathInfo();
     m_clip->setChecked(ClipboardStore::instance().enabled());
-    m_clipInfo->setText(QString("%1 条记录 · 图片存在 clipimg\\").arg(ClipboardStore::instance().items().size()));
+    m_clipDays->setValue(ClipboardStore::instance().keepDays());
+    m_clipInfo->setText(clipInfoText());
     m_shellMenu->setChecked(ShellMenu::intent());
     m_archiveProgress->setChecked(cfg.value("ui/archiveProgress", false).toBool());
     // 三件事分开说：勾是你想要的，注册表里有没有是另一回事 —— 提供右键那几项的
@@ -501,7 +525,7 @@ void ConfigPage::onSave()
     }
 
     ClipboardStore::instance().setEnabled(m_clip->isChecked());
-    m_clipInfo->setText(QString("%1 条记录 · 图片存在 clipimg\\").arg(ClipboardStore::instance().items().size()));
+    m_clipInfo->setText(clipInfoText());
 
     // 只在真的变了时才写注册表，写完回读一遍把系统里的实际值显示出来
     if (m_imePunct->isEnabled() && imePunctState() != (m_imePunct->isChecked() ? 1 : 0)) {

@@ -178,9 +178,14 @@ QString ClipboardPage::statusText() const
     const int total = cs.items().size();
     // 状态行要说实话：没在记录的时候不能只报"0 条"让人以为功能坏了，
     // 也不能摆着一句"记录中"骗人。
+    // 两条上限都说出来：只报"最多留 200 条"会让人以为老条目一直看得见，
+    // 而它其实到天数就走了（天数在 配置 页那一栏改，0=不限）。
+    const QString caps = cs.keepDays() > 0
+        ? QStringLiteral("最多留 %1 条 / %2 天").arg(ClipboardStore::kMaxItems).arg(cs.keepDays())
+        : QStringLiteral("最多留 %1 条 · 天数不限").arg(ClipboardStore::kMaxItems);
     QString s = cs.enabled()
-        ? QStringLiteral("正在记录 · 共 %1 条（最多留 %2 条，图片另存在 clipimg\\）")
-              .arg(total).arg(ClipboardStore::kMaxItems)
+        ? QStringLiteral("正在记录 · 共 %1 条（%2，图片另存在 clipimg\\）")
+              .arg(total).arg(caps)
         : QStringLiteral("没在记录 —— 开关在 配置 页那一栏（已经存下的 %1 条还在，可以照常复用）")
               .arg(total);
     if (m_filter && !m_filter->text().trimmed().isEmpty() && m_list)

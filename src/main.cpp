@@ -734,7 +734,8 @@ int main(int argc, char* argv[])
     // 状态行说实话、双击复用 / Delete 删这条 / 清空 三条动作真落到数据上）。
     // 跑在沙箱 APPDATA 里：它要往 clipboard.json 写夹具、要点清空，碰不到他真实的剪贴板历史。
     if (args.contains("--cliptest"))
-        return runPluginSelftest(QStringLiteral("clipboard"));
+        return runPluginSelftest(QStringLiteral("clipboard"), "ltoolPluginSelftest",
+                                 SelftestArg::None, 0, QString(), "clipboard");
 
     // --linuxdotest：「linux.do 盯帖」那一路的判据（解析/命中/去重/前缀拼法/配置夹紧/
     // 页面摆控件）。**一次网都不上、一个气泡都不弹** —— 真取回那条在 --linuxdonet。

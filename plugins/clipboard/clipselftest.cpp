@@ -5,6 +5,8 @@
 // --cliptest 的数据目录挪到临时目录），一条都不碰他真实的剪贴板历史。
 // 夹具里 clipboard/enable 留 false：那样引擎 2 秒轮询会在 capture() 第一行就返回，
 // 不会因为他真实剪贴板动了一下就往我的夹具前面插一条、把下标全冲乱。
+// clipboard/keepDays 也钉成 0：产品默认是 7 天，不钉住的话夹具里那条 400 天前的会被
+// load() 当场裁掉，「过滤 / 行号」那 36 条就全踩在一份被动过的数据上。
 #include "ClipboardPage.h"
 #include "ClipboardStore.h"
 #include "Utils.h"
@@ -23,6 +25,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QSettings>
 #include <QStringList>
 
 #include <cstdio>
@@ -96,16 +99,25 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     };
 
     // ---- 夹具：写进沙箱数据目录，然后让 core 那侧自己 load() ----
+    // 时间戳一律按「现在往前推」算出来，不写死日期：这条功能上线后超龄的会被裁掉，
+    // 写死 "2026-05-04" 那种夹具会在某一天自己变成超龄条目，让上面那 36 条莫名其妙红一片。
     auto& cs = ClipboardStore::instance();
     const QString data = Utils::dataDir();
     const QString pngPath = QDir::toNativeSeparators(data + "/clipimg/selftest.png");
+    const QDateTime now = QDateTime::currentDateTime();
+    const auto stamp = [](const QDateTime& t) { return t.toString(Qt::ISODate); };
+    const QString freshStamp = stamp(now.addSecs(-60));
+    const QString hourStamp = stamp(now.addSecs(-3600));
+    const QString yesterday = stamp(now.addDays(-1));
+    const QString ancient = stamp(now.addDays(-400));
+    const QString ancientDay = ancient.left(10);      // 给「按日期筛」那一条当关键字用
     bool fixtureOk = false;
     if (QDir().mkpath(data + "/clipimg")) {
         QImage img(1280, 720, QImage::Format_RGB32);
         img.fill(QColor(20, 90, 200));
         if (img.save(pngPath, "PNG")) {
             QJsonObject o;
-            o.insert("when", "2026-10-16T09:08:07");
+            o.insert("when", freshStamp);
             o.insert("hash", "h0");
             o.insert("image", true);
             o.insert("path", pngPath);
@@ -114,9 +126,9 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
             o.insert("bytes", 34560.0);
             QJsonArray arr;
             arr.append(o);                                        // 0：一张图
-            arr.append(textItem("2026-10-16T09:07:01", "h1", "ZZZclip 甲 alpha"));
-            arr.append(textItem("2026-10-15T22:10:00", "h2", "第一行很普通\n第二行里有 zzzclipbeta"));
-            arr.append(textItem("2026-05-04T23:01:02", "h3", "普通一条 ZZZ"));
+            arr.append(textItem(hourStamp, "h1", "ZZZclip 甲 alpha"));
+            arr.append(textItem(yesterday, "h2", "第一行很普通\n第二行里有 zzzclipbeta"));
+            arr.append(textItem(ancient, "h3", "普通一条 ZZZ"));
             QFile f(data + "/clipboard.json");
             if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
                 f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
@@ -128,7 +140,17 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     check("夹具写进了沙箱数据目录（写不进去后面全是废判据）",
           fixtureOk ? QStringLiteral("ok") : QStringLiteral("fail at %1").arg(data), "ok");
 
-    cs.start();                       // load() 读那份夹具；enable 留 false（见文件头）
+    // 沙箱配置里把两条上限钉死：enable=false（真实剪贴板别往夹具里插东西）、
+    // keepDays=0（上面那 36 条测的是过滤和行号，不能被天数规则把夹具裁了）。
+    // 天数自己的行为在下面「保留天数」那一段单独测。
+    {
+        QSettings cfg(data + "/config.ini", QSettings::IniFormat);
+        cfg.setValue(QStringLiteral("clipboard/enable"), false);
+        cfg.setValue(QStringLiteral("clipboard/keepDays"), 0);
+        cfg.sync();
+    }
+
+    cs.start();                       // load() 读那份夹具（enable/keepDays 都按上面钉的来）
     cs.setEnabled(false);             // start() 之后强制关掉收集：真实剪贴板别往夹具里插东西
     const QVector<ClipboardStore::Item> items = cs.items();
     check("夹具四条都进来了", QString::number(items.size()), "4");
@@ -156,8 +178,8 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
           list(ClipboardPage::filterIndices(items, QStringLiteral("1280"))), "0");
     check("搜的是整段而不是首行（第二行里的词也算）",
           list(ClipboardPage::filterIndices(items, QStringLiteral("zzzclipbeta"))), "2");
-    check("能按日期筛（2026-05-04 那条）",
-          list(ClipboardPage::filterIndices(items, QStringLiteral("2026-05-04"))), "3");
+    check("能按日期筛（那条 400 天前的，日期是算出来的不是写死的）",
+          list(ClipboardPage::filterIndices(items, ancientDay)), "3");
     {
         // zzz 同时出现在 1/2/3 三条里，而第 2 条的**摘要和正文里都有** —— 不许重复列
         const QVector<int> many = ClipboardPage::filterIndices(items, QStringLiteral("zzz"));
@@ -210,6 +232,78 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     check("删完之后每一行仍对得上（下标跟着重排了）",
           rowsAgreeWithTheirIndexes(cs.items(), page), "ok");
 
+    // ---- 保留天数：先问那个纯谓词，再让引擎当场裁一次 ----
+    // 边界要说清楚：7 天 = 整 7 天那天就清掉（"保留 7 天"不该留到第 8 天）。
+    const QDateTime then = QDateTime::currentDateTime();
+    const auto mk = [](const QDateTime& when, const QString& hash) {
+        ClipboardStore::Item it;
+        it.when = when;
+        it.hash = hash;
+        it.text = QStringLiteral("x");
+        return it;
+    };
+    const auto yes = [](bool b) { return b ? QStringLiteral("yes") : QStringLiteral("no"); };
+    check("差 1 秒到 7 天还不算超龄",
+          yes(!ClipboardStore::expired(mk(then.addSecs(-7 * 86400 + 1), "a"), 7, then)), "yes");
+    check("整 7 天算超龄", yes(ClipboardStore::expired(mk(then.addSecs(-7 * 86400), "b"), 7, then)), "yes");
+    check("天数=0 时再久都不算超龄",
+          yes(!ClipboardStore::expired(mk(then.addDays(-4000), "c"), 0, then)), "yes");
+    check("时间戳读不出来按超龄处理（界面本来也画不出它是哪天复制的）",
+          yes(ClipboardStore::expired(mk(QDateTime(), "d"), 7, then)), "yes");
+
+    const auto hashes = [](const QVector<ClipboardStore::Item>& v) {
+        QStringList s;
+        for (const ClipboardStore::Item& it : v)
+            s << it.hash;
+        return s.join(QLatin1Char(','));
+    };
+    const auto cfgKeepDays = [&data] {
+        return QSettings(data + "/config.ini", QSettings::IniFormat)
+            .value(QStringLiteral("clipboard/keepDays")).toString();
+    };
+
+    cs.setKeepDays(7);
+    check("改成 7 天：超龄那条当场从数据里没了", QString::number(cs.items().size()), "2");
+    check("活下来的正是那张图和一天前那条（顺序也还在前）", hashes(cs.items()), "h0,h2");
+    check("留下的那张图 png 还在（夹具存的是反斜杠写法，孤儿判定不归一化就会把它当没用的删掉）",
+          QFile::exists(pngPath) ? "yes" : "no", "yes");
+    check("天数写进了配置文件（重启还认）", cfgKeepDays(), "7");
+
+    cs.setKeepDays(0);
+    check("改回「不限」不会把裁掉的找回来（那是真删了）", QString::number(cs.items().size()), "2");
+    check("配置文件跟着回到 0", cfgKeepDays(), "0");
+
+    // ---- 孤儿图判定：那道闸门和那步归一化都要能直接问 ----
+    // 为什么这几条存在：2026-10-16 那次"把 keep 里的路径归一化了一下"只对了一半，
+    // 另一侧还是拼出来的混合写法，两边永远不相等 —— 启动那一趟把 49 张**还在用**的图
+    // 全判成孤儿删掉了。这种错只在真数据上看得见，所以把它抽成可以直接问的两个函数。
+    check("读到 0 条历史时不许启动批量删图",
+          ClipboardStore::sweepAllowed(0) ? "yes" : "no", "no");
+    check("只剩一条也照常清（不然孤儿图永远堆在盘上）",
+          ClipboardStore::sweepAllowed(1) ? "yes" : "no", "yes");
+    check("正斜杠和反斜杠写法在判定里算同一个文件",
+          ClipboardStore::keepKey(QStringLiteral("C:/a/b/clipimg/x.png"))
+              == ClipboardStore::keepKey(QStringLiteral("C:\\a\\b\\clipimg\\x.png")) ? "yes" : "no", "yes");
+    check("连续斜杠折叠、大小写折叠（APPDATA 本身是反斜杠 + 大小写不定）",
+          ClipboardStore::keepKey(QStringLiteral("C://A/B/x.png"))
+              == ClipboardStore::keepKey(QStringLiteral("c:\\a\\b\\X.png")) ? "yes" : "no", "yes");
+    check("两个不同的文件不许被归一成同一个（那等于永不删）",
+          ClipboardStore::keepKey(QStringLiteral("C:/a/b/x.png"))
+              == ClipboardStore::keepKey(QStringLiteral("C:/a/b/y.png")) ? "yes" : "no", "no");
+    const QString strayPath = QDir::toNativeSeparators(data + "/clipimg/stray.png");
+    {
+        QImage s(8, 8, QImage::Format_RGB32);
+        s.fill(QColor(255, 0, 0));
+        s.save(strayPath, "PNG");
+    }
+    check("孤儿图夹具造好了（没人引用它）", QFile::exists(strayPath) ? "yes" : "no", "yes");
+    cs.setKeepDays(7);      // 触发一次 prune：两条都还没超龄，但这一趟要把 stray 收掉
+    check("没人引用的那张被清掉了", QFile::exists(strayPath) ? "yes" : "no", "no");
+    check("还在历史里的那张没被牵连（两条都写混了路径也一样）",
+          QFile::exists(pngPath) ? "yes" : "no", "yes");
+    check("这一趟没顺带删掉任何历史条目", QString::number(cs.items().size()), "2");
+    cs.setKeepDays(0);
+
     // 清空
     clearBtn->click();
     check("点清空之后列表空了", QString::number(page.rowCount()), "0");
@@ -224,6 +318,8 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     cs.setEnabled(true);
     check("打开记录之后状态行跟着写「正在记录」",
           page.statusText().contains(QStringLiteral("正在记录")) ? "yes" : "no", "yes");
+    check("天数是 0 时状态行写「天数不限」，不许只报条数",
+          page.statusText().contains(QStringLiteral("天数不限")) ? "yes" : "no", "yes");
     cs.setEnabled(false);
 
     std::printf("clipboard: 失败 %d 项\n", bad);

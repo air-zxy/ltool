@@ -63,6 +63,15 @@ void ClipboardStore::start()
     auto* poll = new QTimer(qApp);
     poll->setInterval(2000);
     QObject::connect(poll, &QTimer::timeout, poll, [this] {
+        // 按天裁剪一天只做一次就够了：常驻实例可能连着开好几天，或者收集本来就是关着的
+        // （那样 capture() 第一行就返回，永远走不到 prune()）—— 两种情况下超龄的也得走。
+        if (m_sweptOn != QDate::currentDate()) {
+            m_sweptOn = QDate::currentDate();
+            const int before = m_items.size();
+            prune();
+            if (m_items.size() != before)
+                save();
+        }
         const UINT seq = GetClipboardSequenceNumber();
         if (seq == m_seq)
             return;
@@ -77,6 +86,10 @@ void ClipboardStore::load()
 {
     QSettings cfg(configPath(), QSettings::IniFormat);
     m_enabled = cfg.value("clipboard/enable", false).toBool();
+    m_keepDays = cfg.value("clipboard/keepDays", kDefaultKeepDays).toInt();
+    if (m_keepDays < 0)
+        m_keepDays = 0;
+    m_sweptOn = QDate::currentDate();     // 这次 load() 就是一次按天裁剪，别紧接着再扫一遍
 
     m_items.clear();
     QFile f(storePath());
@@ -101,6 +114,15 @@ void ClipboardStore::load()
         m_items.append(it);
         if (m_items.size() >= kMaxItems)
             break;
+    }
+    // 超龄的先裁掉（老版本只按条数封顶，所以第一次带上天数规则启动时，
+    // 这一步真的会删东西 —— 删完就把 json 重写，别让同一批条目每次启动都重算一遍）。
+    const int before = m_items.size();
+    prune();
+    if (m_items.size() != before) {
+        save();
+        Utils::log(QString("clipboard: pruned on load %1 -> %2 (keepDays=%3)")
+                       .arg(before).arg(m_items.size()).arg(m_keepDays));
     }
 }
 
@@ -137,6 +159,30 @@ void ClipboardStore::setEnabled(bool on)
     Utils::log(QString("clipboard: enabled=%1").arg(on));
     if (on)
         capture();     // 刚打开就把当前内容收进去，别等下一次复制
+}
+
+bool ClipboardStore::expired(const Item& it, int keepDays, const QDateTime& now)
+{
+    if (keepDays <= 0)
+        return false;
+    if (!it.when.isValid())
+        return true;
+    return it.when.secsTo(now) >= qint64(keepDays) * 86400;
+}
+
+void ClipboardStore::setKeepDays(int days)
+{
+    const int clamped = days < 0 ? 0 : days;
+    QSettings cfg(configPath(), QSettings::IniFormat);
+    cfg.setValue("clipboard/keepDays", clamped);
+    if (clamped == m_keepDays)
+        return;
+    m_keepDays = clamped;
+    const int before = m_items.size();
+    prune();
+    save();
+    Utils::log(QString("clipboard: keepDays=%1 items %2 -> %3")
+                   .arg(m_keepDays).arg(before).arg(m_items.size()));
 }
 
 void ClipboardStore::capture()
@@ -212,20 +258,57 @@ void ClipboardStore::capture()
     save();
 }
 
+bool ClipboardStore::sweepAllowed(int itemCount)
+{
+    // 一条历史都没 load 到 ≠ 盘上那些图都不需要了。真要全删走的是 clear() 自己那一段，
+    // 不该由"读不到条目"这件事顺带触发。
+    return itemCount > 0;
+}
+
+QString ClipboardStore::keepKey(const QString& path)
+{
+    // 比较两侧都要归一化 + 折叠大小写：json 里那条路径的写法不保证是正斜杠（APPDATA 本身
+    // 就是反斜杠，拼出来是混着的），而 entryList 给的名字要自己拼回去才算路径。
+    // 2026-10-16 那次只归一化了一边，两边永远不相等，启动那一趟把 49 张还在用的图
+    // 全判成孤儿删了 —— 这就是"清垃圾"那段自己变成凶手的形状。
+    QString s = QDir::fromNativeSeparators(path);
+    s.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    while (s.contains(QStringLiteral("//")))
+        s.replace(QStringLiteral("//"), QStringLiteral("/"));
+    return s.toLower();
+}
+
 void ClipboardStore::prune()
 {
+    // 两条上限取交集：先按天裁，再按条数封顶。列表不保证严格按时间排（重复内容会被
+    // 重新置顶），所以逐条问，不敢假设超龄的都堆在尾巴上。
+    if (m_keepDays > 0) {
+        const QDateTime now = QDateTime::currentDateTime();
+        for (int i = m_items.size() - 1; i >= 0; --i)
+            if (expired(m_items.at(i), m_keepDays, now))
+                m_items.removeAt(i);
+    }
     while (m_items.size() > kMaxItems)
         m_items.removeLast();
+
+    if (!sweepAllowed(static_cast<int>(m_items.size())))
+        return;
     QSet<QString> keep;
     for (const Item& it : m_items)
         if (it.isImage)
-            keep.insert(it.imagePath);
+            keep.insert(keepKey(it.imagePath));
+    int wiped = 0;
     const auto files = QDir(imageDir()).entryList(QStringList() << QStringLiteral("*.png"), QDir::Files);
     for (const QString& name : files) {
         const QString full = imageDir() + "/" + name;
-        if (!keep.contains(full))
+        if (!keep.contains(keepKey(full))) {
             QFile::remove(full);
+            ++wiped;
+        }
     }
+    if (wiped > 0)     // 批量删文件必须留一行日志：不写的话这件事永远不会有人知道
+        Utils::log(QString("clipboard: swept %1 orphan image file(s), items=%2 keepDays=%3")
+                       .arg(wiped).arg(m_items.size()).arg(m_keepDays));
 }
 
 void ClipboardStore::restore(int index)
