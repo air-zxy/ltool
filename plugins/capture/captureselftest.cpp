@@ -436,6 +436,53 @@ extern "C" Q_DECL_EXPORT int ltoolPintoolRun()
     pw.setStripHidden(false);
     check("放出往期带：窗口回到原尺寸", sizeStr(pw.size()), sizeStr(s0));
     check("放出往期带：又命中第 0 张", QString::number(pw.probeThumbAt(QPoint(10, 10))), "0");
+
+    // ---- 拖边缩放：图的左上角不许漂 ----
+    // 他报的是"缩放大小拖动的时候位置不要变"。窗口那条边按住的点当然跟着鼠标走，
+    // 但**图本身**不该跟着重新居中一遍：以前 imageRect() 把图居中在客户区里，
+    // 于是拖右下角时长宽各分掉一点余量，图就往右下漂 —— 看着像"一缩放就跑位"。
+    const QPoint winTL = pw.geometry().topLeft();
+    const QPoint imgTL = pw.probeImageRect().topLeft();
+    const QSize imgSz = pw.probeImageRect().size();
+    const auto sendAt = [&pw](QEvent::Type type, const QPoint& wp) {
+        const QPoint gp = pw.mapToGlobal(wp);
+        const Qt::MouseButton btn = type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton;
+        QMouseEvent ev(type, QPointF(wp), QPointF(gp), Qt::LeftButton,
+                       type == QEvent::MouseMove ? Qt::LeftButton : btn, Qt::NoModifier);
+        QApplication::sendEvent(&pw, &ev);
+    };
+    const QPoint corner(pw.width() - 3, pw.height() - 3);   // 右下角 8px 内 = 右 + 下两条边
+    sendAt(QEvent::MouseButtonPress, corner);
+    for (int i = 1; i <= 4; ++i)
+        sendAt(QEvent::MouseMove, corner + QPoint(15 * i, 10 * i));
+    sendAt(QEvent::MouseButtonRelease, corner + QPoint(60, 40));
+    check("拖右下角：窗口左上角没被带着走",
+          QStringLiteral("%1,%2").arg(pw.geometry().x()).arg(pw.geometry().y()),
+          QStringLiteral("%1,%2").arg(winTL.x()).arg(winTL.y()));
+    check("拖右下角：图的左上角一字不动",
+          QStringLiteral("%1,%2").arg(pw.probeImageRect().x()).arg(pw.probeImageRect().y()),
+          QStringLiteral("%1,%2").arg(imgTL.x()).arg(imgTL.y()));
+    check("拖右下角：图确实跟着变大了（不是没生效）",
+          pw.probeImageRect().width() > imgSz.width() ? "yes" : "no", "yes");
+    check("拖右下角：窗口宽了 60 高了 40",
+          sizeStr(pw.size()), sizeStr(s0 + QSize(60, 40)));
+    // 拖左边那条：窗口左上角该跟着走（这是应有行为），但图的左上角必须**始终贴着客户区左上**，
+    // 不能因为居中而往右退回一条余量。
+    pw.resize(s0);
+    const QPoint leftTL = pw.geometry().topLeft();
+    const QPoint area0 = pw.probeImageRect().topLeft();
+    sendAt(QEvent::MouseButtonPress, QPoint(3, pw.height() / 2));
+    sendAt(QEvent::MouseMove, QPoint(3 + 25, pw.height() / 2));
+    sendAt(QEvent::MouseButtonRelease, QPoint(3 + 25, pw.height() / 2));
+    check("拖左边：窗口左上角跟着走（应有行为）",
+          pw.geometry().x() == leftTL.x() + 25 ? "yes" : "no", "yes");
+    check("拖左边：图的左上角还是贴着客户区左上（不重新居中）",
+          pw.probeImageRect().topLeft() == QPoint(pw.stripW(), 0) ? "yes" : "no", "yes");
+    std::printf("INFO 缩放前图区 %s，拖右下角之后 %s（左上角 %d,%d → %d,%d）\n",
+                rectStr(QRect(imgTL, imgSz)).toUtf8().constData(),
+                rectStr(pw.probeImageRect()).toUtf8().constData(),
+                imgTL.x(), imgTL.y(), pw.probeImageRect().x(), pw.probeImageRect().y());
+
     // 离屏抓两张图自己看一眼（不显示窗口、不在你桌面上闪）：一张正常、一张两样都收起
     pw.grab().save(shots + "/a_normal.png");
     pw.setBarHidden(true);

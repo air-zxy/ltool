@@ -156,10 +156,12 @@ QRect PinWindow::imageRect() const
     if (m_pm.isNull())
         return area;
     const QSize s = m_pm.size().scaled(area.size(), Qt::KeepAspectRatio);
-    // 用整除自己算居中：area.center() 会把中心往前偏半像素，四舍五入后图的左沿
-    // 可能落到 m_stripW 左边一列，那一列就同时属于历史条和图片（点在图上却换成了图）
-    return QRect(QPoint(area.left() + (area.width() - s.width()) / 2,
-                        area.top() + (area.height() - s.height()) / 2), s);
+    // **钉在客户区左上，不居中**。居中会让"拖边缩放"变成"图跟着跑位"：按住右下角往右下拖，
+    // 长宽各分掉一点余量，图就往右下漂几个像素（--pintool 量到的是 2px，屏幕上就是"一跳一跳"）。
+    // 钉住左上之后，拖哪条边都只改大小，图的左上角一动不动。
+    // 顺带把另一件事变简单了：以前算居中要用整除，因为 area.center() 会往前偏半格，
+    // 四舍五入后图的左沿可能落到历史条那一列里（点在图上却换成了图）—— 现在左沿恒等于 m_stripW。
+    return QRect(area.topLeft(), s);
 }
 
 double PinWindow::viewScale() const
