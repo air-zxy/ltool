@@ -218,6 +218,118 @@ HANDLE openMftByRecordId(HANDLE vol, quint64 frn)
     return h;
 }
 
+// $MFT 在这个卷上占哪几段（盘区段）。这是**唯一不碰 $MFT 权限**的读法：
+// 名字打不开（DACL 只给 SYSTEM，提权 + 备份语义都试过了）、枚举里也没有它的记录号，
+// 但卷句柄本身能按簇裸读 —— 引导扇区给出 MFT 的起始簇和记录长度，
+// 记录 1（就是 $MFT 自己那条 FILE 记录）里的 $DATA 给出后面所有的段。
+struct MftExtent {
+    quint64 byteOff;
+    quint64 bytes;
+};
+
+bool readAt(HANDLE h, quint64 off, void* dst, quint32 n)
+{
+    LARGE_INTEGER li{};
+    li.QuadPart = qint64(off);
+    DWORD got = 0;
+    return SetFilePointerEx(h, li, nullptr, FILE_BEGIN) && ReadFile(h, dst, n, &got, nullptr)
+           && got == n;
+}
+
+// NTFS 的 run list：每段 = [头字节][长度(簇数, 小端无符号)][起点(LCN 增量, 有符号)]，头字节低 4 位
+// 是长度占的字节数、高 4 位是增量占的字节数，低 4 位为 0 表示结束。返回吃掉的字节数，解不动返回 -1。
+int decodeRuns(const BYTE* p, int avail, QVector<MftExtent>& out, qint64 clusterBytes)
+{
+    int i = 0;
+    qint64 lcn = 0;
+    while (i < avail) {
+        const int lenBits = p[i] & 0x0F, offBits = p[i] >> 4;
+        if (!lenBits)
+            return i + 1;
+        if (i + 1 + lenBits + offBits > avail)
+            return -1;
+        quint64 cnt = 0;
+        for (int k = 0; k < lenBits; ++k)
+            cnt |= quint64(p[i + 1 + k]) << (8 * k);
+        qint64 delta = 0;
+        for (int k = 0; k < offBits; ++k)
+            delta |= qint64(p[i + 1 + lenBits + k]) << (8 * k);
+        if (offBits && ((delta >> (8 * offBits - 1)) & 1))
+            delta -= (qint64(1) << (8 * offBits));      // 增量是有符号的，做符号扩展
+        lcn += delta;
+        out.append({ quint64(lcn) * quint64(clusterBytes), cnt * quint64(clusterBytes) });
+        i += 1 + lenBits + offBits;
+    }
+    return -1;
+}
+
+bool mftExtents(HANDLE vol, qint64 clusterBytes, QVector<MftExtent>& runs, qint64* recordBytes,
+                const QString& drive, QString* why)
+{
+    const auto no = [&](const QString& s) {
+        if (why)
+            *why = QStringLiteral("按簇读 $MFT 没走通（%1）").arg(s);
+        return false;
+    };
+    BYTE boot[512];
+    if (!readAt(vol, 0, boot, sizeof(boot)))
+        return no(QStringLiteral("读不到引导扇区，错误码 %1").arg(GetLastError()));
+    if (memcmp(boot + 3, "NTFS    ", 8) != 0)
+        return no(QStringLiteral("%1 的引导扇区上不是 NTFS 签名").arg(drive));
+    const qint64 mftLcn = qint64(le64(boot, 0x30));
+    const qint32 cpr = LONG(le32(boot, 0x40));
+    const qint64 rec = cpr < 0 ? (qint64(1) << -cpr) : qint64(cpr) * clusterBytes;
+    if (rec < 256 || rec > 65536)
+        return no(QStringLiteral("引导扇区里的记录长度不像话（%1）").arg(rec));
+    std::vector<BYTE> r1;
+    r1.resize(size_t(rec));      // 先声明再 resize：`std::vector<BYTE> r1(size_t(rec))` 会被读成函数声明
+    if (!readAt(vol, quint64(mftLcn) * quint64(clusterBytes) + quint64(rec), r1.data(), UINT32(rec)))
+        return no(QStringLiteral("读不到第 1 号记录（%1 字节），错误码 %2").arg(rec).arg(GetLastError()));
+    if (memcmp(r1.data(), "FILE", 4) != 0)
+        return no(QStringLiteral("第 1 号记录开头不是 FILE —— 引导扇区里那个 MFT 起点（簇 %1）不对")
+                      .arg(mftLcn));
+    // 非驻留 $DATA 的盘区段紧跟在属性名之后。名字长度为 0 时按约定在 0x28，
+    // 但不同版本这张表的读法有出入，所以 0x28/0x30/0x38/0x40 各试一遍，
+    // **认"解出来的首簇等不等于引导扇区里那个 MFT 起点"** —— 对不上就是解错了，不猜。
+    for (int off = le16(r1.data(), 20); off + 16 <= int(rec);) {
+        const quint32 type = le32(r1.data(), off), len = le32(r1.data(), off + 4);
+        if (type == 0xFFFFFFFFu || len < 16 || off + int(len) > int(rec))
+            break;
+        if (type == 0x80 && r1[off + 8]) {
+            const int nameLen = r1[off + 9];
+            const int nameOff = le16(r1.data() + off, 0x0A);
+            const qint64 dataLen = qint64(le64(r1.data() + off, 0x18));
+            for (const int cand : { nameOff + nameLen * 2, 0x28, 0x30, 0x38, 0x40 }) {
+                const int aligned = (cand + 7) & ~7;
+                if (aligned < 16 || off + aligned >= int(rec))
+                    continue;
+                QVector<MftExtent> got;
+                const int used = decodeRuns(r1.data() + off + aligned, int(rec) - off - aligned, got,
+                                            clusterBytes);
+                if (used <= 0 || got.isEmpty())
+                    continue;
+                if (got.first().byteOff / quint64(clusterBytes) != quint64(mftLcn))
+                    continue;
+                qint64 sum = 0;
+                for (const MftExtent& e : got)
+                    sum += qint64(e.bytes);
+                if (sum < dataLen)
+                    continue;
+                runs = got;
+                *recordBytes = rec;
+                if (why)
+                    *why = QStringLiteral("盘区段解开了：%1 段、共 %2 字节（记录 %3 字节，起点在属性偏移 0x%4）")
+                               .arg(got.size()).arg(sum).arg(rec).arg(aligned, 0, 16);
+                return true;
+            }
+            return no(QStringLiteral("记录 1 里的 $DATA 找到了，可盘区段怎么都解不对（首簇对不上 %1）")
+                          .arg(mftLcn));
+        }
+        off += int(len);
+    }
+    return no(QStringLiteral("第 1 号记录里没有非驻留的 $DATA"));
+}
+
 } // namespace
 
 namespace UsnIndex {
@@ -412,90 +524,115 @@ bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>
             }
         }
     }
-    if (h == INVALID_HANDLE_VALUE)
-        return no(QStringLiteral("$MFT 开不了（%1）").arg(openErrs.trimmed()));
-    if (why)
-        *why = QStringLiteral("$MFT 是这么开到的：%1").arg(how);
-
-    LARGE_INTEGER li{};
-    GetFileSizeEx(h, &li);
-    const qint64 mftBytes = li.QuadPart;
-    if (mftBytes < 4096) {
-        CloseHandle(h);
-        return no(QStringLiteral("$MFT 的大小读不出来（%1 字节）").arg(mftBytes));
-    }
-
-    // 记录多长：卷引导扇区那个字段有版本差异，直接拿"FILE"签名找周期最稳
-    std::vector<BYTE> probeBuf(4 * 4096);
-    DWORD got = 0;
-    int recBytes = 0;
-    if (ReadFile(h, probeBuf.data(), DWORD(probeBuf.size()), &got, nullptr) && got >= 4 * 1024) {
+    // ③ 名字和记录号都开不了 → 从卷句柄按簇裸读（这条路完全不碰 $MFT 的 ACL）
+    QVector<MftExtent> ext;
+    qint64 recBytes = 0;
+    HANDLE src = h;
+    VolumeHandle vol;
+    if (src == INVALID_HANDLE_VALUE) {
+        DWORD secPerClus = 0, bytesPerSector = 0;   // 用 DWORD 而不是 quint32：MSVC 上 DWORD 是 unsigned long
+        if (!GetDiskFreeSpaceW(reinterpret_cast<LPCWSTR>(root.utf16()), &secPerClus,
+                               &bytesPerSector, nullptr, nullptr) || !secPerClus || !bytesPerSector)
+            return no(QStringLiteral("$MFT 开不了（%1），连簇大小都问不到（错误码 %2）")
+                          .arg(openErrs.trimmed()).arg(GetLastError()));
+        if (!vol.open(root))
+            return no(QStringLiteral("$MFT 开不了（%1），卷也开不了（错误码 %2）")
+                          .arg(openErrs.trimmed()).arg(GetLastError()));
+        QString how2;
+        if (!mftExtents(vol.vol, qint64(bytesPerSector) * secPerClus, ext, &recBytes, drive, &how2))
+            return no(QStringLiteral("$MFT 开不了（%1）· %2").arg(openErrs.trimmed(), how2));
+        src = vol.vol;
+        how = how2;
+    } else {
+        LARGE_INTEGER li{};
+        GetFileSizeEx(src, &li);
+        const qint64 mftBytes = li.QuadPart;
+        if (mftBytes < 4096) {
+            CloseHandle(h);
+            return no(QStringLiteral("$MFT 的大小读不出来（%1 字节）").arg(mftBytes));
+        }
+        std::vector<BYTE> probe(4 * 4096);
+        if (!readAt(src, 0, probe.data(), UINT32(probe.size()))) {
+            CloseHandle(h);
+            return no(QStringLiteral("$MFT 开头 16KB 都读不到（错误码 %1）").arg(GetLastError()));
+        }
+        // 记录多长：引导扇区那个字段有版本差异，拿"FILE"签名找周期最稳
         for (const int r : { 256, 512, 1024, 2048, 4096 }) {
-            if (3 * r + 4 > int(got))
+            if (3 * r + 4 > int(probe.size()))
                 break;
-            if (looksLikeFileRecord(probeBuf.data(), r)
-                && looksLikeFileRecord(probeBuf.data() + r, r)
-                && looksLikeFileRecord(probeBuf.data() + 2 * r, r)
-                && looksLikeFileRecord(probeBuf.data() + 3 * r, r)) {
+            if (looksLikeFileRecord(probe.data(), r) && looksLikeFileRecord(probe.data() + r, r)
+                && looksLikeFileRecord(probe.data() + 2 * r, r)
+                && looksLikeFileRecord(probe.data() + 3 * r, r)) {
                 recBytes = r;
                 break;
             }
         }
+        if (!recBytes) {
+            CloseHandle(h);
+            return no(QStringLiteral("前 16KB 里没找到 FILE 记录的周期（头四格 %1%2%3%4）")
+                          .arg(QChar(probe[0])).arg(QChar(probe[1])).arg(QChar(probe[2]))
+                          .arg(QChar(probe[3])));
+        }
+        ext.append({ 0, quint64(mftBytes) });
     }
-    if (!recBytes) {
-        const DWORD e = GetLastError();
-        CloseHandle(h);
-        return no(QStringLiteral("前 %1 字节里没找到 FILE 记录的周期（读到 %2 字节，头四格 %3%4%5%6，错误码 %7）")
-                      .arg(probeBuf.size()).arg(got)
-                      .arg(probeBuf.size() > 0 ? QChar(probeBuf[0]) : QChar())
-                      .arg(probeBuf.size() > 1 ? QChar(probeBuf[1]) : QChar())
-                      .arg(probeBuf.size() > 2 ? QChar(probeBuf[2]) : QChar())
-                      .arg(probeBuf.size() > 3 ? QChar(probeBuf[3]) : QChar()).arg(e));
-    }
+    if (why)
+        *why = QStringLiteral("$MFT 是这么读到的：%1").arg(how);
 
+    // 一条虚拟的连续流：段与段之间记录号接着数（$MFT 这几段本来就是同一个文件的连续内容）
     std::vector<BYTE> chunk(kMftChunk);
-    const qint64 total = mftBytes / recBytes;
-    qint64 seen = 0, filled = 0;
+    qint64 total = 0;
+    for (const MftExtent& e : ext)
+        total += qint64(e.bytes) / recBytes;
+    const qint64 recsPerChunk = qint64(kMftChunk) / recBytes;
+    qint64 seen = 0, filled = 0, nextRec = 0;
     bool cancelled = false;
-    for (qint64 base = 0; base + recBytes <= mftBytes; base += qint64(kMftChunk)) {
-        LARGE_INTEGER pos{};
-        pos.QuadPart = base;
-        if (!SetFilePointerEx(h, pos, nullptr, FILE_BEGIN))
-            break;
-        const DWORD ask = DWORD(qMin<qint64>(kMftChunk, mftBytes - base));
-        if (!ReadFile(h, chunk.data(), ask, &got, nullptr) || got < DWORD(recBytes))
-            break;                       // $MFT 正在长，尾部读不到就算了
-        const int recs = int(got) / recBytes;
-        const qint64 first = base / recBytes;
-        for (int i = 0; i < recs; ++i) {
-            const qint64 idx = first + i;
-            if (idx > qint64(maxFrn))
+    for (const MftExtent& e : ext) {
+        const qint64 recsInExtent = qint64(e.bytes) / recBytes;
+        for (qint64 k = 0; k < recsInExtent; k += recsPerChunk) {
+            const int take = int(qMin<qint64>(recsPerChunk, recsInExtent - k));
+            if (!readAt(src, e.byteOff + quint64(k) * quint64(recBytes), chunk.data(),
+                        UINT32(take * recBytes))) {
+                // 读到一半读不动（$MFT 正在长、或卷被别的进程占着）：拿已经拿到的部分去判，
+                // 不整趟作废 —— 填上了一半也比全部回退遍历强
                 break;
-            int slot = head[int(idx)];
-            if (slot >= 0) {
+            }
+            for (int i = 0; i < take; ++i) {
+                const qint64 idx = nextRec + i;
+                if (idx > qint64(maxFrn))
+                    break;
+                int slot = head[int(idx)];
+                if (slot < 0)
+                    continue;
                 qint64 sz = 0;
-                if (recordRealSize(chunk.data() + i * recBytes, recBytes, &sz)) {
+                if (recordRealSize(chunk.data() + i * recBytes, int(recBytes), &sz)) {
                     for (; slot >= 0; slot = nxt[slot]) {
                         sizes[slot] = sz;
                         ++filled;
                     }
                 }
             }
+            nextRec += take;
+            seen += take;
+            if (progress && !progress(seen, total)) {
+                cancelled = true;
+                break;
+            }
+            if (filled >= want.size())
+                break;
         }
-        seen += recs;
-        if (progress && !progress(seen, total)) {
-            cancelled = true;
+        if (cancelled || filled >= want.size())
             break;
-        }
-        if (filled >= want.size())
-            break;                       // 全拿到了，剩下的记录不必再读
     }
-    CloseHandle(h);
+    if (h != INVALID_HANDLE_VALUE)
+        CloseHandle(h);
     if (cancelled)
         return no(QStringLiteral("读到一半被取消（已处理 %1 / %2 条记录）").arg(seen).arg(total));
     if (!filled)
-        return no(QStringLiteral("$MFT 读了 %1 条记录（共 %2）却没填上任何一个大小 —— 解析没对上")
-                      .arg(seen).arg(total));
+        return no(QStringLiteral("$MFT 读了 %1 条记录（共 %2 条、%3 段）却没填上任何一个大小 —— 解析没对上")
+                      .arg(seen).arg(total).arg(ext.size()));
+    if (why)
+        *why = QStringLiteral("%1；读了 %2 / %3 条记录，填上 %4 个大小")
+                   .arg(how).arg(seen).arg(total).arg(filled);
     return true;
 }
 
