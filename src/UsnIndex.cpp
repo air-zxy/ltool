@@ -71,6 +71,51 @@ quint64 le64(const BYTE* p, int off)
     return v;
 }
 
+// $MFT 的 DACL 在现代 Windows 上只给 SYSTEM —— 提权的 Administrators 也开不了
+// （2026-10-17 CI 实测：`\\.\C:\$MFT` 和 `C:\$MFT` 都给 5，`\\.\C:$MFT` 给 2）。
+// 能绕过 DACL 的正规通道是**备份语义**：进程持有 SeBackupPrivilege（管理员默认有、但是关着的），
+// 开句柄时带 FILE_FLAG_BACKUP_SEMANTICS。这个 RAII 只在开这一颗句柄的那几微秒里把它打开，
+// 出作用域立刻关掉 —— 不让整个进程长时间带着一个能绕过 ACL 读任何文件的特权。
+class BackupPrivilege
+{
+public:
+    BackupPrivilege()
+    {
+        HANDLE tok = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok))
+            return;
+        TOKEN_PRIVILEGES tp{};
+        tp.PrivilegeCount = 1;
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        if (!LookupPrivilegeValueW(nullptr, SE_BACKUP_NAME, &tp.Privileges[0].Luid)) {
+            CloseHandle(tok);
+            return;
+        }
+        if (AdjustTokenPrivileges(tok, FALSE, &tp, sizeof(tp), nullptr, nullptr)
+            && GetLastError() == ERROR_SUCCESS)
+            m_tok = tok;
+        else
+            CloseHandle(tok);
+    }
+    ~BackupPrivilege()
+    {
+        if (!m_tok)
+            return;
+        TOKEN_PRIVILEGES off{};
+        off.PrivilegeCount = 1;
+        off.Privileges[0].Attributes = 0;      // 关掉
+        if (LookupPrivilegeValueW(nullptr, SE_BACKUP_NAME, &off.Privileges[0].Luid))
+            AdjustTokenPrivileges(m_tok, FALSE, &off, sizeof(off), nullptr, nullptr);
+        CloseHandle(m_tok);
+    }
+    BackupPrivilege(const BackupPrivilege&) = delete;
+    BackupPrivilege& operator=(const BackupPrivilege&) = delete;
+    bool held() const { return m_tok != nullptr; }
+
+private:
+    HANDLE m_tok = nullptr;
+};
+
 // 这一段看着像不像一条 FILE 记录（用来验 $MFT 的记录长度，不靠猜）
 bool looksLikeFileRecord(const BYTE* rec, int recBytes)
 {
@@ -262,29 +307,45 @@ bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>
         head[h] = i;
     }
 
-    // $MFT 有三种写法，挨个试（本机非提权下拿不到"哪种在提权下能用"的答案 —— 三种都是 5，
-    // 形式都对；只能让提权的环境去分辨，所以每一种各记一个错误码）：
-    //   `\\.\C:\$MFT`   卷设备 + 反斜杠 + 名字
-    //   `\\.\C:$MFT`    卷设备 + 名字（analyzeMFT 那类工具用的就是这颗）
-    //   `C:\$MFT`       普通路径（CI 那台提权的 runner 实测给它 5）
+    // $MFT 有三种写法 × 两种语义（普通 / 备份），挨个试。本机非提权下问不出答案（全是 5），
+    // 只能让提权的环境去分辨，所以每一种各记一个错误码。备份语义那一轮排在普通那一轮之后：
+    // 能不动令牌就不动。
     HANDLE h = INVALID_HANDLE_VALUE;
     QString openErrs;
     const std::array<std::wstring, 3> cands = {
         L"\\\\.\\" + drive.toStdWString() + L"\\$MFT",
-        L"\\\\.\\" + drive.toStdWString() + L":$MFT",
-        drive.toStdWString() + L"\\$MFT"
+        drive.toStdWString() + L"\\$MFT",
+        L"\\\\.\\" + drive.toStdWString() + L":$MFT"
     };
-    for (const std::wstring& cand : cands) {
-        h = CreateFileW(cand.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES,
-                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-        if (h != INVALID_HANDLE_VALUE)
-            break;
-        openErrs += QStringLiteral("%1=%2 ").arg(QString::fromStdWString(cand))
-                        .arg(GetLastError());
+    for (int round = 0; round < 2 && h == INVALID_HANDLE_VALUE; ++round) {
+        DWORD flags = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN;
+        if (round)
+            flags |= FILE_FLAG_BACKUP_SEMANTICS;
+        {
+            // 特权只在这一个花括号里活着
+            BackupPrivilege priv;
+            if (round && !priv.held()) {
+                openErrs += QStringLiteral("备份特权开不上 ");
+                break;
+            }
+            for (const std::wstring& cand : cands) {
+                h = CreateFileW(cand.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                OPEN_EXISTING, flags, nullptr);
+                if (h != INVALID_HANDLE_VALUE) {
+                    if (why)
+                        *why = QStringLiteral("$MFT 是这么开到的：%1（%2）")
+                                   .arg(QString::fromStdWString(cand),
+                                        round ? QStringLiteral("备份语义") : QStringLiteral("普通语义"));
+                    break;
+                }
+                openErrs += QStringLiteral("%1=%2 ")
+                                .arg(QString::fromStdWString(cand)).arg(GetLastError());
+            }
+        }
     }
     if (h == INVALID_HANDLE_VALUE)
-        return no(QStringLiteral("三种写法都开不了 $MFT（%1）").arg(openErrs.trimmed()));
+        return no(QStringLiteral("$MFT 开不了（%1）").arg(openErrs.trimmed()));
 
     LARGE_INTEGER li{};
     GetFileSizeEx(h, &li);

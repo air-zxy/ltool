@@ -767,10 +767,10 @@ int main(int argc, char* argv[])
                     ++nonzero;
             }
             std::printf("INFO 直接量：opened=%d 枚举 %d 条/%lldms · 要问大小 %d 个文件，"
-                        "真拿到非 0 的 %lld 个，合计 %lld/%lldms%s%s\n",
+                        "真拿到非 0 的 %lld 个，合计 %lld/%lldms · %s\n",
                         opened ? 1 : 0, int(er.frn.size()), long long(enumMs), int(want.size()),
                         long long(nonzero), long long(sum), long long(sizeMs),
-                        sizeOk ? "" : " · 原因：", sizeOk ? "" : sizeWhy.toUtf8().constData());
+                        sizeWhy.toUtf8().constData());
             std::fflush(stdout);
             has("整盘记录枚举得出来（FSCTL_ENUM_USN_DATA）", enumOk && er.frn.size() > 1000);
             has("$MFT 的大小读得出来（不是靠回退蒙过去）", sizeOk && nonzero > want.size() * 9 / 10);

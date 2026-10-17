@@ -63,8 +63,9 @@ JournalInfo queryJournal(HANDLE vol);
 // want 里同一个号出现多次（硬链接）会各自填上同一个值，跟目录遍历"一个名字算一份"的口径一致。
 // progress 每读完一块调一次，返回 false 表示取消（取消时 sizes 不可信，函数返回 false）。
 using SizeProgress = std::function<bool(qint64 recordsSeen, qint64 recordsTotal)>;
-// why：失败要说得出**卡在哪一格**（开不了 $MFT / 记录长度认不出来 / 一条都没填上）。
-// 2026-10-17 在 CI 上就是缺这个，只能看出"8 毫秒返回、全 0"，分不出该修哪条路。
+// why：不管成败都写一句话 —— 成功写"$MFT 是这么开到的：<写法>（<普通/备份语义>）"，
+// 失败写卡在哪一格（开不了 / 记录长度认不出来 / 读了却没填上），各带错误码。
+// 2026-10-17 在 CI 上就是缺这个：只看得到"8 毫秒返回、全 0"，分不出该修哪一条路。
 bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>& sizes,
               const SizeProgress& progress = {}, QString* why = nullptr);
 
