@@ -529,6 +529,40 @@ extern "C" Q_DECL_EXPORT int ltoolPintoolRun()
         check("CSS 的 padding 生效了（首项不贴边）", ig.y() >= 4 ? "yes" : "no", "yes");
         check("字比底色亮出一大截（看得清）", brightest - bg.lightness() > 120 ? "yes" : "no", "yes");
     }
+    // ---- 工具栏那一排到底多宽（黑边的根因就在这）----
+    // setPixmap 里那句 setMinimumSize(这一排的 sizeHint, 140) 会把窗口撑到比图还宽，
+    // 多出来的那一条就是近黑色的空档。原来一排 612px；图标化之后必须显著降下来。
+    pw.setBarHidden(false);
+    pw.setStripHidden(false);
+    int nameless = 0, btns = 0;
+    for (QPushButton* b : pw.findChildren<QPushButton*>()) {
+        ++btns;
+        if (b->accessibleName().isEmpty() && b->text().isEmpty())
+            ++nameless;          // 图标按钮没文字，可访问名就是它唯一的"名字"
+    }
+    std::printf("INFO 放出工具栏：窗口最小宽 %d，按钮 %d 颗（既没文字又没可访问名的 %d 颗）\n",
+                pw.minimumWidth(), btns, nameless);
+    check("一排按钮收得下 460px（图宽 ≥384 就不会被撑出黑边）",
+          pw.minimumWidth() <= 460 ? "yes" : "no", "yes");
+    check("图标化之后每颗按钮都还认得出（文字或可访问名至少留一个）",
+          nameless == 0 ? "yes" : "no", "yes");
+    // 直接验他报的那件事：图够宽时，放出工具栏**不该**把窗口撑宽
+    // 直接验他报的那件事：图够宽时，放出工具栏**不该**把窗口撑宽。
+    // 图取 380 宽：离屏平台报的虚拟屏是 800x600，而 setPixmap 有一条"显示尺寸不超过屏宽 60%"
+    // （第一版拿 520 宽的图测，被这条夹成 478，红得莫名其妙 —— 那是夹具撞了屏幕，不是产品）。
+    QPixmap wide(380, 200);
+    wide.fill(QColor(120, 60, 60));
+    PinWindow pw2(wide, QString(), false);
+    pw2.setBarHidden(false);
+    pw2.setStripHidden(false);
+    std::printf("INFO pw2：窗口 %s，图区 %s，最小宽 %d（屏 %dx%d）\n", sizeStr(pw2.size()).toUtf8().constData(),
+                rectStr(pw2.probeImageRect()).toUtf8().constData(), pw2.minimumWidth(),
+                QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->geometry().width() : 0,
+                QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->geometry().height() : 0);
+    check("图够宽时放出工具栏：窗口不比「往期带 + 图宽」更宽（右边不多一块黑）",
+          pw2.width() <= pw2.stripW() + 380 ? "yes" : "no", "yes");
+    check("图够宽时放出工具栏：图按原尺寸摆（没被夹小）",
+          pw2.probeImageRect().width() == 380 ? "yes" : "no", "yes");
     std::printf("pintool: 失败 %d 项\n", bad);
     std::fflush(stdout);
     return bad == 0 ? 0 : 1;
