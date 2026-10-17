@@ -360,8 +360,15 @@ bool mftExtents(HANDLE vol, qint64 clusterBytes, QVector<MftExtent>& runs, qint6
                                .arg(got.size()).arg(sum).arg(rec).arg(aligned, 0, 16);
                 return true;
             }
-            return no(QStringLiteral("记录 1 里的 $DATA 找到了，可盘区段怎么都解不对（首簇对不上 %1）")
-                          .arg(mftLcn));
+            return no(QStringLiteral("记录 1 里的 $DATA 找到了（属性在 0x%1、名字偏移 0x%2 名字长 %3、"
+                                      "值长 %4），可盘区段怎么都解不对（首簇对不上 %5）· 属性头 128 字节：%6")
+                          .arg(off, 0, 16).arg(nameOff, 0, 16).arg(nameLen).arg(dataLen).arg(mftLcn)
+                          .arg([&] {
+                              QString hex;
+                              for (int i = off; i < int(rec) && i < off + 128; ++i)
+                                  hex += QStringLiteral("%1").arg(r1[i], 2, 16, QLatin1Char('0'));
+                              return hex;
+                          }()));
         }
         off += int(len);
     }
