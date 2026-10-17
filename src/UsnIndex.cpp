@@ -276,15 +276,50 @@ bool mftExtents(HANDLE vol, qint64 clusterBytes, QVector<MftExtent>& runs, qint6
         return no(QStringLiteral("读不到引导扇区，错误码 %1").arg(GetLastError()));
     if (memcmp(boot + 3, "NTFS    ", 8) != 0)
         return no(QStringLiteral("%1 的引导扇区上不是 NTFS 签名").arg(drive));
-    const qint64 mftLcn = qint64(le64(boot, 0x30));
-    const qint32 cpr = LONG(le32(boot, 0x40));
-    const qint64 rec = cpr < 0 ? (qint64(1) << -cpr) : qint64(cpr) * clusterBytes;
-    if (rec < 256 || rec > 65536)
-        return no(QStringLiteral("引导扇区里的记录长度不像话（%1）").arg(rec));
+    // $MFT 起始簇 / 每条记录多少字节 这两个偏移，各家文档给的数差一格（0x2F/0x3F 与 0x30/0x40，
+    // 差一个字节就读出"记录长度 1007616"这种鬼话 —— 2026-10-17 CI 实测）。
+    // 所以不猜：几组候选各试一遍，**认"那个位置读出来是不是一串排着队的 FILE 记录"**才算数。
+    struct BootCand { int lcnOff; int cprOff; };
+    const BootCand cands[] = { { 0x2F, 0x3F }, { 0x30, 0x40 }, { 0x2B, 0x3B } };
+    qint64 mftLcn = -1, rec = 0;
+    std::vector<BYTE> head;
+    for (const BootCand& c : cands) {
+        const qint64 lcn = qint64(le64(boot, c.lcnOff));
+        const qint32 cpr = LONG(le32(boot, c.cprOff));
+        const qint64 guess = cpr < 0 ? (qint64(1) << -cpr) : qint64(cpr) * clusterBytes;
+        if (lcn <= 0 || lcn > (1ll << 40) || guess < 256 || guess > 8192)
+            continue;
+        std::vector<BYTE> blk;
+        blk.resize(16384);
+        if (!readAt(vol, quint64(lcn) * quint64(clusterBytes), blk.data(), UINT32(blk.size())))
+            continue;
+        for (const int r : { 256, 512, 1024, 2048, 4096 }) {
+            if (3 * r + 4 > int(blk.size()))
+                break;
+            if (!looksLikeFileRecord(blk.data(), r) || !looksLikeFileRecord(blk.data() + r, r)
+                || !looksLikeFileRecord(blk.data() + 2 * r, r)
+                || !looksLikeFileRecord(blk.data() + 3 * r, r))
+                continue;
+            if (r != guess)
+                continue;               // 引导扇区那格和签名周期对不上 → 这组候选是错的
+            mftLcn = lcn;
+            rec = r;
+            head = std::move(blk);
+            break;
+        }
+        if (rec)
+            break;
+    }
+    if (!rec)
+        return no(QStringLiteral("引导扇区里三组候选偏移都对不上（0x2F/0x3F、0x30/0x40、0x2B/0x3B）"));
     std::vector<BYTE> r1;
     r1.resize(size_t(rec));      // 先声明再 resize：`std::vector<BYTE> r1(size_t(rec))` 会被读成函数声明
-    if (!readAt(vol, quint64(mftLcn) * quint64(clusterBytes) + quint64(rec), r1.data(), UINT32(rec)))
+    if (!head.empty()) {
+        memcpy(r1.data(), head.data() + rec, size_t(rec));   // 刚才那一块里就有第 1 号记录，不必再读一遍
+    } else if (!readAt(vol, quint64(mftLcn) * quint64(clusterBytes) + quint64(rec), r1.data(),
+                       UINT32(rec))) {
         return no(QStringLiteral("读不到第 1 号记录（%1 字节），错误码 %2").arg(rec).arg(GetLastError()));
+    }
     if (memcmp(r1.data(), "FILE", 4) != 0)
         return no(QStringLiteral("第 1 号记录开头不是 FILE —— 引导扇区里那个 MFT 起点（簇 %1）不对")
                       .arg(mftLcn));
