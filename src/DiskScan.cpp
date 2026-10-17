@@ -1,9 +1,13 @@
 #include "DiskScan.h"
 
+#include "UsnIndex.h"
+
 #include <QDir>
 #include <QDirIterator>
 #include <QFileInfo>
 #include <QElapsedTimer>
+#include <QDataStream>
+#include <QFile>
 #include <QHash>
 
 #include <windows.h>
@@ -20,6 +24,7 @@ namespace {
 constexpr int kMaxDepth = 64;
 constexpr int kSplitKids = 12;      // 直接子目录多于这个数的目录拆成独立任务
 constexpr int kMaxJobs = 4000;      // 拆分预算，免得把小目录也拆出一堆任务
+constexpr quint64 kNtfsRootFrn = 5; // NTFS 的卷根固定是这条记录（深索引那边也认这个数）
 
 // 一个任务扫出来的片段。chain = 该目录相对卷根的祖先链（不含自己）；
 // name/direct/parent 是片段内节点，parent=-1 只出现在 0 号节点（=任务目录本身）。
@@ -263,6 +268,247 @@ DiskScan::Timing DiskScan::lastTiming()
     return g_timing;
 }
 
+namespace {
+
+// 自下而上求子树合计 + 建孩子表 + 每层按大小降序、太小的不列。
+// 两条扫描路（MFT 直读 / 逐目录遍历）都收在这同一颗尾巴上：树的形状必须一模一样，
+// 否则界面上的排行和下钻会因为引擎不同而表现不同。
+// 前提：t.name/fileBytes/parent 已填好，且**父下标一定小于子下标**。
+void finishTree(Tree& t, qint64 minBytes)
+{
+    QElapsedTimer et;
+    et.start();
+    const int n = t.name.size();
+    t.size = t.fileBytes;
+    for (int i = n - 1; i > 0; --i)
+        t.size[t.parent[i]] += t.size[i];
+    t.total = t.size[0];
+
+    QVector<int> count(n, 0);
+    for (int i = 1; i < n; ++i)
+        count[t.parent[i]]++;
+    t.firstKid.resize(n);
+    t.kidCount.resize(n);
+    t.kids.resize(qMax(1, n - 1));
+    int acc = 0;
+    for (int i = 0; i < n; ++i) {
+        t.firstKid[i] = acc;
+        t.kidCount[i] = count[i];
+        acc += count[i];
+    }
+    QVector<int> cursor = t.firstKid;
+    for (int i = 1; i < n; ++i)
+        t.kids[cursor[t.parent[i]]++] = i;
+
+    g_timing.mergeMs += et.restart();   // 上面"自下而上求和 + 建孩子表"算进合并这段
+    t.pruned = 0;
+    for (int p = 0; p < n; ++p) {
+        const int from = t.firstKid[p];
+        const int cnt = t.kidCount[p];
+        if (cnt <= 0)
+            continue;
+        int* arr = t.kids.data() + from;
+        const qint64* sizes = t.size.constData();
+        std::sort(arr, arr + cnt, [sizes](int a, int b) { return sizes[a] > sizes[b]; });
+        int keep = 0;
+        while (keep < cnt && t.size[arr[keep]] >= minBytes)
+            ++keep;
+        if (p == 0)
+            keep = cnt;   // 根层永远全留，否则用户看不到全貌
+        t.pruned += cnt - keep;
+        t.kidCount[p] = keep;
+    }
+    g_timing.sortMs += et.elapsed();
+}
+
+QString entryName(const UsnIndex::EnumResult& er, int i)
+{
+    return QString::fromUtf16(
+        reinterpret_cast<const char16_t*>(er.names.constData() + er.nameOff[i]),
+        int(er.nameLen[i]) / 2);
+}
+
+bool entryStartsWithDollar(const UsnIndex::EnumResult& er, int i)
+{
+    // 只看第一个 UTF-16 码元就够：'$' 在 BMP 里，不需要整串解码
+    return er.nameLen[i] >= 2
+           && reinterpret_cast<const char16_t*>(er.names.constData() + er.nameOff[i])[0] == u'$';
+}
+
+// 把 MFT 那两条原始结果拼成和遍历同形状的树。
+// 为什么能这么拼：FSCTL_ENUM_USN_DATA 给的是「谁在谁下面 + 叫什么」，一遍 $MFT 给的是
+// 「这条记录多大」—— 两者一合就是整盘的结构和大小，**一个目录都不用进**。
+// 拿不到结果时返回空树并把原因写进 why，让调用方回退到遍历。
+Tree buildFromMft(const QString& base, qint64 minBytes, const UsnIndex::EnumResult& er,
+                  const QVector<qint64>& sizeOf, const std::function<void(const Progress&)>& progress)
+{
+    Tree t;
+    t.rootPath = base;
+    t.root = 0;
+    t.name << QStringLiteral("\\");
+    t.fileBytes << 0;
+    t.parent << -1;
+    t.engine = QString::fromUtf8(kEngineMft);
+
+    const int n = er.frn.size();
+    const int rootEntry = [&] {
+        for (int i = 0; i < n; ++i)
+            if (er.frn[i] == kNtfsRootFrn)
+                return i;
+        return -1;
+    }();
+    if (rootEntry < 0)
+        return Tree();        // 连卷根都没枚举到，这条路的输出不可信
+
+    // 目录：frn → 条目下标。重解析点（junction / 目录软链）当叶子不进去 ——
+    // 和遍历那条路口径一致，否则一个 junction 会把目标目录整份重复计一遍。
+    QHash<quint64, int> dirOf;
+    QVector<int> dirs;
+    for (int i = 0; i < n; ++i) {
+        if (!(er.attrs[i] & FILE_ATTRIBUTE_DIRECTORY) || (er.attrs[i] & FILE_ATTRIBUTE_REPARSE_POINT))
+            continue;
+        dirOf.insert(er.frn[i], i);
+        dirs.append(i);
+    }
+    // 按父号排一遍，孩子就是一段连续区间（BFS 时二分找，不另建邻接表）
+    std::sort(dirs.begin(), dirs.end(), [&](int a, int b) { return er.parent[a] < er.parent[b]; });
+    const auto kidsOf = [&](quint64 f) {
+        auto lo = std::lower_bound(dirs.begin(), dirs.end(), f,
+                                   [&](int idx, quint64 v) { return er.parent[idx] < v; });
+        auto hi = std::upper_bound(lo, dirs.end(), f,
+                                   [&](quint64 v, int idx) { return v < er.parent[idx]; });
+        return std::make_pair(lo, hi);
+    };
+
+    QVector<int> nodeOf(n, -1);
+    QHash<quint64, int> nodeByFrn;
+    nodeByFrn.reserve(dirs.size() * 2);
+    nodeOf[rootEntry] = 0;
+    nodeByFrn.insert(kNtfsRootFrn, 0);
+    QVector<int> frontier{ rootEntry };
+    while (!frontier.isEmpty()) {
+        QVector<int> next;
+        for (const int e : frontier) {
+            const auto [lo, hi] = kidsOf(er.frn[e]);     // 一次二分，别在循环条件里反复算
+            for (auto it = lo; it != hi; ++it) {
+                const int c = *it;
+                if (nodeOf[c] >= 0 || er.frn[c] == kNtfsRootFrn)
+                    continue;               // 挂过了（同名多条记录）或绕回根，跳过
+                const int node = t.name.size();
+                nodeOf[c] = node;
+                nodeByFrn.insert(er.frn[c], node);
+                t.name.append(entryName(er, c));
+                t.fileBytes.append(0);
+                t.parent.append(nodeOf[e]);
+                next.append(c);
+            }
+        }
+        if (progress) {
+            Progress p;
+            p.engine = t.engine;
+            p.dirs = t.name.size() - 1;
+            p.current = QStringLiteral("MFT 直读：已挂出 %1 个目录").arg(t.name.size() - 1);
+            progress(p);
+        }
+        frontier.swap(next);
+    }
+
+    // 文件：直属字节记到父目录那个节点上。父目录不可达的（挂在已删目录/重解析点下面）丢掉，
+    // 和遍历一样 —— 遍历本来就走进不去的地方。
+    qint64 files = 0;
+    for (int i = 0; i < n; ++i) {
+        if (er.attrs[i] & FILE_ATTRIBUTE_DIRECTORY)
+            continue;
+        if (er.parent[i] == kNtfsRootFrn && entryStartsWithDollar(er, i))
+            continue;   // 卷根下面 $ 开头的是 NTFS 自己的元数据文件（$MFT/$LogFile/$Bitmap…），
+                        // 目录遍历根本列不到它们，算进来会让盘"凭空"大出几百 MB
+        const int node = nodeByFrn.value(er.parent[i], -1);
+        if (node < 0)
+            continue;
+        t.fileBytes[node] += sizeOf[i];
+        ++files;
+    }
+
+    g_timing.files = files;
+    g_timing.dirsSeen = t.name.size() - 1;
+    finishTree(t, minBytes);
+    if (progress) {
+        Progress p;
+        p.engine = t.engine;
+        p.bytes = t.total;
+        p.dirs = g_timing.dirsSeen;
+        p.branches = t.kidCount[0];
+        for (int i = t.firstKid[0]; i < t.firstKid[0] + t.kidCount[0]; ++i)
+            p.doneBranches.append({ t.name[t.kids[i]], t.size[t.kids[i]] });
+        p.current = QStringLiteral("MFT 直读完成");
+        progress(p);
+    }
+    return t;
+}
+
+// 走一遍 MFT：结构 + 大小。任何一步不成都返回空树（调用方回退遍历）。
+Tree runMft(const QString& base, qint64 minBytes, const std::function<void(const Progress&)>& progress,
+            QString* why)
+{
+    QElapsedTimer et;
+    et.start();
+    UsnIndex::VolumeHandle vol;
+    if (!vol.open(base)) {
+        if (why)
+            *why = QStringLiteral("打不开卷（错误码 %1）").arg(GetLastError());
+        return Tree();
+    }
+    UsnIndex::EnumResult er;
+    if (!UsnIndex::enumVolumeMft(vol.vol, er) || er.frn.isEmpty()) {
+        if (why)
+            *why = QStringLiteral("MFT 枚举没拿到记录（错误码 %1）").arg(GetLastError());
+        return Tree();
+    }
+    vol.close();
+    g_timing.enumMs = et.restart();
+    if (progress) {
+        Progress p;
+        p.engine = QString::fromUtf8(kEngineMft);
+        p.current = QStringLiteral("MFT 直读：已枚举 %1 条记录，正在读 $MFT 取大小").arg(er.frn.size());
+        progress(p);
+    }
+
+    // 只对文件问大小（目录的大小靠聚合，$MFT 里目录记录那格本来也没意义）
+    QVector<quint64> want;
+    want.reserve(er.frn.size() / 2 + 16);
+    for (int i = 0; i < er.frn.size(); ++i)
+        if (!(er.attrs[i] & FILE_ATTRIBUTE_DIRECTORY))
+            want.append(er.frn[i]);
+    QVector<qint64> got;
+    if (!UsnIndex::mftSizes(base, want, got)) {
+        if (why)
+            *why = QStringLiteral("$MFT 大小没读出来（错误码 %1）").arg(GetLastError());
+        return Tree();
+    }
+    g_timing.sizeMs = et.elapsed();
+    QVector<qint64> sizeOf(er.frn.size(), 0);
+    {
+        // got 是"每个文件条目一份"，摊回按条目下标编的数组，聚合时一次取值
+        int k = 0;
+        for (int i = 0; i < er.frn.size(); ++i) {
+            if (er.attrs[i] & FILE_ATTRIBUTE_DIRECTORY)
+                continue;
+            sizeOf[i] = got[k++];
+        }
+    }
+    Tree t = buildFromMft(base, minBytes, er, sizeOf, progress);
+    if (t.isEmpty())
+        *why = QStringLiteral("MFT 枚举到了记录，但一棵目录树都没拼出来");
+    return t;
+}
+
+} // namespace
+
+bool DiskScan::mftUsable(const QString& root, QString* why)
+{
+    return UsnIndex::mftUsable(QDir(root).absolutePath(), why);
+}
+
 Tree run(const QString& rootPath, qint64 minBytes,
          const std::function<void(const Progress&)>& progress)
 {
@@ -276,6 +522,23 @@ Tree run(const QString& rootPath, qint64 minBytes,
     QDir d(base);
     if (!d.exists())
         return t;
+
+    // ---- 先试 MFT 直读（light-c 那台"高性能 C 盘清理"的地基就是它）----
+    // 一次内核枚举 + 一遍 $MFT，一个目录都不进。打不开卷（没提权）、枚举空、
+    // 大小没解析出来 —— 任何一步不成都干净地回退到下面的遍历，并把原因带进界面。
+    QString why;
+    const bool forceWalk = qEnvironmentVariable("LTOOL_DISK_ENGINE") == QLatin1String("walk");
+    if (!forceWalk && UsnIndex::mftUsable(base, &why)) {
+        Tree m = runMft(base, minBytes, progress, &why);
+        if (!m.isEmpty()) {
+            g_timing.engine = QString::fromUtf8(kEngineMft);
+            g_timing.walkMs = g_timing.enumMs + g_timing.sizeMs;
+            return m;
+        }
+    }
+    const QString fallbackNote = why;
+    t.engine = QString::fromUtf8(kEngineWalk);
+    t.engineNote = fallbackNote;
 
     Queue q;
     Counters c;
@@ -302,6 +565,7 @@ Tree run(const QString& rootPath, qint64 minBytes,
             while (!stop.load(std::memory_order_acquire)) {
                 Sleep(30);
                 Progress p;
+                p.engine = t.engine;
                 p.bytes = c.bytes.load(std::memory_order_relaxed);
                 p.dirs = c.dirs.load(std::memory_order_relaxed);
                 p.branches = c.branchCount;
@@ -361,6 +625,7 @@ Tree run(const QString& rootPath, qint64 minBytes,
         reporter.join();
     if (progress) {
         Progress p;
+        p.engine = t.engine;
         p.bytes = c.bytes.load(std::memory_order_relaxed);
         p.dirs = c.dirs.load(std::memory_order_relaxed);
         p.branches = c.branchCount;
@@ -427,52 +692,66 @@ Tree run(const QString& rootPath, qint64 minBytes,
 
     g_timing.mergeMs = et.elapsed();
     et.restart();
-    // ---- 子树合计：父下标一定小于子下标，倒着一遍就够 ----
-    const int n = t.name.size();
-    t.size = t.fileBytes;
-    for (int i = n - 1; i > 0; --i)
-        t.size[t.parent[i]] += t.size[i];
-    t.total = t.size[0];
-
-    // ---- 建孩子表：先数、再前缀和、再填 ----
-    QVector<int> count(n, 0);
-    for (int i = 1; i < n; ++i)
-        count[t.parent[i]]++;
-    t.firstKid.resize(n);
-    t.kidCount.resize(n);
-    t.kids.resize(qMax(1, n - 1));
-    int acc = 0;
-    for (int i = 0; i < n; ++i) {
-        t.firstKid[i] = acc;
-        t.kidCount[i] = count[i];
-        acc += count[i];
-    }
-    QVector<int> cursor = t.firstKid;
-    for (int i = 1; i < n; ++i)
-        t.kids[cursor[t.parent[i]]++] = i;
-
-    // ---- 每个父目录的孩子按大小降序；太小的不列出 ----
-    g_timing.mergeMs += et.restart();   // 上面"自下而上求和 + 建孩子表"也算进合并这段
-    t.pruned = 0;
-    for (int p = 0; p < n; ++p) {
-        const int from = t.firstKid[p];
-        const int cnt = t.kidCount[p];
-        if (cnt <= 0)
-            continue;
-        int* arr = t.kids.data() + from;
-        const qint64* sizes = t.size.constData();
-        std::sort(arr, arr + cnt, [sizes](int a, int b) { return sizes[a] > sizes[b]; });
-        int keep = 0;
-        while (keep < cnt && t.size[arr[keep]] >= minBytes)
-            ++keep;
-        if (p == 0)
-            keep = cnt;   // 根层永远全留，否则用户看不到全貌
-        t.pruned += cnt - keep;
-        t.kidCount[p] = keep;
-    }
-    g_timing.sortMs = et.elapsed();
+    // ---- 尾巴（子树合计 / 孩子表 / 排序剪枝）两条路共用一颗函数 ----
+    finishTree(t, minBytes);
+    g_timing.engine = t.engine;
     g_timing.jobs = int(q.pushed.load(std::memory_order_relaxed));
     g_timing.threads = threads;
+    return t;
+}
+
+namespace {
+constexpr quint32 kTreeMagic = 0x3154444C;   // "LTD1"：格式改了要动它，读方对不上就整份丢掉
+constexpr quint32 kTreeFormat = 1;
+} // namespace
+
+bool DiskScan::writeTree(const Tree& t, const QString& path, QString* err)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (err)
+            *err = QStringLiteral("写不出来：%1").arg(path);
+        return false;
+    }
+    QDataStream s(&f);
+    s.setVersion(QDataStream::Qt_6_0);
+    s << kTreeMagic << kTreeFormat << t.rootPath << t.total << t.pruned << t.engine << t.engineNote
+      << qint32(t.name.size()) << t.name << t.fileBytes << t.parent << t.size << t.firstKid
+      << t.kidCount << t.kids << qint32(t.root);
+    f.flush();
+    if (s.status() != QDataStream::Ok || f.error() != QFile::NoError) {
+        if (err)
+            *err = QStringLiteral("写到一半失败");
+        f.close();
+        QFile::remove(path);        // 半截文件比没文件更坏：读方会拿到一棵缺胳膊少腿的树
+        return false;
+    }
+    f.close();
+    return true;
+}
+
+Tree DiskScan::readTree(const QString& path, QString* err)
+{
+    Tree t;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        if (err)
+            *err = QStringLiteral("打不开：%1").arg(path);
+        return t;
+    }
+    QDataStream s(&f);
+    s.setVersion(QDataStream::Qt_6_0);
+    quint32 magic = 0, format = 0;
+    qint32 n = 0, root = 0;
+    s >> magic >> format >> t.rootPath >> t.total >> t.pruned >> t.engine >> t.engineNote >> n
+      >> t.name >> t.fileBytes >> t.parent >> t.size >> t.firstKid >> t.kidCount >> t.kids >> root;
+    if (s.status() != QDataStream::Ok || magic != kTreeMagic || format != kTreeFormat
+        || n != t.name.size() || n <= 0) {
+        if (err)
+            *err = QStringLiteral("这份快照的格式对不上（魔数/版本/条数），丢掉");
+        return Tree();
+    }
+    t.root = root;
     return t;
 }
 

@@ -5,6 +5,8 @@
 
 #include <windows.h>
 
+#include <functional>
+
 // USN 日志 / MFT 枚举这一层的裸 Win32 封装。
 // 打开卷和读日志都**要管理员权限**：打不开时 open() 返回 false，调用方自己回退到
 // 目录遍历（并把 GetLastError() 打进日志），所以这里一律不弹框不打日志，只回报成败。
@@ -55,12 +57,22 @@ struct RawChange {
 bool enumVolumeMft(HANDLE vol, EnumResult& out);
 JournalInfo queryJournal(HANDLE vol);
 
+// 把 $MFT 顺序读一遍，取回 want 里每个记录号的**真实大小**（sizes 与 want 同序）。
+// 为什么要单独这一遍：FSCTL_ENUM_USN_DATA 只给结构（谁在谁下面、叫什么），大小不在里面 ——
+// 它在每条 FILE 记录的 $STANDARD_INFORMATION 里（Real Size 那一格）。
+// want 里同一个号出现多次（硬链接）会各自填上同一个值，跟目录遍历"一个名字算一份"的口径一致。
+// progress 每读完一块调一次，返回 false 表示取消（取消时 sizes 不可信，函数返回 false）。
+using SizeProgress = std::function<bool(qint64 recordsSeen, qint64 recordsTotal)>;
+bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>& sizes,
+              const SizeProgress& progress = {});
+
+// 这台机器现在能不能走 MFT 这条路：卷打不开（没提权）、或卷上没有 USN 日志，都不行。
+// why 填人话给界面用（界面必须说清"这次为什么慢"，别只说"扫描完成"）。
+bool mftUsable(const QString& root, QString* why = nullptr);
+
 // 读 [startUsn, endUsn) 这段变更。journalId 对不上（日志被重建过）时返回 false。
 bool readChanges(HANDLE vol, quint64 journalId, quint64 startUsn, quint64 endUsn,
                  QVector<RawChange>& out);
 
-// 诊断用（--mfttest）：把 FSCTL_ENUM_USN_DATA 的几种参数组合各跑一遍并把条数打出来。
-// 本机 Windows 26200 上踩过一个坑：HighUsn 必须设成日志的 NextUsn，否则枚举直接空。
-void mftEnumMatrix(HANDLE vol);
 
 } // namespace UsnIndex

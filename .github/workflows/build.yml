@@ -203,7 +203,7 @@ jobs:
           head -c 5000 /dev/urandom > "$RUNNER_TEMP/test_diskbranch/root.bin"
           export LTOOL_DISKBRANCH_DIR="$RUNNER_TEMP/test_diskbranch"
 
-          for f in --smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --seamtest --diskbranch; do
+          for f in --smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --seamtest --diskbranch --mfttest; do
             echo "===== $f ====="
             log_file="$RUNNER_TEMP/test_${f//--/}.log"
             cmd="./ltool.exe $f"
@@ -240,7 +240,8 @@ jobs:
           head -c 200000 /dev/urandom > "$RUNNER_TEMP/ciart/src/b.bin"
           ./ltool.exe --archivetest make "$RUNNER_TEMP/ciart/src" "$RUNNER_TEMP/ciart/t.7z" 7z 5
           ./ltool.exe --archivetest extract "$RUNNER_TEMP/ciart/t.7z" "$RUNNER_TEMP/ciart/out"
-          echo "INFO 跳过的：--capgeo --capflash --recq --rectest --recordui（要真屏幕）· --mfttest --searchtime（要管理员）"
+          echo "INFO 跳过的：--capgeo --capflash --recq --rectest --recordui（要真屏幕）· --searchtime（整盘扫描太慢）"
+          echo "INFO --mfttest 在这跑：runner 是提权的，MFT 直读那两条对账判据能真跑（换到非提权环境它会点名 SKIP，不算绿也不算红）"
           exit $fail
 
       - name: 装 Inno Setup

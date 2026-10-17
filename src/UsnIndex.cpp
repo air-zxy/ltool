@@ -6,21 +6,39 @@
 #include <winioctl.h>
 
 #include <cstdio>
+#include <vector>
 
 namespace {
 
 // 枚举/读日志的单次缓冲区：一次 ioctl 能带回成千上万条记录，别拿小buffer反复进内核
 constexpr DWORD kBufBytes = 4u << 20;
 
+// 读 $MFT 的单次块：4MB 是 256~4096 所有记录长度的整数倍，记录不会被劈在两块之间
+constexpr DWORD kMftChunk = 4u << 20;
+
+// 盘符 → "C:"；给的若不是**卷根**返回 false。
+// 这一条卡得很严是有原因的：MFT 枚举出来的一定是整盘，拿"C:/Windows"当卷根的话，
+// 拼出来的树会挂着 C:/Windows 的名字装的却是 C 盘全部内容。
+bool volumeDrive(const QString& root, QString* drive)
+{
+    const QString d = QDir::fromNativeSeparators(root);
+    if (d.length() < 2 || d.length() > 3 || d[1] != QLatin1Char(':') || !d[0].isLetter())
+        return false;
+    if (d.length() == 3 && d[2] != QLatin1Char('/'))
+        return false;
+    *drive = d.left(2);
+    return true;
+}
+
 bool openVolume(const QString& root, HANDLE* out)
 {
-    // 盘符 → \\.\C:
-    QString drive = QDir::fromNativeSeparators(root);
-    if (drive.length() >= 2 && drive[1] == QLatin1Char(':'))
-        drive = drive.left(2);
-    else
+    // 盘符 → \\.\C:（**结尾不能再带反斜杠**：`\\.\C:\` 会被当成"卷根目录的路径"，
+    // CreateFileW 直接给 ERROR_PATH_NOT_FOUND(3)。2026-10-17 实测四种写法量出来的：
+    // `\\.\C:` → 5(ACCESS_DENIED，只差提权，形式是对的)；`\\.\C:\` → 3；`C:\$MFT` → 5）
+    QString drive;
+    if (!volumeDrive(root, &drive))
         return false;
-    const std::wstring path = L"\\\\.\\" + drive.toStdWString() + L"\\";
+    const std::wstring path = L"\\\\.\\" + drive.toStdWString();
     // 只要 FILE_READ_DATA 就够（读 MFT/日志），但打这个必须有管理员
     HANDLE h = CreateFileW(path.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
@@ -29,6 +47,75 @@ bool openVolume(const QString& root, HANDLE* out)
         return false;
     *out = h;
     return true;
+}
+
+quint16 le16(const BYTE* p, int off)
+{
+    quint16 v = 0;
+    memcpy(&v, p + off, 2);
+    return v;
+}
+
+quint32 le32(const BYTE* p, int off)
+{
+    quint32 v = 0;
+    memcpy(&v, p + off, 4);
+    return v;
+}
+
+quint64 le64(const BYTE* p, int off)
+{
+    quint64 v = 0;
+    memcpy(&v, p + off, 8);
+    return v;
+}
+
+// 这一段看着像不像一条 FILE 记录（用来验 $MFT 的记录长度，不靠猜）
+bool looksLikeFileRecord(const BYTE* rec, int recBytes)
+{
+    if (memcmp(rec, "FILE", 4) != 0)
+        return false;
+    const int firstAttr = le16(rec, 20);
+    const int usaOff = le16(rec, 4);
+    const int usaCount = le16(rec, 6);
+    return firstAttr >= 42 && firstAttr < recBytes && usaCount >= 2 && usaCount <= 64
+           && usaOff + 2 * usaCount <= recBytes;
+}
+
+// $STANDARD_INFORMATION（一定在记录里第一个属性、且常驻）里的 Real Size。
+// 记录头：0x04 usaOff / 0x06 usaCount / 0x14 firstAttr / 0x16 flags（bit0=在用）
+// 属性通用头：0x00 type / 0x04 length / 0x08 非驻留标志 / 0x10 值起点 / 0x12 值长度
+// SI 体：四个 8 字节时间戳 → 0x20 分配大小 / 0x28 真实大小
+bool recordRealSize(BYTE* rec, int recBytes, qint64* out)
+{
+    if (!(le16(rec, 22) & 0x01))          // 空闲记录：里面全是上一个文件的垃圾
+        return false;
+    // 更新序列：每个扇区最后 2 字节被挪进表里了，读之前先放回去。
+    // 我们只取第一个扇区里的 SI 时用不上，但记录可能是 2048/4096 字节、属性起点不固定。
+    const int usaOff = le16(rec, 4);
+    for (int k = 1; k < le16(rec, 6); ++k) {
+        const int at = k * 512 - 2;
+        if (at + 2 > recBytes || usaOff + 2 * k + 2 > recBytes)
+            break;
+        memcpy(rec + at, rec + usaOff + 2 * k, 2);
+    }
+    for (int off = le16(rec, 20); off + 8 <= recBytes;) {
+        const quint32 type = le32(rec, off);
+        const quint32 len = le32(rec, off + 4);
+        if (type == 0xFFFFFFFFu || len < 8 || off + int(len) > recBytes)
+            break;
+        if (type == 0x80) {
+            if (rec[off + 8])             // 非驻留的 SI：这台机器不该有，宁可报"取不到"
+                return false;
+            const int at = off + le16(rec, off + 0x10);
+            if (le32(rec, off + 0x12) < 0x30 || at + 0x30 > recBytes)
+                return false;
+            *out = qint64(le64(rec, at + 0x28));
+            return true;
+        }
+        off += int(len);
+    }
+    return false;
 }
 
 } // namespace
@@ -122,6 +209,130 @@ bool enumVolumeMft(HANDLE vol, EnumResult& out)
     return !out.frn.isEmpty();
 }
 
+bool mftUsable(const QString& root, QString* why)
+{
+    VolumeHandle vol;
+    if (!vol.open(root)) {
+        const DWORD e = GetLastError();
+        if (why)
+            *why = e == ERROR_ACCESS_DENIED
+                ? QStringLiteral("没有管理员权限，打不开卷（错误码 %1）").arg(e)
+                : QStringLiteral("打不开卷 %1（错误码 %2）").arg(root).arg(e);
+        return false;
+    }
+    if (!queryJournal(vol.vol).ok) {
+        if (why)
+            *why = QStringLiteral("这个卷没开 USN 日志，NTFS 元数据无从枚举");
+        return false;
+    }
+    return true;
+}
+
+bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>& sizes,
+                        const SizeProgress& progress)
+{
+    sizes = QVector<qint64>(want.size(), 0);
+    if (want.isEmpty())
+        return true;
+    QString drive;
+    if (!volumeDrive(root, &drive))
+        return false;
+
+    quint64 maxFrn = 0;
+    for (const quint64 f : want)
+        maxFrn = qMax(maxFrn, f);
+    if (maxFrn > (1ull << 32))
+        return false;       // 记录号大到这个数，只能是读出了垃圾，别去建表
+
+    // 记录号 → want 下标：head/next 串成链表，一次遍历填完（同一个号出现多次=硬链接，
+    // 每个名字都要拿到这份大小）。用定长数组而不是 QHash：几百万条时哈希的常数太大。
+    QVector<int> head(int(maxFrn) + 1, -1);
+    QVector<int> nxt(want.size(), -1);
+    for (int i = 0; i < want.size(); ++i) {
+        const int h = int(want[i]);
+        nxt[i] = head[h];
+        head[h] = i;
+    }
+
+    // $MFT 走**普通文件路径**开：`\\.\C:$MFT` 那种裸设备拼法实测给 ERROR_FILE_NOT_FOUND(2)，
+    // 而 `C:\$MFT` 给的是 5(ACCESS_DENIED) —— 也就是形式对、只差提权。
+    const std::wstring path = drive.toStdWString() + L"\\$MFT";
+    HANDLE h = CreateFileW(path.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                           nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+
+    LARGE_INTEGER li{};
+    GetFileSizeEx(h, &li);
+    const qint64 mftBytes = li.QuadPart;
+
+    // 记录多长：卷引导扇区那个字段有版本差异，直接拿"FILE"签名找周期最稳
+    std::vector<BYTE> probeBuf(4 * 4096);
+    DWORD got = 0;
+    int recBytes = 0;
+    if (ReadFile(h, probeBuf.data(), DWORD(probeBuf.size()), &got, nullptr) && got >= 4 * 1024) {
+        for (const int r : { 256, 512, 1024, 2048, 4096 }) {
+            if (3 * r + 4 > int(got))
+                break;
+            if (looksLikeFileRecord(probeBuf.data(), r)
+                && looksLikeFileRecord(probeBuf.data() + r, r)
+                && looksLikeFileRecord(probeBuf.data() + 2 * r, r)
+                && looksLikeFileRecord(probeBuf.data() + 3 * r, r)) {
+                recBytes = r;
+                break;
+            }
+        }
+    }
+    if (!recBytes) {
+        CloseHandle(h);
+        return false;
+    }
+
+    std::vector<BYTE> chunk(kMftChunk);
+    const qint64 total = mftBytes / recBytes;
+    qint64 seen = 0, filled = 0;
+    bool cancelled = false;
+    for (qint64 base = 0; base + recBytes <= mftBytes; base += qint64(kMftChunk)) {
+        LARGE_INTEGER pos{};
+        pos.QuadPart = base;
+        if (!SetFilePointerEx(h, pos, nullptr, FILE_BEGIN))
+            break;
+        const DWORD ask = DWORD(qMin<qint64>(kMftChunk, mftBytes - base));
+        if (!ReadFile(h, chunk.data(), ask, &got, nullptr) || got < DWORD(recBytes))
+            break;                       // $MFT 正在长，尾部读不到就算了
+        const int recs = int(got) / recBytes;
+        const qint64 first = base / recBytes;
+        for (int i = 0; i < recs; ++i) {
+            const qint64 idx = first + i;
+            if (idx > qint64(maxFrn))
+                break;
+            int slot = head[int(idx)];
+            if (slot >= 0) {
+                qint64 sz = 0;
+                if (recordRealSize(chunk.data() + i * recBytes, recBytes, &sz)) {
+                    for (; slot >= 0; slot = nxt[slot]) {
+                        sizes[slot] = sz;
+                        ++filled;
+                    }
+                }
+            }
+        }
+        seen += recs;
+        if (progress && !progress(seen, total)) {
+            cancelled = true;
+            break;
+        }
+        if (filled >= want.size())
+            break;                       // 全拿到了，剩下的记录不必再读
+    }
+    CloseHandle(h);
+    if (cancelled)
+        return false;
+    return filled > 0;                   // 一条都没填上=解析没对上，让调用方回退遍历
+}
+
 bool readChanges(HANDLE vol, quint64 journalId, quint64 startUsn, quint64 endUsn,
                  QVector<RawChange>& out)
 {
@@ -170,57 +381,6 @@ bool readChanges(HANDLE vol, quint64 journalId, quint64 startUsn, quint64 endUsn
         rd.StartUsn = next;
     }
     return true;
-}
-
-void mftEnumMatrix(HANDLE vol)
-{
-    // 把"日志开没开"和"几种 HighUsn 取法各能捞回多少条"摊开打印：
-    // 这台机器上就是这么定位到"HighUsn 必须给 NextUsn"的（README 已知限制里那条）
-    const JournalInfo ji = queryJournal(vol);
-    std::printf("journal ok=%d id=%llu NextUsn=%llu\n", ji.ok ? 1 : 0,
-                unsigned long long(ji.journalId), unsigned long long(ji.nextUsn));
-    if (!ji.ok) {
-        std::printf("  没有 USN 日志（这台机器/这个卷没开），枚举 MFT 无从谈起\n");
-        return;
-    }
-    struct Case { const char* what; quint64 low; quint64 high; };
-    const Case cases[] = {
-        {"HighUsn=0", 0, 0},
-        {"HighUsn=NextUsn", 0, ji.nextUsn},
-        {"HighUsn=NextUsn-1", 0, ji.nextUsn - 1},
-        {"LowUsn=NextUsn/2", ji.nextUsn / 2, ji.nextUsn},
-    };
-    for (const Case& c : cases) {
-        MFT_ENUM_DATA_V0 mft{};
-        mft.StartFileReferenceNumber = 0;
-        mft.LowUsn = c.low;
-        mft.HighUsn = c.high;
-        QByteArray buf;
-    buf.resize(kBufBytes);   // 先声明再 resize：`QByteArray buf(int(n))` 会被读成函数声明
-        quint64 count = 0, frn = 0;
-        for (int loop = 0; loop < 20000; ++loop) {
-            DWORD ret = 0;
-            mft.StartFileReferenceNumber = frn;
-            if (!DeviceIoControl(vol, FSCTL_ENUM_USN_DATA, &mft, sizeof(mft),
-                                 buf.data(), DWORD(buf.size()), &ret, nullptr))
-                break;
-            if (ret <= sizeof(quint64))
-                break;
-            memcpy(&frn, buf.constData(), sizeof(quint64));
-            const BYTE* p = reinterpret_cast<const BYTE*>(buf.constData()) + sizeof(quint64);
-            const BYTE* end = reinterpret_cast<const BYTE*>(buf.constData()) + ret;
-            while (p + sizeof(USN_RECORD_V2) <= end) {
-                const USN_RECORD_V2& r = *reinterpret_cast<const USN_RECORD_V2*>(p);
-                if (r.RecordLength < sizeof(USN_RECORD_V2))
-                    break;
-                ++count;
-                p += r.RecordLength;
-            }
-        }
-        std::printf("  %-18s → %llu 条记录 (err=%lu)\n", c.what,
-                    unsigned long long(count), GetLastError());
-        std::fflush(stdout);
-    }
 }
 
 } // namespace UsnIndex

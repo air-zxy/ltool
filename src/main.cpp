@@ -684,17 +684,125 @@ int main(int argc, char* argv[])
         return runSmokeTest();
 
     if (mftTest) {
-        // 需要管理员权限：诊断 FSCTL_ENUM_USN_DATA 各组合行为
-        for (const QString& drive : {"C:/", "D:/"}) {
-            std::fprintf(stdout, "=== %s ===\n", drive.toUtf8().constData());
-            UsnIndex::VolumeHandle vol;
-            if (vol.open(drive)) {
-                UsnIndex::mftEnumMatrix(vol.vol);
-                vol.close();
-            } else {
-                std::fprintf(stdout, "open failed err=%lu\n", GetLastError());
+        // 「MFT 直读」这一路的判据。提权与否跑的是两套断言：
+        //   读得了卷 → 真走一遍，并和遍历那条路逐项目对数（$MFT 的大小要是解析错了，
+        //              两边总数一定对不上 —— 这就是这格数字的正确性证明）
+        //   读不了卷 → 点名 SKIP，只断言回退那条路 + 原因带没带出来
+        // 不这么分的话，非提权环境里这一串会全绿但其实一行都没测（--storenet 那 4 条就这么骗过人）。
+        int bad = 0;
+        const auto has = [&bad](const char* name, bool ok) {
+            std::printf("%s %s\n", ok ? "PASS" : "FAIL", name);
+            if (!ok)
+                ++bad;
+        };
+        const QString root = QStringLiteral("C:/");
+        QString why;
+        const bool usable = DiskScan::mftUsable(root, &why);
+        std::printf("INFO mftUsable(C:/)=%d why=[%s]\n", usable ? 1 : 0, why.toUtf8().constData());
+        has("说不可用时一定带人话原因", usable || !why.isEmpty());
+        has("说可用时不掺原因", !usable || why.isEmpty());
+        // 3 = ERROR_PATH_NOT_FOUND：卷路径结尾多带一个反斜杠就是这个数（2026-10-17 实测，
+        // 深索引的"MFT 优先"因此从来没生效过）。差提权应该是 5，不是 3。
+        has("打不开卷的原因不是「路径不存在」（卷路径结尾不带反斜杠）",
+            usable || !why.contains(QStringLiteral("错误码 3")));
+        has("子目录不会被当成卷根（MFT 只认整盘）", !DiskScan::mftUsable(root + "Windows", &why));
+
+        // ---- 快照文件往返：这一组不依赖提权，两边都能真跑 ----
+        const DiskScan::Tree tiny = DiskScan::run(root + "Windows/System32/drivers", 1 << 20);
+        has("小目录树建出来了（写读这组的料）", !tiny.isEmpty() && tiny.total > 0);
+        const QString snap = QDir::tempPath()
+                             + QStringLiteral("/ltool-mfttest-%1.bin")
+                                   .arg(QCoreApplication::applicationPid());
+        QString werr, rerr;
+        const bool wrote = DiskScan::writeTree(tiny, snap, &werr);
+        const DiskScan::Tree back = wrote ? DiskScan::readTree(snap, &rerr) : DiskScan::Tree();
+        has("树写得出去也读得回来，节点数/总数/引擎一字不差",
+            wrote && back.name.size() == tiny.name.size() && back.total == tiny.total
+                && back.engine == tiny.engine);
+        const int topKid = back.kidCount[back.root] > 0 ? back.firstKid[back.root] : -1;
+        has("读回来的树按路径还能定位到同一个节点",
+            topKid >= 0 && back.nodeForPath(back.pathOf(topKid)) == topKid);
+        QFile::remove(snap);          // 只删这一个算出来的绝对路径
+        {                             // 拿一份"看着像但不是"的文件试：格式对不上必须整份丢掉
+            QFile junk(snap);
+            const bool opened = junk.open(QIODevice::WriteOnly);
+            if (opened) {
+                junk.write("LTD1garbage-garbage");
+                junk.close();
             }
+            // 夹具写不出来就直接判红：这一组不许静默跳过
+            has("格式对不上的快照一律整份丢掉（不猜）",
+                opened && DiskScan::readTree(snap, &rerr).isEmpty());
         }
+        QFile::remove(snap);
+
+        if (usable) {
+            const DiskScan::Tree mft = DiskScan::run(root, 1 << 20);
+            const DiskScan::Timing tm = DiskScan::lastTiming();
+            qputenv("LTOOL_DISK_ENGINE", "walk");
+            const DiskScan::Tree walk = DiskScan::run(root, 1 << 20);
+            qunsetenv("LTOOL_DISK_ENGINE");
+            const DiskScan::Timing tw = DiskScan::lastTiming();
+            std::printf("INFO MFT：%d 个目录 %lld 个文件 合计 %lld（枚举 %lldms + 大小 %lldms）\n",
+                        int(mft.name.size()), long long(tm.files), long long(mft.total),
+                        long long(tm.enumMs), long long(tm.sizeMs));
+            std::printf("INFO 遍历：%d 个目录 %lld 个文件 合计 %lld（%lldms）\n",
+                        int(walk.name.size()), long long(tw.files), long long(walk.total),
+                        long long(tw.walkMs));
+            has("能读卷时走的就是 MFT 那条路", mft.engine == DiskScan::engineMft());
+            has("MFT 这条路拼得出目录树", mft.name.size() > 100 && mft.total > (1LL << 30));
+            has("两条路的总数对得上（±10%）",
+                !walk.isEmpty() && mft.total >= walk.total * 9 / 10 && mft.total <= walk.total * 11 / 10);
+            const int win = mft.nodeForPath(root + "Windows");
+            const int winW = walk.nodeForPath(root + "Windows");
+            has("同一个目录（C:\\Windows）两边大小对得上",
+                win >= 0 && winW >= 0 && mft.size[win] >= walk.size[winW] * 9 / 10
+                    && mft.size[win] <= walk.size[winW] * 11 / 10);
+        } else {
+            std::printf("SKIP 两条路的总数对账（这台机器没提权，读不了卷）\n");
+            std::printf("SKIP 同一个目录两边大小对账（同上）\n");
+            const DiskScan::Tree t = DiskScan::run(root, 1 << 20);
+            has("读不了卷照样出数（回退遍历）", t.engine == DiskScan::engineWalk() && !t.isEmpty());
+            has("回退时把原因带回来了（界面要说为什么慢）", !t.engineNote.isEmpty());
+        }
+        std::printf("mft: 失败 %d 项\n", bad);
+        std::fflush(stdout);
+        return bad;
+    }
+
+    // --mftree <盘> <输出文件>：**这是给提权了的自己调用的**，不是给人敲的。
+    // 磁盘页的「直读 MFT 重扫」平时没管理员权限读不了卷，于是起一个提权的 ltool 跑这一条：
+    // 只读整盘、把树写成一个文件、退出。退出码 0=写好了，2=这个卷走不了 MFT，1=别的失败。
+    if (const int mi = args.indexOf(QStringLiteral("--mftree")); mi >= 0) {
+        const QString root = mi + 1 < args.size() ? args[mi + 1] : QString();
+        const QString out = mi + 2 < args.size() ? args[mi + 2] : QString();
+        QString why;
+        if (root.isEmpty() || out.isEmpty()) {
+            std::fprintf(stdout, "用法：--mftree <盘符根> <输出文件>\n");
+            return 1;
+        }
+        if (!DiskScan::mftUsable(root, &why)) {
+            std::fprintf(stdout, "MFT_UNAVAILABLE %s\n", why.toUtf8().constData());
+            std::fflush(stdout);
+            return 2;
+        }
+        const DiskScan::Tree t = DiskScan::run(root, 1 << 20);
+        const DiskScan::Timing tm = DiskScan::lastTiming();
+        if (t.isEmpty() || t.engine != DiskScan::engineMft()) {
+            std::fprintf(stdout, "MFT_FAILED engine=%s note=%s\n", t.engine.toUtf8().constData(),
+                         t.engineNote.toUtf8().constData());
+            std::fflush(stdout);
+            return 2;
+        }
+        QString err;
+        if (!DiskScan::writeTree(t, out, &err)) {
+            std::fprintf(stdout, "MFT_WRITE_FAILED %s\n", err.toUtf8().constData());
+            std::fflush(stdout);
+            return 1;
+        }
+        std::fprintf(stdout, "MFT_OK dirs=%lld files=%lld total=%lld enum=%lldms size=%lldms\n",
+                     long long(t.name.size()), long long(tm.files), long long(t.total),
+                     long long(tm.enumMs), long long(tm.sizeMs));
         std::fflush(stdout);
         return 0;
     }
