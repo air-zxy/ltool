@@ -128,7 +128,7 @@ installer\ltool-<版本>-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES
 - **CI 编 Release 的并发压到 `--parallel 4` + `-p:CL_MPcount=2`**：`windows-2022` 只有 2 核 / 7GB，原来 `--parallel 8` 乘上 CMakeLists 里那条全局 `/MP`，同时能起来十几个 `cl.exe` 和好几个 `link.exe` 抢那点 CPU 和内存 —— 抢出来的不是快，是换页和 I/O 堵塞。总并发压在 4~8 之间。
 - **MSBuild 那个开关只能写 `-p:`，不能写 `/p:`**：这一步是 `shell: bash`，MSYS 会把 `/p:CL_MPcount=2` 当 Windows 路径处理掉，MSBuild 收到的是 `p:CL_MPcount=2`，当场 `MSB1008 只能指定一个项目`（本机 2026-10-15 实测撞的，和 `/DFINAL` 那条同一个坑）。同理，`tee` 之前都要 `set -o pipefail`，否则最后那段管道把退出码洗成 0，编坏了也不会红。
 - **自测跑在 offscreen 平台插件上**：runner 上能不能拿到窗口站不作保证，而这条判据要的是"控件建得出来、布局算得对、点了有反应"。`windeployqt` 不带 `qoffscreen.dll`，所以那一步从 vcpkg 树里**借一颗**进 `build/Release/platforms`；`ltool.iss` 的 `Excludes` 点名排除它，**安装包收不到这颗测试专用的插件**（本机验过：装完 `platforms\` 里只有 `qwindows.dll`）。
-- **每个旗标都必须有输出，空输出算失败**：这套自测里 `--smoke` 曾以"0 字节 + 退出码 0"的形状哑过（命令行被单实例守卫转交给已常驻的实例），CI 这边直接把它判成红。CI 跑的是 `--smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --diskbranch --archivetest`；**跳过的点名写进日志**：`--capgeo --capflash --recq --rectest --recordui`（要真屏幕/DWM 会话）、`--mfttest --searchtime`（要管理员开 USN），别让"CI 绿"看着像"这些也过了"。
+- **每个旗标都必须有输出，空输出算失败**：这套自测里 `--smoke` 曾以"0 字节 + 退出码 0"的形状哑过（命令行被单实例守卫转交给已常驻的实例），CI 这边直接把它判成红。CI 跑的是 `--smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --diskbranch --archivetest`；**跳过的点名写进日志**：`--capgeo --capflash --recq --rectest --recordui`（要真屏幕/DWM 会话）、`--searchtime`（整盘扫描太慢），别让"CI 绿"看着像"这些也过了"。（`--mfttest` 原来也在"要管理员所以跳过"那一串里 —— 2026-10-17 查明 runner 是提权的，已挪进真跑那一串。）
 - **发出去的包走 `-DFINAL`**（本机同一棵树实测：normal 22.51MiB / 6.8 秒，FINAL 21.79MiB / 10.3 秒 —— 省 0.72MB 多花 3.5 秒；本机的 `deliver.ps1` 不带它，因为每轮闭环少 3.5 秒是天天摸得到的）。开关用**短横不用斜杠**：那一步是 bash，MSYS 会把 `/DFINAL` 当路径转换掉，ISCC 于是报 `You may not specify more than one script filename`（本机实测撞过）。
 - **发一版就三步**：① 改 `ltool.iss` 的 `MyAppVersion`（要预发就写 `x.y.z-beta.N`）；② 提交并推 `main`（这一步之后 workflow 文件才在默认分支上，**标签早于 workflow 推上去是不会触发的**）；③ `git tag v<和号一模一样的串>` 再 `git push origin v<那个串>`。第 ③ 步是对外的，由人按下。
 
@@ -467,7 +467,7 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 | --- | --- |
 | `--show` | 启动即把搜索框显示出来，不是只进托盘。 |
 | `--smoke` | 无界面把索引、目录、插件都点一遍。 |
-| `--mfttest` | 诊断 MFT 枚举（要管理员）。 |
+| `--mfttest` | MFT 直读那一路的判据（提权机器上会真跑枚举与 $MFT 大小解析，非提权点名跳过）。 |
 | `--searchtime` | `--searchtime 词1 词2`：深索引搜索的耗时 + 前 3 条结果。 |
 | `--searchdump` | `--searchdump 词1 词2`：每个词前 20 条**按顺序整条**打出来，改搜索实现就拿它做 diff。 |
 | `--disktime` | C 盘上 A/B 两种磁盘遍历（DiskScan vs QDirIterator）的耗时。 |
@@ -747,9 +747,11 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 两条扫描路共用同一颗尾巴 `finishTree()`（自下而上求和 → 孩子表 → 每层按大小排序剪枝）。分开的理由写在函数头上：树的形状一旦按引擎不同，界面上的排行和下钻就会表现不同。
 - 提权的形状：ltool 是启动器，平时**不该**提权跑。所以「直读 MFT 重扫」起一个提权的自己执行 `ltool.exe --mftree <盘> <文件>` —— 它只做一件事：读、把树写成二进制快照、退出（0=好了 / 2=这个卷走不了 MFT / 1=别的失败）；界面读回来之后把那个临时文件删掉（只删算出来的那一个绝对路径）。快照带魔数 + 版本号，对不上整份丢掉不猜。
 - 界面说实话：定稿状态行点名"这次走的是 MFT 直读还是常规遍历"，回退还把**为什么没走快的**一起带上；MFT 途中的进度句子换成"已枚举多少条记录"，不拿"已统计多少个目录"冒充另一条路的数字。
-- `--mfttest` 从"一行断言都没有的诊断输出"改成 **12 条**（10 绿 + 2 条点名 SKIP）：卷路径形式、子目录不当卷根、快照写读一字不差、按路径还能定位、坏快照整份丢、回退带原因；提权环境里额外真跑**两条路整盘总数对账（±10%）**和 **C:\Windows 单目录大小对账** —— 这就是 $MFT 大小解析的正确性证明，非提权时点名 SKIP（不算绿也不算红，`--storenet` 那个教训）。
+- `--mfttest` 从"一行断言都没有的诊断输出"改成真判据：本机（非提权）**11 条 = 10 绿 + 1 条点名 SKIP**；提权机器上再多跑 7 条（枚举拿到多少记录、$MFT 大小读不读得出来、合计像不像真盘、这次走的是哪条路、整盘树、与文件系统已用量的量级对账、System32 逐目录 ±10% 对账）。
 - CI 里 `--mfttest` 从"要管理员，跳过"挪进真跑那一串：runner 是提权的（`--username` 早就读到过 `runneradmin@…`），所以那两条对账判据在 CI 里有真对象。
-- 数字：`--mfttest` 12 条（本机 10 绿 + 2 SKIP）、`--diskui` 8/0、`--plugintest` 240/0（改 Desc 时它当场判红了一次：插件自报描述和 plugin.json 必须一字不差，这条闸是有用的）；那九串离线判据 614 → **626**。本机 `mftUsable(C:/)=0 why=[没有管理员权限，打不开卷（错误码 5）]` ⇒ **MFT 那条路本机的实测耗时还欠着**，要么他给一次 UAC，要么看 CI。
+- 数字：`--mfttest` 本机 11 条（10 绿 + 1 SKIP）、`--diskui` 8/0、`--plugintest` 240/0（改 Desc 时它当场判红了一次：插件自报描述和 plugin.json 必须一字不差，这条闸是有用的）；那九串离线判据 614 → **625**。本机 `mftUsable(C:/)=0 why=[没有管理员权限，打不开卷（错误码 5）]` ⇒ **MFT 那条路本机的实测耗时还欠着**，要么他给一次 UAC，要么看 CI。
 - 连带账：`Tree` 多了 engine/engineNote、`Progress` 多了 engine、core 多导出 `mftUsable/writeTree/readTree/engineMft/engineWalk` ⇒ 已发布的那颗 `ltool-disk.dll` 和这版 core **ABI 对不上**（#91/#78 那笔"商店产物要重推"的老账又多一处）。disk 这颗 1.0.0 → **1.0.1**；core 的号不升（1.1.0 还没发布，同批功能吸进同一个号）。
 - 下一刀（#103）：清理位补齐 + 按类别分组（回收站现在根本没进清单，而他树上 `C:\$Recycle.Bin` 是 5.19 GB）。
 - **CI 第一次跑就红了，红的不是判据是预算**（run 39026813012，`--mfttest` exit **124** = timeout）：runner 确实是提权的（日志第一行 `INFO mftUsable(C:/)=1`），于是我给的那条"整盘再走一遍遍历对账"在 VM 的盘上一分多钟，把 60 秒的步长预算吃穿了。改法两处：① 逐目录对账**只走一个子树**（`C:\Windows\System32`），整盘那遍遍历砍掉 —— 它证明的是同一件事（$MFT 的大小解析对不对），代价从一分多钟降到几秒；② 补一条不花时间的**第三条独立量法**：MFT 整盘合计 vs 文件系统自己报的"已用"，只抓"差一个量级"（口径天生不同：簇分配量 vs 逻辑大小，compact OS 的压缩文件会让逻辑明显更大，所以容差给的是 /2 ~ ×3，不是 ±10%）；③ `--mfttest` 单独给 240 秒。教训记一条：**判据里凡是要真扫整盘的，先量它在最慢的那台机器（CI 的 VM）上要多久**，本机几百毫秒不等于 CI 几百毫秒。
+- 装上心跳之后第三次 CI 自己交代了（run 39029141013，日志原文照抄）：`STAGE 枚举到 1669141 条记录（累计 7250ms）` → `STAGE 1398724 个文件要去 $MFT 里问大小` → `STAGE MFT 直读没走通（$MFT 大小没读出来（错误码 5）），回退常规遍历` → 然后 240 秒到死。**三件事一次分清**：① `enumVolumeMft` 是好的（166 万条 / 7.25 秒，这条函数在提权下第一次真跑）；② 卡的是 `C:\$MFT` 这个写法 —— 提权的 runner 上枚举卷能过、开 `$MFT` 却给 ACCESS_DENIED，说明它走的是普通路径名查找，得换 `\.\C:\$MFT`（卷设备那颗，取证工具普遍用的写法；本机非提权下两种都是 5，形式都对，分不出来）；③ **真正烧掉 240 秒的是回退之后那趟遍历** —— CI 那台 VM 上整盘遍历比我们这台 NVMe 上的 14~19 秒慢一个数量级还不止。
+- 于是判据的形状也跟着改了：**先把 MFT 那两步单独量、单独判**（枚举出多少条 / 大小读不读得出来 / 合计像不像真盘），两步有一步没成就**不去跑整盘**（点名 SKIP 那三条），因为那个跑法必然掉进四分钟的遍历。教训：**判据不许在"实现失败"这条分支上顺手触发一个更慢的兜底** —— 那等于把一条本该三秒判红的红，变成一次四分钟的超时。

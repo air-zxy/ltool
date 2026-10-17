@@ -254,15 +254,25 @@ bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>
         head[h] = i;
     }
 
-    // $MFT 走**普通文件路径**开：`\\.\C:$MFT` 那种裸设备拼法实测给 ERROR_FILE_NOT_FOUND(2)，
-    // 而 `C:\$MFT` 给的是 5(ACCESS_DENIED) —— 也就是形式对、只差提权。
-    const std::wstring path = drive.toStdWString() + L"\\$MFT";
-    HANDLE h = CreateFileW(path.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
-                           nullptr);
-    if (h == INVALID_HANDLE_VALUE)
+    // $MFT 的两种写法都试：`\\.\C:\$MFT`（走卷设备，取证工具普遍用这颗）和 `C:\$MFT`
+    // （走普通路径）。本机非提权下两者都是 5(ACCESS_DENIED)，形式都对；CI 那台提权的
+    // runner 实测 `C:\$MFT` 给 5 而枚举卷是通的 —— 说明 $MFT 的 DACL 不认这条路径，
+    // 先拿卷设备那颗试。
+    HANDLE h = INVALID_HANDLE_VALUE;
+    DWORD openErr = 0;
+    for (const std::wstring& cand : { L"\\\\.\\" + drive.toStdWString() + L"\\$MFT",
+                                      drive.toStdWString() + L"\\$MFT" }) {
+        h = CreateFileW(cand.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (h != INVALID_HANDLE_VALUE)
+            break;
+        openErr = GetLastError();
+    }
+    if (h == INVALID_HANDLE_VALUE) {
+        SetLastError(openErr);
         return false;
+    }
 
     LARGE_INTEGER li{};
     GetFileSizeEx(h, &li);
