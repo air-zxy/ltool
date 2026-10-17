@@ -737,7 +737,12 @@ int main(int argc, char* argv[])
         QFile::remove(snap);
 
         if (usable) {
-            const DiskScan::Tree mft = DiskScan::run(root, 1 << 20);
+            // 每一阶段当场印一行：整盘这一跑在 CI 上超时过两次，光看"没输出"分不出
+            // 是卡在 MFT 里还是回退之后遍历太慢。
+            const DiskScan::Tree mft = DiskScan::run(root, 1 << 20, [](const DiskScan::Progress& p) {
+                std::printf("STAGE %s\n", p.current.toUtf8().constData());
+                std::fflush(stdout);
+            });
             const DiskScan::Timing tm = DiskScan::lastTiming();
             std::printf("INFO MFT：%d 个目录 %lld 个文件 合计 %lld（枚举 %lldms + 大小 %lldms）\n",
                         int(mft.name.size()), long long(tm.files), long long(mft.total),

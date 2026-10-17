@@ -453,12 +453,26 @@ Tree runMft(const QString& base, qint64 minBytes, const std::function<void(const
 {
     QElapsedTimer et;
     et.start();
+    // 每一步都喊一嗓子。理由不是界面要显示，是**这一趟曾经整段卡住、日志上分辨不出卡在哪**
+    // （2026-10-17 CI run 39027974581：240 秒超时，一行 INFO 都没出来）。
+    QElapsedTimer clock;
+    clock.start();
+    const auto stage = [&](const QString& s) {
+        if (!progress)
+            return;
+        Progress p;
+        p.engine = QString::fromUtf8(kEngineMft);
+        p.current = QStringLiteral("%1（这一路累计 %2ms）").arg(s).arg(clock.elapsed());
+        progress(p);
+    };
+    stage(QStringLiteral("MFT 直读：打开卷"));
     UsnIndex::VolumeHandle vol;
     if (!vol.open(base)) {
         if (why)
             *why = QStringLiteral("打不开卷（错误码 %1）").arg(GetLastError());
         return Tree();
     }
+    stage(QStringLiteral("MFT 直读：正在枚举整盘记录"));
     UsnIndex::EnumResult er;
     if (!UsnIndex::enumVolumeMft(vol.vol, er) || er.frn.isEmpty()) {
         if (why)
@@ -467,12 +481,7 @@ Tree runMft(const QString& base, qint64 minBytes, const std::function<void(const
     }
     vol.close();
     g_timing.enumMs = et.restart();
-    if (progress) {
-        Progress p;
-        p.engine = QString::fromUtf8(kEngineMft);
-        p.current = QStringLiteral("MFT 直读：已枚举 %1 条记录，正在读 $MFT 取大小").arg(er.frn.size());
-        progress(p);
-    }
+    stage(QStringLiteral("MFT 直读：枚举到 %1 条记录，开始读 $MFT 取大小").arg(er.frn.size()));
 
     // 只对文件问大小（目录的大小靠聚合，$MFT 里目录记录那格本来也没意义）
     QVector<quint64> want;
@@ -481,12 +490,14 @@ Tree runMft(const QString& base, qint64 minBytes, const std::function<void(const
         if (!(er.attrs[i] & FILE_ATTRIBUTE_DIRECTORY))
             want.append(er.frn[i]);
     QVector<qint64> got;
+    stage(QStringLiteral("MFT 直读：%1 个文件要去 $MFT 里问大小").arg(want.size()));
     if (!UsnIndex::mftSizes(base, want, got)) {
         if (why)
             *why = QStringLiteral("$MFT 大小没读出来（错误码 %1）").arg(GetLastError());
         return Tree();
     }
     g_timing.sizeMs = et.elapsed();
+    stage(QStringLiteral("MFT 直读：大小读完了，开始拼目录树"));
     QVector<qint64> sizeOf(er.frn.size(), 0);
     {
         // got 是"每个文件条目一份"，摊回按条目下标编的数组，聚合时一次取值
@@ -553,6 +564,14 @@ Tree run(const QString& rootPath, qint64 minBytes,
     const QString fallbackNote = why;
     t.engine = QString::fromUtf8(kEngineWalk);
     t.engineNote = fallbackNote;
+    // 回退这件事当场喊出来，不等到定稿：CI 上"卡在 MFT 里"和"回退之后遍历太慢"
+    // 是两种完全不同的毛病，日志上必须分得开（2026-10-17 那两个 240 秒超时就分不清）。
+    if (progress) {
+        Progress p;
+        p.engine = t.engine;
+        p.current = QStringLiteral("MFT 直读没走通（%1），回退常规遍历").arg(fallbackNote);
+        progress(p);
+    }
 
     Queue q;
     Counters c;
