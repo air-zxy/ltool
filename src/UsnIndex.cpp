@@ -6,6 +6,7 @@
 #include <winioctl.h>
 
 #include <cstdio>
+#include <array>
 #include <vector>
 
 namespace {
@@ -229,20 +230,27 @@ bool mftUsable(const QString& root, QString* why)
 }
 
 bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>& sizes,
-                        const SizeProgress& progress)
+                        const SizeProgress& progress, QString* why)
 {
+    // 每条退出路径都要留下"卡在哪一格"。CI 上那次只看得见"8 毫秒返回、全 0"，
+    // 分不出是开不了 $MFT、记录长度没认出来、还是解析没对上 —— 那三种该修的地方完全不同。
+    const auto no = [&](const QString& s) {
+        if (why)
+            *why = s;
+        return false;
+    };
     sizes = QVector<qint64>(want.size(), 0);
     if (want.isEmpty())
         return true;
     QString drive;
     if (!volumeDrive(root, &drive))
-        return false;
+        return no(QStringLiteral("给的还不是卷根：%1").arg(root));
 
     quint64 maxFrn = 0;
     for (const quint64 f : want)
         maxFrn = qMax(maxFrn, f);
     if (maxFrn > (1ull << 32))
-        return false;       // 记录号大到这个数，只能是读出了垃圾，别去建表
+        return no(QStringLiteral("记录号大得不像话（%1）—— 枚举读出来的东西不可信").arg(maxFrn));
 
     // 记录号 → want 下标：head/next 串成链表，一次遍历填完（同一个号出现多次=硬链接，
     // 每个名字都要拿到这份大小）。用定长数组而不是 QHash：几百万条时哈希的常数太大。
@@ -254,29 +262,37 @@ bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>
         head[h] = i;
     }
 
-    // $MFT 的两种写法都试：`\\.\C:\$MFT`（走卷设备，取证工具普遍用这颗）和 `C:\$MFT`
-    // （走普通路径）。本机非提权下两者都是 5(ACCESS_DENIED)，形式都对；CI 那台提权的
-    // runner 实测 `C:\$MFT` 给 5 而枚举卷是通的 —— 说明 $MFT 的 DACL 不认这条路径，
-    // 先拿卷设备那颗试。
+    // $MFT 有三种写法，挨个试（本机非提权下拿不到"哪种在提权下能用"的答案 —— 三种都是 5，
+    // 形式都对；只能让提权的环境去分辨，所以每一种各记一个错误码）：
+    //   `\\.\C:\$MFT`   卷设备 + 反斜杠 + 名字
+    //   `\\.\C:$MFT`    卷设备 + 名字（analyzeMFT 那类工具用的就是这颗）
+    //   `C:\$MFT`       普通路径（CI 那台提权的 runner 实测给它 5）
     HANDLE h = INVALID_HANDLE_VALUE;
-    DWORD openErr = 0;
-    for (const std::wstring& cand : { L"\\\\.\\" + drive.toStdWString() + L"\\$MFT",
-                                      drive.toStdWString() + L"\\$MFT" }) {
+    QString openErrs;
+    const std::array<std::wstring, 3> cands = {
+        L"\\\\.\\" + drive.toStdWString() + L"\\$MFT",
+        L"\\\\.\\" + drive.toStdWString() + L":$MFT",
+        drive.toStdWString() + L"\\$MFT"
+    };
+    for (const std::wstring& cand : cands) {
         h = CreateFileW(cand.c_str(), FILE_READ_DATA | FILE_READ_ATTRIBUTES,
                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
         if (h != INVALID_HANDLE_VALUE)
             break;
-        openErr = GetLastError();
+        openErrs += QStringLiteral("%1=%2 ").arg(QString::fromStdWString(cand))
+                        .arg(GetLastError());
     }
-    if (h == INVALID_HANDLE_VALUE) {
-        SetLastError(openErr);
-        return false;
-    }
+    if (h == INVALID_HANDLE_VALUE)
+        return no(QStringLiteral("三种写法都开不了 $MFT（%1）").arg(openErrs.trimmed()));
 
     LARGE_INTEGER li{};
     GetFileSizeEx(h, &li);
     const qint64 mftBytes = li.QuadPart;
+    if (mftBytes < 4096) {
+        CloseHandle(h);
+        return no(QStringLiteral("$MFT 的大小读不出来（%1 字节）").arg(mftBytes));
+    }
 
     // 记录多长：卷引导扇区那个字段有版本差异，直接拿"FILE"签名找周期最稳
     std::vector<BYTE> probeBuf(4 * 4096);
@@ -296,8 +312,14 @@ bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>
         }
     }
     if (!recBytes) {
+        const DWORD e = GetLastError();
         CloseHandle(h);
-        return false;
+        return no(QStringLiteral("前 %1 字节里没找到 FILE 记录的周期（读到 %2 字节，头四格 %3%4%5%6，错误码 %7）")
+                      .arg(probeBuf.size()).arg(got)
+                      .arg(probeBuf.size() > 0 ? QChar(probeBuf[0]) : QChar())
+                      .arg(probeBuf.size() > 1 ? QChar(probeBuf[1]) : QChar())
+                      .arg(probeBuf.size() > 2 ? QChar(probeBuf[2]) : QChar())
+                      .arg(probeBuf.size() > 3 ? QChar(probeBuf[3]) : QChar()).arg(e));
     }
 
     std::vector<BYTE> chunk(kMftChunk);
@@ -339,8 +361,11 @@ bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>
     }
     CloseHandle(h);
     if (cancelled)
-        return false;
-    return filled > 0;                   // 一条都没填上=解析没对上，让调用方回退遍历
+        return no(QStringLiteral("读到一半被取消（已处理 %1 / %2 条记录）").arg(seen).arg(total));
+    if (!filled)
+        return no(QStringLiteral("$MFT 读了 %1 条记录（共 %2）却没填上任何一个大小 —— 解析没对上")
+                      .arg(seen).arg(total));
+    return true;
 }
 
 bool readChanges(HANDLE vol, quint64 journalId, quint64 startUsn, quint64 endUsn,

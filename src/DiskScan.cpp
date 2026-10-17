@@ -491,9 +491,10 @@ Tree runMft(const QString& base, qint64 minBytes, const std::function<void(const
             want.append(er.frn[i]);
     QVector<qint64> got;
     stage(QStringLiteral("MFT 直读：%1 个文件要去 $MFT 里问大小").arg(want.size()));
-    if (!UsnIndex::mftSizes(base, want, got)) {
+    QString sizeWhy;
+    if (!UsnIndex::mftSizes(base, want, got, {}, &sizeWhy)) {
         if (why)
-            *why = QStringLiteral("$MFT 大小没读出来（错误码 %1）").arg(GetLastError());
+            *why = sizeWhy;
         return Tree();
     }
     g_timing.sizeMs = et.elapsed();

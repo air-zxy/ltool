@@ -754,20 +754,26 @@ int main(int argc, char* argv[])
                 if (!(er.attrs[i] & FILE_ATTRIBUTE_DIRECTORY))
                     want.append(er.frn[i]);
             QVector<qint64> got;
+            QString sizeWhy;
             QElapsedTimer t2;
             t2.start();
-            const bool sizeOk = enumOk && UsnIndex::mftSizes(root, want, got);
+            const bool sizeOk = enumOk && UsnIndex::mftSizes(root, want, got, {}, &sizeWhy);
             const qint64 sizeMs = t2.elapsed();
             qint64 sum = 0;
-            for (const qint64 v : got)
+            qint64 nonzero = 0;
+            for (const qint64 v : got) {
                 sum += v;
-            std::printf("INFO 直接量：opened=%d 枚举 %d 条/%lldms · 要问大小 %d 个文件，拿到 %d 个，"
-                        "合计 %lld/%lldms\n",
+                if (v > 0)
+                    ++nonzero;
+            }
+            std::printf("INFO 直接量：opened=%d 枚举 %d 条/%lldms · 要问大小 %d 个文件，"
+                        "真拿到非 0 的 %lld 个，合计 %lld/%lldms%s%s\n",
                         opened ? 1 : 0, int(er.frn.size()), long long(enumMs), int(want.size()),
-                        int(got.size()), long long(sum), long long(sizeMs));
+                        long long(nonzero), long long(sum), long long(sizeMs),
+                        sizeOk ? "" : " · 原因：", sizeOk ? "" : sizeWhy.toUtf8().constData());
             std::fflush(stdout);
             has("整盘记录枚举得出来（FSCTL_ENUM_USN_DATA）", enumOk && er.frn.size() > 1000);
-            has("$MFT 的大小读得出来（不是靠回退蒙过去）", sizeOk && !got.isEmpty());
+            has("$MFT 的大小读得出来（不是靠回退蒙过去）", sizeOk && nonzero > want.size() * 9 / 10);
             has("读回来的大小合计像个真盘（1 GB 以上、且不是全 0）", sum > (1LL << 30));
             if (!enumOk || !sizeOk) {
                 std::printf("SKIP 整盘树 + 两条对账（MFT 有一步没成，不去烧那四分钟的遍历）\n");
