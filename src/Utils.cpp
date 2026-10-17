@@ -342,4 +342,16 @@ int compareVersions(const QString& a, const QString& b)
     return QString::compare(a.mid(dashA + 1), b.mid(dashB + 1));   // 都带后缀：beta.2 > beta.1
 }
 
+
+// 深色弹出菜单那一套样式，只有这一份（见 Utils.h 的注释：为什么非用样式表不可）。
+QString darkMenuStyle()
+{
+    return QStringLiteral(
+        "QMenu { background: #232429; border: 1px solid #33353d; border-radius: 8px;"
+        " padding: 4px; color: #e8ebf2; font-size: 10pt; }"
+        "QMenu::item { padding: 6px 20px 6px 12px; border-radius: 6px; }"
+        "QMenu::item:selected { background: #3f6ae0; color: white; }"
+        "QMenu::separator { height: 1px; background: #33353d; margin: 4px 6px; }");
+}
+
 } // namespace Utils

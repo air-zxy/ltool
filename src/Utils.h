@@ -55,6 +55,12 @@ QIcon bagIcon(const QColor& color);   // 菜单里「插件商店」那一行画
 // 通道就是单实例那个 socket："note\t标题\t正文"。plugins/shell 和 plugins/linuxdo 都走这一条。
 void trayNote(const QString& title, const QString& msg, int msec = 5000);
 
+// 深色弹出菜单那一套样式，**只有这一份**（搜索框的托盘菜单、设置窗、置顶窗的右键菜单共用）。
+// 为什么要用样式表而不是靠调色板：Qt6 的 windows11 风格画弹出菜单用的是**系统**的底色，
+// 调色板里 QPalette::Window 那格深色它不认 —— 于是"深色字/浅色底"两头各来一半，
+// 置顶窗的右键菜单就是这么变成白底压浅灰字、看不见字的（2026-10-17 他截图报的）。
+QString darkMenuStyle();
+
 // 运行日志：追加一行到 %APPDATA%/ltool/log.txt
 void log(const QString& msg);
 

@@ -15,6 +15,7 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMenu>
+#include <memory>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -1049,9 +1050,25 @@ void PinWindow::buildToolbar()
 
 // 右键菜单：这张图最常做的两件事就是"再复制一遍"和"存成文件"，
 // 所以放到图上右键就能做，不用非看清底部工具栏那几个字。
+// 置顶窗两处右键菜单都从这颗函数拿。单独一颗的理由有两个：
+ // ① 样式**必须**挂上。置顶窗是独立顶层窗口，拿不到设置窗/搜索框各自那份 QMenu 样式表，而 Qt6 的
+ //    windows11 风格画弹出菜单用的是**系统**的浅色底 —— 于是白底压着我们的浅灰字，什么都看不见
+ //    （2026-10-17 他截图报的就是这个）。
+ // ② 真弹一下要占屏幕，自测没法验；把"建好一份"拆出来之后，判据量的是这个真对象，
+ //    不是探针自己另建的一份（第一版就错过一次：探针自己 new QMenu，改了也不变色，白绿）。
+QMenu* PinWindow::makeStyledMenu()
+{
+    auto* m = new QMenu(this);
+    m->setStyleSheet(Utils::darkMenuStyle());
+    return m;
+}
+
 void PinWindow::showContextMenu(const QPoint& globalPos)
 {
-    QMenu menu(this);
+    // 菜单从 makeStyledMenu() 拿（样式挂在那一颗里）。用 holder 是因为底下有
+    // 好几条 return 分支，手写 delete 迟早漏一条。
+    const std::unique_ptr<QMenu> holder(makeStyledMenu());
+    QMenu& menu = *holder;
     // 工具栏收起来的时候，图上右键只留两样：把工具栏叫回来、关掉这张。
     // 这时候人是要干净地看图，不该再被一排菜单挡一次。
     if (m_barHidden) {
@@ -1126,7 +1143,10 @@ QString PinWindow::deleteThumb(int index)
 
 void PinWindow::thumbContextMenu(int index, const QPoint& globalPos)
 {
-    QMenu menu(this);
+    // 菜单从 makeStyledMenu() 拿（样式挂在那一颗里）。用 holder 是因为底下有
+    // 好几条 return 分支，手写 delete 迟早漏一条。
+    const std::unique_ptr<QMenu> holder(makeStyledMenu());
+    QMenu& menu = *holder;
     QAction* del = menu.addAction(QStringLiteral("删除这一张"));
     if (menu.exec(globalPos) == del)
         deleteThumb(index);

@@ -31,6 +31,7 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
@@ -500,6 +501,34 @@ extern "C" Q_DECL_EXPORT int ltoolPintoolRun()
     check("叠用之后再放开：两个开关都回到开", (pw.barHidden() || pw.stripHidden()) ? "yes" : "no", "no");
     std::printf("INFO 离屏抓图：%s/a_normal.png 与 b_hidden.png\n", shots.toUtf8().constData());
     QFile::remove(Utils::capturesDir() + "/" + key);
+    // ---- 右键菜单的样式挂没挂上 ----
+    // 置顶窗是**另一个顶层窗口**，拿不到设置窗/搜索框各自那份 QMenu 样式表；而 Qt6 的
+    // windows11 风格画弹出菜单用的是**系统**的浅色底，字色却来自我们的深色调色板
+    // ⇒ 白底 + 浅灰字 = 看不见（2026-10-17 他截图报的就是这个）。
+    // 判据量的是 `pw.makeStyledMenu()` 那个真对象。第一版在这里自己 `new QMenu`，
+    // 改了样式表也量不出变化（离屏还照样"底色是深的"，因为调色板本来就是深的）—— 白绿一场；
+    // 现在认的是**只有样式表能给出来的那两个数**：底色 == CSS 里那格 #232429
+    // （不挂样式表时离屏量到的是调色板那格 #191a1e），以及 `padding: 4px` 推出来的首项 y。
+    {
+        QMenu* probeMenu = pw.makeStyledMenu();
+        probeMenu->addAction(QStringLiteral("复制到剪贴板"));
+        probeMenu->addAction(QStringLiteral("关闭"));
+        const QImage im = probeMenu->grab().toImage();
+        const QRect ig = probeMenu->actionGeometry(probeMenu->actions().first());
+        const QColor bg = im.pixelColor(5, qMax(4, im.height() / 2));
+        int brightest = 0;
+        for (int y = 0; y < im.height(); y += 2)
+            for (int x = 0; x < im.width(); x += 2)
+                brightest = qMax(brightest, im.pixelColor(x, y).lightness());
+        delete probeMenu;
+        std::printf("INFO 菜单：底像素 %s、首项 y=%d 高=%d、最亮像素 %d、图 %dx%d\n",
+                    bg.name(QColor::HexRgb).toUtf8().constData(), ig.y(), ig.height(), brightest,
+                    im.width(), im.height());
+        check("那份深色样式真挂上了（底色 == 样式里那格）",
+              bg.name(QColor::HexRgb), QStringLiteral("#232429"));
+        check("CSS 的 padding 生效了（首项不贴边）", ig.y() >= 4 ? "yes" : "no", "yes");
+        check("字比底色亮出一大截（看得清）", brightest - bg.lightness() > 120 ? "yes" : "no", "yes");
+    }
     std::printf("pintool: 失败 %d 项\n", bad);
     std::fflush(stdout);
     return bad == 0 ? 0 : 1;

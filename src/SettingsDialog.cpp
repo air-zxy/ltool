@@ -149,27 +149,7 @@ QListWidget#menuList::item {
     border-radius: 8px;
 }
 
-QMenu {
-    background: #232429;
-    border: 1px solid #33353d;
-    border-radius: 8px;
-    padding: 4px;
-    color: #e8ebf2;
-    font-size: 10pt;
-}
-QMenu::item {
-    padding: 6px 20px 6px 12px;
-    border-radius: 6px;
-}
-QMenu::item:selected {
-    background: #3f6ae0;
-    color: white;
-}
-QMenu::separator {
-    height: 1px;
-    background: #33353d;
-    margin: 4px 6px;
-}
+// QMenu 那几条不在这里了：它在 Utils::darkMenuStyle() 里，全程序共用一份（见那里的注释）
 
 QTabWidget::pane { border: none; background: transparent; }
 QTabBar::tab { background: #232429; color: #9aa3b2; border: 1px solid #2c2d34;
@@ -204,7 +184,7 @@ SettingsDialog::SettingsDialog(QWidget* parent)
 {
     setWindowTitle("ltool 设置");
     resize(1140, 790);
-    setStyleSheet(kSettingsQss);
+    setStyleSheet(QString::fromUtf8(kSettingsQss) + Utils::darkMenuStyle());
 
     m_menu = new QListWidget(this);
     m_menu->setObjectName("menuList");
