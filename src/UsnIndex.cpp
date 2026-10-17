@@ -164,6 +164,60 @@ bool recordRealSize(BYTE* rec, int recBytes, qint64* out)
     return false;
 }
 
+// 自己声明这三颗小结构，不引 <winternl.h>：那个头会连带拽进一批和 windows.h 打架的定义，
+// 而我们只需要 NtCreateFile 的前三个参数形状（字段顺序/大小按 ntdll 的公开约定）。
+struct MyUnicodeString { USHORT Length; USHORT MaximumLength; PWSTR Buffer; };
+struct MyObjectAttributes {
+    ULONG Length;
+    HANDLE RootDirectory;
+    MyUnicodeString* ObjectName;
+    ULONG Attributes;
+    PVOID SecurityDescriptor;
+    PVOID SecurityQualityOfService;
+};
+struct MyIoStatusBlock { LONG Status; ULONG_PTR Information; };   // LONG = NTSTATUS 的本尊
+
+// 按**记录号**开 $MFT：卷句柄 + FILE_OPEN_BY_FILE_ID。
+// 为什么非走这条：名字那条路在现代 Windows 上连"提权 + 备份语义"都不给（2026-10-17 CI 实测
+// 三种写法 × 两种语义全是 5），而 NTFS 支持用记录号从卷根下面取文件 —— 备份/索引类工具都走这颗。
+// 记录号必须是**完整**的那颗（低 48 位记录号 + 高 16 位序列号），序列号从枚举里原样拿，不能自己补 0。
+HANDLE openMftByRecordId(HANDLE vol, quint64 frn)
+{
+    constexpr ULONG kFileOpen = 1;
+    constexpr ULONG kSyncNonAlert = 0x00000020;
+    constexpr ULONG kOpenByFileId = 0x00002000;
+    if (!vol || vol == INVALID_HANDLE_VALUE || !frn)
+        return INVALID_HANDLE_VALUE;
+    using NtCreateFileFn = LONG(WINAPI*)(HANDLE*, ACCESS_MASK, MyObjectAttributes*,
+                                             MyIoStatusBlock*, PLARGE_INTEGER, ULONG, ULONG, ULONG,
+                                             ULONG, PVOID, ULONG);
+    static const auto ntCreate = reinterpret_cast<NtCreateFileFn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
+    if (!ntCreate)
+        return INVALID_HANDLE_VALUE;
+
+    WCHAR id[4];                       // 8 字节 = 那颗记录号，UNICODE_STRING 只是把它当"名字"递进去
+    memcpy(id, &frn, sizeof(id));
+    MyUnicodeString name;
+    name.Buffer = id;
+    name.Length = name.MaximumLength = USHORT(sizeof(id));
+    MyObjectAttributes oa{};
+    oa.Length = sizeof(oa);
+    oa.RootDirectory = vol;
+    oa.ObjectName = &name;
+    MyIoStatusBlock iosb{};
+    HANDLE h = INVALID_HANDLE_VALUE;
+    const LONG st = ntCreate(&h, FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, &oa,
+                                 &iosb, nullptr, FILE_ATTRIBUTE_NORMAL,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, kFileOpen,
+                                 kSyncNonAlert | kOpenByFileId, nullptr, 0);
+    if (st != 0 || h == INVALID_HANDLE_VALUE) {
+        SetLastError(DWORD(st));       // 把 NTSTATUS 原样带出去（0xC0000022=拒绝访问这类才分得清）
+        return INVALID_HANDLE_VALUE;
+    }
+    return h;
+}
+
 } // namespace
 
 namespace UsnIndex {
@@ -249,6 +303,10 @@ bool enumVolumeMft(HANDLE vol, EnumResult& out)
             out.nameOff.append(qint32(out.names.size()));
             out.nameLen.append(qint32(r.FileNameLength));
             out.names.append(reinterpret_cast<const char*>(p + r.FileNameOffset), int(r.FileNameLength));
+            // 顺手记下 $MFT 自己的完整记录号（含序列号）：后面按记录号开它要用
+            if (!out.mftFrn && r.FileNameLength == 8
+                && memcmp(p + r.FileNameOffset, u"$MFT", 8) == 0)
+                out.mftFrn = r.FileReferenceNumber;
             p += r.RecordLength;
         }
     }
@@ -275,7 +333,7 @@ bool mftUsable(const QString& root, QString* why)
 }
 
 bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>& sizes,
-                        const SizeProgress& progress, QString* why)
+                        const SizeProgress& progress, QString* why, quint64 mftFrn)
 {
     // 每条退出路径都要留下"卡在哪一格"。CI 上那次只看得见"8 毫秒返回、全 0"，
     // 分不出是开不了 $MFT、记录长度没认出来、还是解析没对上 —— 那三种该修的地方完全不同。
@@ -307,11 +365,22 @@ bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>
         head[h] = i;
     }
 
-    // $MFT 有三种写法 × 两种语义（普通 / 备份），挨个试。本机非提权下问不出答案（全是 5），
-    // 只能让提权的环境去分辨，所以每一种各记一个错误码。备份语义那一轮排在普通那一轮之后：
-    // 能不动令牌就不动。
+    // 开 $MFT 的顺序：① 卷句柄 + 记录号（NTFS 支持的正路；名字那条在提权 + 备份语义下
+    //                  都还是 ACCESS_DENIED，2026-10-17 CI 实测）
+    //              ② 三种名字写法 × 两种语义（别的 Windows 版本上的退路；每种各记一个错误码）
     HANDLE h = INVALID_HANDLE_VALUE;
-    QString openErrs;
+    QString openErrs, how;
+    {
+        VolumeHandle vol;
+        if (!vol.open(root)) {
+            openErrs += QStringLiteral("卷=%1 ").arg(GetLastError());
+        } else if ((h = openMftByRecordId(vol.vol, mftFrn)) == INVALID_HANDLE_VALUE) {
+            openErrs += QStringLiteral("按记录号(%1)=0x%2 ")
+                            .arg(mftFrn).arg(GetLastError(), 0, 16);
+        } else {
+            how = QStringLiteral("按记录号开的（frn=0x%1）").arg(mftFrn, 0, 16);
+        }
+    }
     const std::array<std::wstring, 3> cands = {
         L"\\\\.\\" + drive.toStdWString() + L"\\$MFT",
         drive.toStdWString() + L"\\$MFT",
@@ -333,10 +402,9 @@ bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                 OPEN_EXISTING, flags, nullptr);
                 if (h != INVALID_HANDLE_VALUE) {
-                    if (why)
-                        *why = QStringLiteral("$MFT 是这么开到的：%1（%2）")
-                                   .arg(QString::fromStdWString(cand),
-                                        round ? QStringLiteral("备份语义") : QStringLiteral("普通语义"));
+                    how = QStringLiteral("%1（%2）").arg(QString::fromStdWString(cand),
+                                                         round ? QStringLiteral("备份语义")
+                                                                : QStringLiteral("普通语义"));
                     break;
                 }
                 openErrs += QStringLiteral("%1=%2 ")
@@ -346,6 +414,8 @@ bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>
     }
     if (h == INVALID_HANDLE_VALUE)
         return no(QStringLiteral("$MFT 开不了（%1）").arg(openErrs.trimmed()));
+    if (why)
+        *why = QStringLiteral("$MFT 是这么开到的：%1").arg(how);
 
     LARGE_INTEGER li{};
     GetFileSizeEx(h, &li);

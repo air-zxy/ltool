@@ -43,6 +43,9 @@ struct EnumResult {
     QVector<qint32> nameLen;
     QByteArray names;
     JournalInfo journal;
+    // $MFT 自己的**完整**记录号（含序列号）。名字打不开 $MFT（见 mftSizes 的注释），
+    // 只能拿它按记录号开 —— 所以枚举的时候顺手记下来，不另跑一趟。
+    quint64 mftFrn = 0;
 };
 
 // 日志里的一条变更
@@ -63,11 +66,14 @@ JournalInfo queryJournal(HANDLE vol);
 // want 里同一个号出现多次（硬链接）会各自填上同一个值，跟目录遍历"一个名字算一份"的口径一致。
 // progress 每读完一块调一次，返回 false 表示取消（取消时 sizes 不可信，函数返回 false）。
 using SizeProgress = std::function<bool(qint64 recordsSeen, qint64 recordsTotal)>;
-// why：不管成败都写一句话 —— 成功写"$MFT 是这么开到的：<写法>（<普通/备份语义>）"，
-// 失败写卡在哪一格（开不了 / 记录长度认不出来 / 读了却没填上），各带错误码。
+// why：不管成败都写一句话 —— 成功写"$MFT 是这么开到的：<写法>"，失败写卡在哪一格
+// （开不了 / 记录长度认不出来 / 读了却没填上），各带错误码。
 // 2026-10-17 在 CI 上就是缺这个：只看得到"8 毫秒返回、全 0"，分不出该修哪一条路。
+// mftFrn：$MFT 自己的完整记录号（enumVolumeMft 顺手记的那颗）。**按记录号开是唯一走得通的路**
+// —— 三种名字写法在提权 + 备份语义下都还是 ACCESS_DENIED（CI 实测），只有卷句柄 +
+// FILE_OPEN_BY_FILE_ID 是 NTFS 支持的；mftFrn 给 0 就退回去挨个试名字。
 bool mftSizes(const QString& root, const QVector<quint64>& want, QVector<qint64>& sizes,
-              const SizeProgress& progress = {}, QString* why = nullptr);
+              const SizeProgress& progress = {}, QString* why = nullptr, quint64 mftFrn = 0);
 
 // 这台机器现在能不能走 MFT 这条路：卷打不开（没提权）、或卷上没有 USN 日志，都不行。
 // why 填人话给界面用（界面必须说清"这次为什么慢"，别只说"扫描完成"）。

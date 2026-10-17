@@ -492,7 +492,7 @@ Tree runMft(const QString& base, qint64 minBytes, const std::function<void(const
     QVector<qint64> got;
     stage(QStringLiteral("MFT 直读：%1 个文件要去 $MFT 里问大小").arg(want.size()));
     QString sizeWhy;
-    if (!UsnIndex::mftSizes(base, want, got, {}, &sizeWhy)) {
+    if (!UsnIndex::mftSizes(base, want, got, {}, &sizeWhy, er.mftFrn)) {
         if (why)
             *why = sizeWhy;
         return Tree();

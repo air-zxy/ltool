@@ -757,7 +757,7 @@ int main(int argc, char* argv[])
             QString sizeWhy;
             QElapsedTimer t2;
             t2.start();
-            const bool sizeOk = enumOk && UsnIndex::mftSizes(root, want, got, {}, &sizeWhy);
+            const bool sizeOk = enumOk && UsnIndex::mftSizes(root, want, got, {}, &sizeWhy, er.mftFrn);
             const qint64 sizeMs = t2.elapsed();
             qint64 sum = 0;
             qint64 nonzero = 0;
