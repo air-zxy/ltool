@@ -9,6 +9,7 @@
 #include <QDataStream>
 #include <QFile>
 #include <QHash>
+#include <QStorageInfo>
 
 #include <windows.h>
 
@@ -507,6 +508,19 @@ Tree runMft(const QString& base, qint64 minBytes, const std::function<void(const
 bool DiskScan::mftUsable(const QString& root, QString* why)
 {
     return UsnIndex::mftUsable(QDir(root).absolutePath(), why);
+}
+
+DiskScan::Usage DiskScan::usageOf(const QString& root)
+{
+    Usage u;
+    const QStorageInfo si(QDir::toNativeSeparators(root));
+    if (!si.isValid() || si.bytesTotal() <= 0)
+        return u;
+    u.ok = true;
+    u.total = si.bytesTotal();
+    u.free = qMax<qint64>(0, si.bytesAvailable());
+    u.used = u.total - u.free;
+    return u;
 }
 
 Tree run(const QString& rootPath, qint64 minBytes,

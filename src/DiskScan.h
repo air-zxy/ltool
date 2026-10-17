@@ -96,6 +96,16 @@ Timing lastTiming();
 // why 填人话给界面用 —— 回退到遍历要慢一个数量级，得说清这次为什么没走快的。
 bool mftUsable(const QString& root, QString* why = nullptr);
 
+// 卷的容量。这是文件系统自己报的数，和"扫出来多少"完全无关 —— 判据拿它当**第三条独立量法**：
+// MFT 解析错位的话，整盘合计会跟它差出量级（口径差异是有的：它按簇算分配量，我们按逻辑大小）。
+struct Usage {
+    bool ok = false;
+    qint64 total = 0;
+    qint64 free = 0;
+    qint64 used = 0;
+};
+Usage usageOf(const QString& root);
+
 // 把一棵树写/读成一个二进制文件。存在的理由只有一个：MFT 直读要管理员权限，
 // 而 ltool 平时**不是**提权跑的（一个启动器不该要求管理员）。于是界面起一个提权的自己
 // （`ltool.exe --mftree <盘> <文件>`）把整盘读出来写成这个文件，界面再读回来。

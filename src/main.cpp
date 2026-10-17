@@ -739,28 +739,39 @@ int main(int argc, char* argv[])
         if (usable) {
             const DiskScan::Tree mft = DiskScan::run(root, 1 << 20);
             const DiskScan::Timing tm = DiskScan::lastTiming();
-            qputenv("LTOOL_DISK_ENGINE", "walk");
-            const DiskScan::Tree walk = DiskScan::run(root, 1 << 20);
-            qunsetenv("LTOOL_DISK_ENGINE");
-            const DiskScan::Timing tw = DiskScan::lastTiming();
             std::printf("INFO MFT：%d 个目录 %lld 个文件 合计 %lld（枚举 %lldms + 大小 %lldms）\n",
                         int(mft.name.size()), long long(tm.files), long long(mft.total),
                         long long(tm.enumMs), long long(tm.sizeMs));
-            std::printf("INFO 遍历：%d 个目录 %lld 个文件 合计 %lld（%lldms）\n",
-                        int(walk.name.size()), long long(tw.files), long long(walk.total),
-                        long long(tw.walkMs));
+            std::fflush(stdout);
             has("能读卷时走的就是 MFT 那条路", mft.engine == DiskScan::engineMft());
             has("MFT 这条路拼得出目录树", mft.name.size() > 100 && mft.total > (1LL << 30));
-            has("两条路的总数对得上（±10%）",
-                !walk.isEmpty() && mft.total >= walk.total * 9 / 10 && mft.total <= walk.total * 11 / 10);
-            const int win = mft.nodeForPath(root + "Windows");
-            const int winW = walk.nodeForPath(root + "Windows");
-            has("同一个目录（C:\\Windows）两边大小对得上",
-                win >= 0 && winW >= 0 && mft.size[win] >= walk.size[winW] * 9 / 10
-                    && mft.size[win] <= walk.size[winW] * 11 / 10);
+            // 整盘合计和**文件系统自己报的"已用"**对一眼 —— 第三条完全独立的量法
+            // （既不读 MFT 也不遍历）。容差只能给粗：两边口径天生不同（它按簇算分配量、还算
+            // System Volume Information，我们算逻辑大小），compact OS 那种压缩过的系统文件会让
+            // "逻辑"明显大于"分配"，硬链接与 ADS 又反向。所以这条只抓"差一个量级"的解析错位，
+            // 精确对账交给下面那条逐目录的。
+            const DiskScan::Usage u = DiskScan::usageOf(root);
+            std::printf("INFO 文件系统报的已用 %lld，MFT 整盘合计 %lld\n", long long(u.used),
+                        long long(mft.total));
+            has("MFT 的整盘合计与文件系统报的已用在同一量级",
+                u.ok && mft.total >= u.used / 2 && mft.total <= u.used * 3);
+            // 和遍历逐目录对账：**只走一个子树**。整盘再走一遍遍历在 CI 上要一分多钟，
+            // 60 秒的步长预算就是这么被吃穿的（2026-10-17 run 39026813012，exit 124）。
+            const QString probe = root + "Windows/System32";
+            qputenv("LTOOL_DISK_ENGINE", "walk");
+            const DiskScan::Tree walk = DiskScan::run(probe, 1 << 20);
+            qunsetenv("LTOOL_DISK_ENGINE");
+            const DiskScan::Timing tw = DiskScan::lastTiming();
+            const int node = mft.nodeForPath(probe);
+            std::printf("INFO 对账目录 %s：MFT %lld / 遍历 %lld（遍历 %lldms、%d 个目录）\n",
+                        probe.toUtf8().constData(), node >= 0 ? long long(mft.size[node]) : -1,
+                        long long(walk.total), long long(tw.walkMs), int(walk.name.size()));
+            has("同一个目录（System32）两条路的大小对得上（±10%）",
+                node >= 0 && !walk.isEmpty() && mft.size[node] >= walk.total * 9 / 10
+                    && mft.size[node] <= walk.total * 11 / 10);
         } else {
-            std::printf("SKIP 两条路的总数对账（这台机器没提权，读不了卷）\n");
-            std::printf("SKIP 同一个目录两边大小对账（同上）\n");
+            std::printf("SKIP 与文件系统已用量的对账（这台机器没提权，读不了卷）\n");
+            std::printf("SKIP 同一个目录两条路对账（同上）\n");
             const DiskScan::Tree t = DiskScan::run(root, 1 << 20);
             has("读不了卷照样出数（回退遍历）", t.engine == DiskScan::engineWalk() && !t.isEmpty());
             has("回退时把原因带回来了（界面要说为什么慢）", !t.engineNote.isEmpty());

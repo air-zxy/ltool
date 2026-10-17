@@ -210,7 +210,13 @@ jobs:
             if [ "$f" = "--diskbranch" ]; then
               cmd="./ltool.exe --diskbranch $RUNNER_TEMP/test_diskbranch"
             fi
-            if timeout 60s $cmd > "$log_file" 2>&1; then
+            # --mfttest 要真扫一整盘（MFT 一遍）+ 一个子树（遍历一遍），60 秒的默认预算在
+            # VM 的盘上会被吃穿（run 39026813012 就是 exit 124：判据没错，是超时）
+            to=60s
+            if [ "$f" = "--mfttest" ]; then
+              to=240s
+            fi
+            if timeout $to $cmd > "$log_file" 2>&1; then
               rc=0
             else
               rc=$?
