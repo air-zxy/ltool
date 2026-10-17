@@ -181,7 +181,23 @@ int userPageSelftest()
         yFull > 0 && yGap > yFull && yAdmin > yGap);
     QLineEdit* nameIn = page.findChild<QLineEdit*>(QString::fromLatin1("nameInput"));
     QPushButton* nameBtn = page.findChild<QPushButton*>(QString::fromLatin1("applyName"));
-    const bool armed = nameIn && nameBtn;
+    // 点之前先等页面自己把两颗按钮放开（那是"后台那次读到了"的唯一信号）。
+    // CI 那台 runner 上 powershell 起得慢，不等就是对着禁用态的按钮 click()：空操作，
+    // 于是"点第一下摆出确认"红、而"收回原字"假绿（没武装过也等于收回了）—— 2026-10-17 就这样红过。
+    bool ready = false;
+    for (int i = 0; i < 250 && !ready; ++i) {
+        QCoreApplication::processEvents();
+        QThread::msleep(20);
+        ready = nameBtn && nameBtn->isEnabled();
+    }
+    if (!ready) {
+        std::printf("SKIP 就地两段确认那 4 条：页面 5 秒内没读到账户信息（按钮还在禁用态），"
+                    "对着禁用按钮 click() 量不到任何东西\n");
+        check("读不到账户时两颗按钮是禁用态（不许按）",
+              nameBtn && !nameBtn->isEnabled() ? QStringLiteral("yes") : QStringLiteral("no"),
+              QStringLiteral("yes"));
+    }
+    const bool armed = nameIn && nameBtn && ready;
     if (armed) {
         const QString orig = nameBtn->text();
         // 拿读到的真账户名改一个字母：既要和现在不一样（才不会被"没变"那条挡回来），
