@@ -276,53 +276,56 @@ bool mftExtents(HANDLE vol, qint64 clusterBytes, QVector<MftExtent>& runs, qint6
         return no(QStringLiteral("读不到引导扇区，错误码 %1").arg(GetLastError()));
     if (memcmp(boot + 3, "NTFS    ", 8) != 0)
         return no(QStringLiteral("%1 的引导扇区上不是 NTFS 签名").arg(drive));
-    // $MFT 起始簇 / 每条记录多少字节 这两个偏移，各家文档给的数差一格（0x2F/0x3F 与 0x30/0x40，
-    // 差一个字节就读出"记录长度 1007616"这种鬼话 —— 2026-10-17 CI 实测）。
-    // 所以不猜：几组候选各试一遍，**认"那个位置读出来是不是一串排着队的 FILE 记录"**才算数。
-    struct BootCand { int lcnOff; int cprOff; };
-    const BootCand cands[] = { { 0x2F, 0x3F }, { 0x30, 0x40 }, { 0x2B, 0x3B } };
+    // $MFT 起始簇在引导扇区里那一格的偏移，各家文档给的数不一致（差一个字节就读出
+    // "记录长度 1007616"这种鬼话 —— 2026-10-17 CI 实测）。所以：
+    //   ① 起始簇按几个候选偏移挨个试，**认"那个位置读出来是不是一串排着队的 FILE 记录"**；
+    //   ② 记录长度不再信引导扇区那格，直接从 FILE 签名的周期量出来；
+    //   ③ 全都不成，把 0x28~0x48 那 32 字节原样打进失败原因 —— 看一眼就能手算出正确偏移，
+    //      不必再拿一次 CI 去猜。
+    static const int kLcnCands[] = { 0x2B, 0x2F, 0x30, 0x33, 0x38, 0x40 };
     qint64 mftLcn = -1, rec = 0;
-    std::vector<BYTE> head;
-    for (const BootCand& c : cands) {
-        const qint64 lcn = qint64(le64(boot, c.lcnOff));
-        const qint32 cpr = LONG(le32(boot, c.cprOff));
-        const qint64 guess = cpr < 0 ? (qint64(1) << -cpr) : qint64(cpr) * clusterBytes;
-        if (lcn <= 0 || lcn > (1ll << 40) || guess < 256 || guess > 8192)
+    std::vector<BYTE> r1;
+    QString tried;
+    for (const int off : kLcnCands) {
+        const qint64 lcn = qint64(le64(boot, off));
+        if (lcn <= 0 || lcn > (1ll << 40)) {
+            tried += QStringLiteral("%1:不像数 ").arg(off, 0, 16);
             continue;
+        }
         std::vector<BYTE> blk;
         blk.resize(16384);
-        if (!readAt(vol, quint64(lcn) * quint64(clusterBytes), blk.data(), UINT32(blk.size())))
+        if (!readAt(vol, quint64(lcn) * quint64(clusterBytes), blk.data(), UINT32(blk.size()))) {
+            tried += QStringLiteral("%1:读不动 ").arg(off, 0, 16);
             continue;
+        }
+        int period = 0;
         for (const int r : { 256, 512, 1024, 2048, 4096 }) {
             if (3 * r + 4 > int(blk.size()))
                 break;
-            if (!looksLikeFileRecord(blk.data(), r) || !looksLikeFileRecord(blk.data() + r, r)
-                || !looksLikeFileRecord(blk.data() + 2 * r, r)
-                || !looksLikeFileRecord(blk.data() + 3 * r, r))
-                continue;
-            if (r != guess)
-                continue;               // 引导扇区那格和签名周期对不上 → 这组候选是错的
-            mftLcn = lcn;
-            rec = r;
-            head = std::move(blk);
-            break;
+            if (looksLikeFileRecord(blk.data(), r) && looksLikeFileRecord(blk.data() + r, r)
+                && looksLikeFileRecord(blk.data() + 2 * r, r)
+                && looksLikeFileRecord(blk.data() + 3 * r, r)) {
+                period = r;
+                break;
+            }
         }
-        if (rec)
-            break;
+        if (!period) {
+            tried += QStringLiteral("%1(簇 %2):没周期 ").arg(off, 0, 16).arg(lcn);
+            continue;
+        }
+        mftLcn = lcn;
+        rec = period;
+        r1.resize(size_t(rec));
+        memcpy(r1.data(), blk.data() + rec, size_t(rec));   // 第 1 号记录就在刚读这一块里
+        break;
     }
-    if (!rec)
-        return no(QStringLiteral("引导扇区里三组候选偏移都对不上（0x2F/0x3F、0x30/0x40、0x2B/0x3B）"));
-    std::vector<BYTE> r1;
-    r1.resize(size_t(rec));      // 先声明再 resize：`std::vector<BYTE> r1(size_t(rec))` 会被读成函数声明
-    if (!head.empty()) {
-        memcpy(r1.data(), head.data() + rec, size_t(rec));   // 刚才那一块里就有第 1 号记录，不必再读一遍
-    } else if (!readAt(vol, quint64(mftLcn) * quint64(clusterBytes) + quint64(rec), r1.data(),
-                       UINT32(rec))) {
-        return no(QStringLiteral("读不到第 1 号记录（%1 字节），错误码 %2").arg(rec).arg(GetLastError()));
+    if (!rec) {
+        QString hex;
+        for (int i = 0x28; i < 0x50; ++i)
+            hex += QStringLiteral("%1 ").arg(boot[i], 2, 16, QLatin1Char('0'));
+        return no(QStringLiteral("引导扇区里 %1 都不是 MFT 起点 · 0x28~0x50 原样：%2")
+                      .arg(tried.trimmed(), hex.trimmed()));
     }
-    if (memcmp(r1.data(), "FILE", 4) != 0)
-        return no(QStringLiteral("第 1 号记录开头不是 FILE —— 引导扇区里那个 MFT 起点（簇 %1）不对")
-                      .arg(mftLcn));
     // 非驻留 $DATA 的盘区段紧跟在属性名之后。名字长度为 0 时按约定在 0x28，
     // 但不同版本这张表的读法有出入，所以 0x28/0x30/0x38/0x40 各试一遍，
     // **认"解出来的首簇等不等于引导扇区里那个 MFT 起点"** —— 对不上就是解错了，不猜。
