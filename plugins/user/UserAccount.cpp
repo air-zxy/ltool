@@ -290,6 +290,17 @@ bool runElevatedScript(const QString& script, QString* err)
 
 namespace {
 
+// 每一步停在哪个口子都要留一行日志。这条链后面还有 UAC、脚本、回读三段，
+// "日志里有没有 username: 这行"就是分界线 —— 2026-10-17 他报"改用户名失败"，
+// 而整份 log 里 username: 一条都没有（同期 linuxdo: 307 行、clipboard: 534 行，
+// 说明插件写日志的通路是好的）⇒ 根本没走到提权，但到底是哪个口子拦的没有证据。
+void stoppedAt(const QString& action, const QString& gate, const QString& detail = {})
+{
+    Utils::log(QStringLiteral("username: %1 停在%2%3")
+                   .arg(action, gate,
+                        detail.isEmpty() ? QString() : QStringLiteral(" — ") + detail));
+}
+
 QString oneLiner(const UserAccount::Info& i)
 {
     return QStringLiteral(
@@ -415,21 +426,28 @@ void UserAccountPage::applyFullName()
 {
     const QString want = m_full->text();
     if (want.trimmed() == m_info.fullName) {
+        stoppedAt("改显示名", "名字没变");
         m_hint->setText(QStringLiteral("显示名没变，什么都没做。"));
         return;
     }
     const QStringList why = UserAccount::reject(want, false);
     if (!why.isEmpty()) {
+        stoppedAt("改显示名", "校验", why.join(QStringLiteral("；")));
         QMessageBox::warning(this, QStringLiteral("改显示名"), why.join(QLatin1Char('\n')));
         return;
     }
-    if (QMessageBox::question(this, QStringLiteral("改显示名"),
-                              QStringLiteral("把登录界面显示的名字从「%1」改成「%2」？\n"
-                                             "不动账户名，也不动 C:\\Users 目录。")
-                                  .arg(m_info.fullName.isEmpty() ? m_info.name : m_info.fullName,
-                                       want.trimmed()))
-        != QMessageBox::Yes)
+    const QMessageBox::StandardButton ans = QMessageBox::question(
+        this, QStringLiteral("改显示名"),
+        QStringLiteral("把登录界面显示的名字从「%1」改成「%2」？\n"
+                       "不动账户名，也不动 C:\\Users 目录。")
+            .arg(m_info.fullName.isEmpty() ? m_info.name : m_info.fullName, want.trimmed()));
+    if (ans != QMessageBox::Yes) {
+        // 这一条是最容易被"看不见"的那一步：确认框是模态的，挂在启动器窗口里，
+        // 而启动器一失焦就把自己藏起来 —— 框跟着没了，答案算"不是"。
+        stoppedAt("改显示名", "确认框", QStringLiteral("答案是 %1（0=Yes，没弹出来或被关掉也是这里）")
+                                      .arg(int(ans)));
         return;
+    }
     QString err;
     const bool ran = UserAccount::runElevatedScript(
         UserAccount::fullNameScript(m_info.machine, m_info.name, want), &err);
@@ -449,22 +467,27 @@ void UserAccountPage::applyAccountName()
 {
     const QString want = m_name->text();
     if (want.trimmed() == m_info.name) {
+        stoppedAt("改账户名", "名字没变");
         m_hint->setText(QStringLiteral("账户名没变，什么都没做。"));
         return;
     }
     const QStringList why = UserAccount::reject(want, true);
     if (!why.isEmpty()) {
+        stoppedAt("改账户名", "校验", why.join(QStringLiteral("；")));
         QMessageBox::warning(this, QStringLiteral("改账户名"), why.join(QLatin1Char('\n')));
         return;
     }
-    if (QMessageBox::question(this, QStringLiteral("改账户名"),
-                              QStringLiteral("要把登录用的账户名从「%1」改成「%2」。\n\n"
-                                             "· C:\\Users\\%1 这个目录**不会**跟着改名\n"
-                                             "· 写死了旧路径的程序/脚本不会自动跟上\n"
-                                             "· 改完要注销重新登录\n\n确认继续吗？")
-                                  .arg(m_info.name, want.trimmed()))
-        != QMessageBox::Yes)
+    const QMessageBox::StandardButton ans2 = QMessageBox::question(
+        this, QStringLiteral("改账户名"),
+        QStringLiteral("要把登录用的账户名从「%1」改成「%2」。\n\n"
+                       "· C:\\Users\\%1 这个目录**不会**跟着改名\n"
+                       "· 写死了旧路径的程序/脚本不会自动跟上\n"
+                       "· 改完要注销重新登录\n\n确认继续吗？")
+            .arg(m_info.name, want.trimmed()));
+    if (ans2 != QMessageBox::Yes) {
+        stoppedAt("改账户名", "确认框", QStringLiteral("答案是 %1").arg(int(ans2)));
         return;
+    }
     QString err;
     const bool ran = UserAccount::runElevatedScript(
         UserAccount::renameScript(m_info.machine, m_info.name, want), &err);
@@ -492,7 +515,8 @@ void UserAccountPage::createNewUser()
     if (why.isEmpty() && UserAccount::probe(name).exists)
         why << QStringLiteral("账户 %1 已经存在了").arg(name);
     if (!why.isEmpty()) {
-        QMessageBox::warning(this, QStringLiteral("新建用户"), why.join(QStringLiteral("\n")));
+        stoppedAt("新建用户", "校验", why.join(QStringLiteral("；")));
+        QMessageBox::warning(this, QStringLiteral("新建用户"), why.join(QLatin1Char('\n')));
         return;
     }
     const bool admin = m_newAdmin->isChecked();
@@ -505,8 +529,12 @@ void UserAccountPage::createNewUser()
         "密码设为永久有效，不会被到期策略拦住。"
         "密码会临时写进一个脚本文件、跑完立刻删 —— 但那一瞬间它是在盘上的。"
         "需要管理员授权（会弹 UAC）。确认创建吗？");
-    if (QMessageBox::question(this, QStringLiteral("新建用户"), ask + QStringLiteral("\n") + lines) != QMessageBox::Yes)
+    const QMessageBox::StandardButton ans3 = QMessageBox::question(
+        this, QStringLiteral("新建用户"), ask + QStringLiteral("\n") + lines);
+    if (ans3 != QMessageBox::Yes) {
+        stoppedAt("新建用户", "确认框", QStringLiteral("答案是 %1").arg(int(ans3)));
         return;
+    }
     QString err;
     const bool ran = UserAccount::runElevatedScript(
         UserAccount::newUserScript(name, full, pass, admin), &err);
