@@ -20,6 +20,11 @@ QVector<PluginHost::Meta> g_metas;
 QHash<QString, QPluginLoader*> g_loaders;      // 只装不卸：卸载会留下悬空的 QWidget
 QHash<QString, LToolPlugin*> g_plugins;
 QHash<QString, QWidget*> g_pages;
+// 每个 id **最近一次装载失败的原因**（成功就销掉）。界面要说"这个动作没人接"的时候，
+// 得能分出"目录里根本没这个文件"和"文件在、可它起不来" —— 2026-10-19 他按 F1 弹的
+// 就是那句"是不是缺 ltool-capture.dll"，而 dll 明明躺着：商店那份产物和这版 core 的
+// 导出面对不上，LoadLibrary 直接失败。谎报成"缺文件"会让人去装第二遍。
+QHash<QString, QString> g_loadErrors;
 bool g_scanned = false;
 
 QString str(const QJsonObject& o, const char* key)
@@ -124,12 +129,14 @@ LToolPlugin* plugin(const QString& id)
         auto* loader = new QPluginLoader(m.file);
         QObject* obj = loader->instance();
         if (!obj) {
+            g_loadErrors.insert(m.id, loader->errorString());
             Utils::log(QStringLiteral("plugin: 起不来 %1：%2").arg(m.file, loader->errorString()));
             delete loader;
             return nullptr;
         }
         auto* p = qobject_cast<LToolPlugin*>(obj);
         if (!p) {
+            g_loadErrors.insert(m.id, QStringLiteral("没实现 LToolPlugin 接口"));
             Utils::log(QStringLiteral("plugin: %1 没实现 LToolPlugin 接口").arg(m.file));
             loader->unload();
             delete loader;
@@ -137,12 +144,15 @@ LToolPlugin* plugin(const QString& id)
         }
         // 元数据里写的 Api 只是"声明"，实例自己报的才算数（两边不一致就是插件自己乱写）
         if (p->apiVersion() != LTOOL_PLUGIN_API_VERSION) {
+            g_loadErrors.insert(m.id, QStringLiteral("运行时报 API %1，主程序是 %2")
+                                              .arg(p->apiVersion()).arg(LTOOL_PLUGIN_API_VERSION));
             Utils::log(QStringLiteral("plugin: %1 运行时报 API %2，主程序是 %3，不加载")
                            .arg(id).arg(p->apiVersion()).arg(LTOOL_PLUGIN_API_VERSION));
             loader->unload();
             delete loader;
             return nullptr;
         }
+        g_loadErrors.remove(m.id);              // 这次起来了，之前那条失败原因就不该再被引用
         g_loaders.insert(id, loader);        // 故意留着不卸
         g_plugins.insert(id, p);
         return p;
@@ -218,6 +228,29 @@ QString actionOwner(const QString& action)
         if (m.ok() && m.actions.contains(action))
             return m.id;
     return {};
+}
+
+QString loadErrorOf(const QString& id)
+{
+    return g_loadErrors.value(id);
+}
+
+// "这个动作没人接"到底该怎么说 —— 两种实话是分开的：
+//   · 目录里根本没一颗插件声明接它 → 才是"是不是缺那个文件"
+//   · 有声明、可它起不来 → 必须说"在，但起不来 + 原因"，不能让人去装第二遍
+// 调用前提是 `invoke()` 刚试过（它试过才会有装载记录）。
+QString whyNoOwner(const QString& action)
+{
+    const QString id = actionOwner(action);
+    if (id.isEmpty())
+        return QStringLiteral("没装接 %1 这个动作的插件（ltool-plugins 里是不是缺 %2）")
+            .arg(action, Platform::pluginFileName(action));
+    if (plugin(id))
+        return QStringLiteral("接 %1 的插件 %2 起来了，可它自己不认这个动作（元数据那份 Actions 和实例报的对不上，见日志）")
+            .arg(action, id);
+    const QString err = loadErrorOf(id);
+    return QStringLiteral("接 %1 的插件 %2 就在目录里，可它起不来：%3")
+        .arg(action, id, err.isEmpty() ? QStringLiteral("装载失败（原因见日志）") : err);
 }
 
 bool invoke(const QString& action, const QStringList& args, QString* who)

@@ -1084,6 +1084,18 @@ int main(int argc, char* argv[])
         // 这条红了 = 按 F1 什么都没发生，而那正是这程序里最难查的一个形状。
         check("热键动作 capture 有人接（谁）",
               PluginHost::actionOwner(QStringLiteral("capture")), QStringLiteral("capture"));
+        // "按了没反应"那句提示本身也要说真话（2026-10-19 他按 F1 弹的是"是不是缺 ltool-capture.dll"，
+        // 可 dll 明明在目录里 —— 是商店那份产物和这版 core 的导出面对不上，LoadLibrary 失败）。
+        // 本机这批全都起得来，所以量的是**分支**：装了的不许说"是不是缺"，没装的才许说。
+        {
+            const QString installed = PluginHost::whyNoOwner(QStringLiteral("capture"));
+            has("接 capture 的插件在目录里时，那句提示不许甩锅成「是不是缺文件」",
+                !installed.contains(QStringLiteral("是不是缺")));
+            std::printf("INFO 装了但不认这个动作时那句怎么说：%s\n", installed.toUtf8().constData());
+            const QString absent = PluginHost::whyNoOwner(QStringLiteral("no-such-action"));
+            has("真没人接的动作，那句提示点名缺哪个文件",
+                absent.contains(QStringLiteral("是不是缺")) && absent.contains(QStringLiteral("no-such-action")));
+        }
         // 那 12 面旗标的判据本体也全在插件里：符号点名不到 = 对应那面旗当场红（不会伪装成绿）。
         // 这里只 resolve、一次都不跑 —— 截图/置顶窗/OCR 那些要真屏幕，还要真下 27MB 引擎。
         static const char* const kCaptureSyms[] = {
@@ -3375,8 +3387,7 @@ int main(int argc, char* argv[])
         if (PluginHost::invoke(action, { path }, &who))
             return 0;
         const QString why = who.isEmpty()
-            ? QStringLiteral("没装接这个动作的插件（ltool-plugins 里是不是缺 %1）")
-                  .arg(Platform::pluginFileName(QStringLiteral("shell")))
+            ? PluginHost::whyNoOwner(action)
             : QStringLiteral("%1 接了但没干成").arg(who);
         std::printf("FAIL 右键动作 %s：%s 路径=%s\n", action.toUtf8().constData(),
                     why.toUtf8().constData(), path.toUtf8().constData());
@@ -3444,8 +3455,7 @@ int main(int argc, char* argv[])
         if (PluginHost::invoke(action, {}, &who))
             return;
         const QString why = who.isEmpty()
-            ? QStringLiteral("没装接 %1 这个动作的插件（ltool-plugins 里是不是缺 %2）")
-                  .arg(action, Platform::pluginFileName(action))
+            ? PluginHost::whyNoOwner(action)
             : QStringLiteral("%1 接了但没干成").arg(who);
         Utils::log(QStringLiteral("%1 没人接：%2").arg(keyLabel, why));
         std::fprintf(stderr, "%s: %s\n", keyLabel.toUtf8().constData(), why.toUtf8().constData());

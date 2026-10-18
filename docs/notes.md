@@ -798,3 +798,14 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 没复现的那一半要说清楚：内存爆炸这条离屏量到 **58→63 MB**（他那一轮真连点了 15 下装/卸，日志 11:18:07~20 连着 14 条"装好"）。Show 闪一次解释得了"自动显示"，解释不了"卡死"；这一轮的日志里也没有任何一条 `--mfttest` 那种超时形状。所以判据先钉在原地，日志那颗留给下一次。
 - 数字：新增 `--storeexit` **14 条 0 红**（离屏、不联网、一颗 dll 都不真删 —— B 那颗先点开一次，让它走"排进待删表"那条）；`--cfgcheck` 11 → **13 条 0 红**。邻居复测：`--plugintest` 240、`--storetest` 73、`--username` 36、`--about` 27、`--pinyin` 52、`--seamtest` 38、`--gridtest` 64、`--cliptest` 57、`--linuxdotest` 44、`--rowmenu` 9、`--appdirs` 12、`--diskbranch` 4、`--mfttest` 11、`--smoke` 全 0 红。CI 的判据循环加了 `--storeexit`。
 - 版本：**不升号**。工作树是 1.1.0 且从没打过 tag（最新 tag 还是 `v1.0.3`），这一轮修的就是同一批未发布产物；改的全在 core（`src/ToolsPage.*`、`src/PluginStore.h`、`src/Utils.*`、`src/main.cpp`），十九颗插件一行没动，所以 `plugin.json` 一颗都不必递增。
+
+## F1 报「是不是缺 ltool-capture.dll」，可 dll 就在目录里（2026-10-19 凌晨，他装机后第一次按 F1）
+
+- 现象：托盘气泡「F1 截图 / 没装接 capture 这个动作的插件（ltool-plugins 里是不是缺 ltool-capture.dll）」，F2 同形状。
+- 实情：那颗 dll **在**，`LoadLibrary` 起不来 —— `Cannot load library …: 找不到指定的程序`（缺导入函数 `Utils::revealInExplorer` / `Utils::launch`，跨平台那十刀把它们挪进 `Platform::` 了）。这就是挂着的 #91：商店发的那批产物不是按这版 core 的导出面编的。
+- 现场量的：拿**装好的那份**跑 `--plugintest`（安装包 Excludes 掉了 qoffscreen，得借 `QT_QPA_PLATFORM_PLUGIN_PATH=build\Release\platforms` 才起得来）→ 19 颗元数据全过，**6 颗装载失败**：capture / record / registry / repair / startup / language，判据红 19 条。同样的报错在他日志里最早是 **10-16 20:27**，不是这次装机带来的；触发点是他 11:17~11:18 在商店里连点「更新」，把本来能跑的本地构建换成了仓库那份。
+- 先救功能再改文案：只把那 6 颗换成同树构建的本机 dll（旧的那份备份在 `%TEMP%\store-dll-backup\`），**没杀他实例** —— 那 6 颗本来就没映射进进程，拷得动；他的实例下次按 F1 会重新 `LoadLibrary`。复跑装好的那份：`--plugintest` **19/19 通过检查、0 红**。
+- 文案这条是真 bug，改在数据层：`PluginHost::loadErrorOf(id)`（每次装载失败把原因按 id 记下来，成功就销掉）+ `whyNoOwner(action)` 三分支 —— 没挂牌 = 「是不是缺这个文件」；挂了牌但起不来 = 「它就在目录里，可它起不来：<原因>」；起来了但不认这个动作 = 「元数据和实例对不上」。两处调用点（F1/F2 气泡、右键那一路）都改成拿这一颗。
+- 判据 +2 条（`--plugintest` 240 → **242**）：装了的不许甩锅成「是不是缺文件」；真没人接的必须点名缺哪个文件。离线合计 694 → **696 条 0 红**。
+- 版本：core **不升号**（1.1.0 从未打 tag，这全是同一批未发布产物里的修文案 + 修谎报）；插件一行没动，闸绿。
+- 还没治的那半：#91 的根 —— 要么把 `ltool_plugin` 仓库那批用这版 core 重编重发（动公开仓库，等他拍），要么让商店在装之前先比一次"这颗在这台机器上起不起得来"（起不来就别换掉能用的那份）。

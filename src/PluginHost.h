@@ -54,6 +54,11 @@ bool feed(const QString& id, const QString& text);
 bool invoke(const QString& action, const QStringList& args, QString* who = nullptr);
 // 哪个插件接这个动作（不装载，只看元数据声明；没有返回空）。界面上"这个功能由 X 提供"用它。
 QString actionOwner(const QString& action);
+// 那颗插件最近一次**装载失败**的原因（起来了就是空串）。
+QString loadErrorOf(const QString& id);
+// "这个动作没人接"那句实话怎么写：分得清"根本没装"和"装了但起不来（附原因）"。
+// 前提是先调过 `invoke()` —— 装载记录是那时留下的。
+QString whyNoOwner(const QString& action);
 
 // 插件自己带的判据入口（extern "C" 导出），没有返回 nullptr。
 // 页面代码搬进插件之后主程序链接不到它内部的测试函数，只能按名字点名要。
