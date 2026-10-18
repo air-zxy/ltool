@@ -8,6 +8,7 @@
 #include "PluginStore.h"     // 一张列表：每张卡片就是一个条目，带状态和那颗按钮
 
 class QLabel;
+class QKeyEvent;
 class QPushButton;
 class QStackedWidget;
 class QToolButton;
@@ -31,8 +32,7 @@ public:
     // 返回 false = 这个 id 没加载起来（错误已经进日志，界面上说了一句人话）。
     bool showTool(const QString& id, const QString& text = QString());
 
-    void rebuildGrid();      // 重扫目录之后重画那一面卡片（装完/禁用完走的就是这条）
-    // 答了「是」之后那一段：删文件 / 排队 / 重扫 + 重排，答复写进卡片的状态标签。
+    void rebuildGrid();      // 重扫目录之后重画那一面卡片（装完/禁用完走的就是这条）    // 答了「是」之后那一段：删文件 / 排队 / 重扫 + 重排，答复写进卡片的状态标签。
     // 公开是为了离屏判据能跑同一条（无窗口平台上那个模态确认框会立刻返回「不」）。
     void applyUninstall(const QString& file, const QString& name, QLabel* state);
     void refreshStore();     // 联网拉清单：判哈希/落盘/改名都在 PluginStore 那几个纯函数里
@@ -55,6 +55,10 @@ private:
     };
     void runInstall(const PluginStore::Entry& e, QPushButton* btn, QLabel* state);   // 真开一条下载
     void startNextInstall();   // 队列里还有就接着装，装完了才重排卡片墙
+    void backToGrid();         // 回到那一面卡片墙：按钮 / Esc / 重排之后共用这一条
+
+protected:
+    void keyPressEvent(QKeyEvent* e) override;   // Esc = 从点开的那张页回到卡片墙
 
     QLabel* m_storeStatus = nullptr;
     bool m_storeBusy = false;

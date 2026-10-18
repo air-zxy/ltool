@@ -16,6 +16,7 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QMessageBox>
 #include <QPointer>
@@ -288,7 +289,8 @@ ToolsPage::ToolsPage(QWidget* parent)
     head->setSpacing(8);
     m_back = new QToolButton(this);
     m_back->setText(QStringLiteral("‹ 返回商店"));
-    m_back->setAutoRaise(true);
+    m_back->setToolTip(QStringLiteral("回到那一面卡片墙（在这张页上按 Esc 也可以）"));
+    m_back->setAccessibleName(QStringLiteral("返回商店"));
     m_back->setCursor(Qt::PointingHandCursor);
     m_back->setVisible(false);
     m_heading = new QLabel(QStringLiteral("插件商店"), this);
@@ -322,6 +324,8 @@ ToolsPage::ToolsPage(QWidget* parent)
     );
     refresh->setStyleSheet(topBtnQss);
     repoBtn->setStyleSheet(topBtnQss);
+    // 出口那颗和它们同款：autoRaise 的淡箭头在深色页眉里就是"找不到退出按钮"（他 2026-10-18 的原话）
+    m_back->setStyleSheet(topBtnQss);
 
     head->addWidget(m_back);
     head->addWidget(m_heading);
@@ -357,11 +361,7 @@ ToolsPage::ToolsPage(QWidget* parent)
     m_stack->addWidget(buildGrid());     // 0 = 那一面卡片，插件页往后追加
     lay->addWidget(m_stack, 1);
 
-    connect(m_back, &QToolButton::clicked, this, [this] {
-        m_stack->setCurrentIndex(0);
-        m_back->setVisible(false);
-        m_heading->setText(QStringLiteral("插件商店"));
-    });
+    connect(m_back, &QToolButton::clicked, this, [this] { backToGrid(); });
     connect(refresh, &QPushButton::clicked, this, [this] { refreshStore(); });
 
     // 每天自动拉取一次清单更新
@@ -375,12 +375,21 @@ QVector<PluginStore::Row> ToolsPage::shopRows() const
     // 一条列表、一条规则，绝不出现"墙是一批、清单是另一批"：
     //   · 没拉过清单 → 只报目录里有什么（不猜仓库里有什么）
     //   · 拉过 → 以清单为准，后面跟上本机装着而清单没列的那几个
-    if (!m_haveStore)
-        return PluginStore::localRows(QString());
-    QVector<PluginStore::Row> out = PluginStore::rows(m_lastEntries);
-    const QVector<PluginStore::Row> extra = PluginStore::localOnly(m_lastEntries);
-    for (const PluginStore::Row& r : extra)
-        out.append(r);
+    QVector<PluginStore::Row> out;
+    if (!m_haveStore) {
+        out = PluginStore::localRows(QString());
+    } else {
+        out = PluginStore::rows(m_lastEntries);
+        const QVector<PluginStore::Row> extra = PluginStore::localOnly(m_lastEntries);
+        for (const PluginStore::Row& r : extra)
+            out.append(r);
+    }
+    // "排进待删表"这件事只有配置里那张表知道，所以在这里补到数据层上 ——
+    // 卡片重排之后它照样说得出真话（写在卡片标签上活不过一次重排）。
+    const QVector<QString> queued = PluginStore::pendingRemoves();
+    if (!queued.isEmpty())
+        for (PluginStore::Row& r : out)
+            r.queuedRemove = queued.contains(r.remote.file);
     return out;
 }
 
@@ -466,7 +475,14 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
     } else {
         noteText = r.note;
     }
-    card->setUpdateArrow(r.state == PluginStore::State::Update);
+    // 排进待删表的那张：整条状态换掉。文件确实还在盘上，可"已装"这句已经是假话 ——
+    // 他 11:17 连点两次「卸载」，就是因为这张卡每次重排都重新说"已装"（写在标签上的那句
+    // 活不过一次重排，所以这条改在数据层：见 PluginStore::Row::queuedRemove）。
+    if (r.queuedRemove) {
+        stateWord = QStringLiteral("已安排卸载");
+        noteText = QStringLiteral("这个进程还加载着它 · 下次启动真删掉");
+    }
+    card->setUpdateArrow(r.state == PluginStore::State::Update && !r.queuedRemove);
     card->stateLabel()->setText(noteText.isEmpty()
                                     ? stateWord
                                     : QStringLiteral("%1 · %2").arg(stateWord, noteText));
@@ -739,7 +755,15 @@ bool ToolsPage::showTool(const QString& id, const QString& text)
         m_stack->addWidget(w);
     if (!text.isEmpty() && !PluginHost::feed(id, text))
         Utils::log(QStringLiteral("plugin: %1 没接住那段文本（长度 %2）").arg(id).arg(text.size()));
+    const int was = m_stack->currentIndex();
     m_stack->setCurrentWidget(w);
+    // 他这次报的是"商店自己跳到了那张页"，可三条路（点卡片正文 / 搜索框直达 / 设置窗 openAt）
+    // 在日志里长得一模一样，查不出来。这条把"从第几格跳到第几格"写下来，下次再报就有据。
+    Utils::log(QStringLiteral("store: 展开 %1（stack 第 %2 格 / 共 %3 格，之前在第 %4 格）")
+                   .arg(id)
+                   .arg(m_stack->indexOf(w))
+                   .arg(m_stack->count())
+                   .arg(was));
     m_back->setVisible(true);
     const PluginHost::Meta* md = PluginHost::meta(id);
     m_heading->setText(QStringLiteral("插件商店 · %1").arg(md ? md->name : id));
@@ -748,14 +772,39 @@ bool ToolsPage::showTool(const QString& id, const QString& text)
 
 void ToolsPage::rebuildGrid()
 {
-    // 只换卡片那一格，已经点开过的插件页留在 stack 里不动（dll 不卸载，拆了也没意义）
+    // 只换卡片那一格，已经点开过的插件页留在 stack 里不动（dll 不卸载，拆了也没意义）。
+    //
+    // 顺序是**先插新的、再摘旧的**。反过来写（先摘后插）会把上一张点开的插件页闪出来一次：
+    // QStackedLayout 在"当前那一格被摘掉"的瞬间会把后面的格子顶成当前，于是那张页收到一次
+    // Show —— 屏幕上就是"卸完插件，商店自己跳到了注册表分析那一页"（2026-10-18 他报的形状，
+    // --storeexit 第⑥条量的就是这件事：旧顺序 Show 1 次，这个顺序 0 次）。
     QWidget* old = m_stack->widget(0);
+    QWidget* grid = buildGrid();
+    m_stack->insertWidget(0, grid);
+    m_stack->setCurrentWidget(grid);
     if (old) {
         m_stack->removeWidget(old);
         old->deleteLater();
     }
-    m_stack->insertWidget(0, buildGrid());
+    backToGrid();
+}
+
+// 回到那一面卡片墙：三处入口（那颗按钮、Esc、重排之后）共用这一条
+void ToolsPage::backToGrid()
+{
     m_stack->setCurrentIndex(0);
     m_back->setVisible(false);
     m_heading->setText(QStringLiteral("插件商店"));
+}
+
+void ToolsPage::keyPressEvent(QKeyEvent* e)
+{
+    // 那张页的第二个出口。他原话是"找不到退出按钮" —— 按钮再实心也还是页眉里小小一颗，
+    // 所以 Esc 也得能回去。**必须把这个事件吃掉**：设置窗是个 QDialog，Esc 传上去会把整窗关掉。
+    if (e->key() == Qt::Key_Escape && m_stack && m_stack->currentIndex() != 0) {
+        backToGrid();
+        e->accept();
+        return;
+    }
+    QWidget::keyPressEvent(e);
 }

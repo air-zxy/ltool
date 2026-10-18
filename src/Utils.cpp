@@ -354,4 +354,12 @@ QString darkMenuStyle()
         "QMenu::separator { height: 1px; background: #33353d; margin: 4px 6px; }");
 }
 
+// 见 Utils.h 那段注释：这一条只能挂在 qApp 上，所以它不并进 darkMenuStyle，单独一颗。
+QString darkTipStyle()
+{
+    return QStringLiteral(
+        "QToolTip { background: #232429; color: #e8ebf2; border: 1px solid #3a3c45;"
+        " padding: 6px 8px; }");
+}
+
 } // namespace Utils

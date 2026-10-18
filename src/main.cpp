@@ -52,6 +52,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QToolButton>
+#include <QMouseEvent>
 #include <QLineEdit>
 #include <QThread>
 #include <QFrame>
@@ -618,6 +619,7 @@ int main(int argc, char* argv[])
     // --pindel 会真删 captures 目录里的往期截图，--ocrchain 要验"引擎还没下载"那条链（会真下 26MB），
     // --pathcfg 会写 config.ini 并建目录，--appdirs 会写 apps/roots 并扫盘，
     // --storetest 会写 store/indexUrl 这一项（它就是验"配置里改了地址就跟着走"），
+    // --storeexit 会写 store/pendingRemove（那一条判据走的就是"卸载排进待删表"那段），
     // --linuxdotest 会写 linuxdo/* 这一节（间隔、关键词、中转前缀、上次看到哪条）：
     // 这几种都把数据目录整个挪到临时目录再跑，碰不到用户真实的 %APPDATA%\ltool。
     // 必须在第一次 dataDir() 之前设好。
@@ -626,7 +628,8 @@ int main(int argc, char* argv[])
         if (a == QLatin1String("--pindel") || a == QLatin1String("--ocrchain")
             || a == QLatin1String("--pathcfg") || a == QLatin1String("--pintool")
             || a == QLatin1String("--appdirs") || a == QLatin1String("--cfgcheck")
-            || a == QLatin1String("--storetest") || a == QLatin1String("--linuxdotest")
+            || a == QLatin1String("--storetest") || a == QLatin1String("--storeexit")
+            || a == QLatin1String("--linuxdotest")
             || a == QLatin1String("--linuxdonet") || a == QLatin1String("--cliptest")) {
             const QString sandbox = QDir::tempPath() + "/" + a.mid(2);
             QDir(sandbox).removeRecursively();
@@ -662,6 +665,8 @@ int main(int argc, char* argv[])
     // 常驻托盘：最后一个窗口关闭（比如关掉设置页）不能退出程序
     app.setQuitOnLastWindowClosed(false);
     applyDarkPalette(app);
+    // 悬停说明那一小块：调色板它不读（见 Utils::darkTipStyle 那段注释），只能靠 qApp 这一份样式表。
+    app.setStyleSheet(Utils::darkTipStyle());
 
     Utils::ensureDirs();
     // 卸载排着队的先落地：上一轮点过「卸载」但当时这个 dll 还加载在进程里（Windows 不放行），
@@ -1862,6 +1867,31 @@ int main(int argc, char* argv[])
                 say("四颗菜单图标存成了一张 PNG（肉眼复核用）", strip.save(file, "PNG"),
                     QStringLiteral("%1 · %2x%3").arg(file).arg(strip.width()).arg(strip.height()));
             }
+        }
+        // 悬停说明（tooltip）的深色：他报的是"夜间模式鼠标悬停说明，灰字压白底完全看不见字"。
+        // 量不了像素 —— 离屏看不到 windows11 风格那层**系统浅底**（2026-10-17 那次菜单判据就栽在
+        // 这儿，见 captureselftest 里 makeStyledMenu 那段注释），所以量的是"真挂上去的那条规则里
+        // 到底写了什么"：挂在 qApp 上（tooltip 是独立顶层窗口，挂在某个窗口上管不到它），
+        // 并且底色和字色两头都写死、亮差够大。撤掉 main() 里那句 setStyleSheet，这两条立刻红。
+        {
+            const QString css = qApp->styleSheet();
+            say("悬停说明的样式挂在 qApp 上（不是某个窗口）",
+                css.contains(QLatin1String("QToolTip")), QStringLiteral("qApp 样式表长度=%1").arg(css.size()));
+            const int from = css.indexOf(QLatin1String("QToolTip"));
+            const QString block = from < 0 ? QString()
+                                           : css.mid(from, css.indexOf(QLatin1Char('}'), from) - from);
+            const auto hexOf = [block](const QString& prop) {
+                const QRegularExpression re(QStringLiteral("%1:\\s*#([0-9a-fA-F]{6})").arg(prop));
+                const auto m = re.match(block);
+                return m.hasMatch() ? QColor(QStringLiteral("#") + m.captured(1)) : QColor();
+            };
+            const QColor bg = hexOf(QStringLiteral("background"));
+            const QColor fg = hexOf(QStringLiteral("color"));
+            say("那条规则里字比底色亮出一大截（看得清）",
+                bg.isValid() && fg.isValid() && fg.lightness() - bg.lightness() > 120,
+                QStringLiteral("底=%1 字=%2 亮差=%3")
+                    .arg(bg.name(), fg.name())
+                    .arg(bg.isValid() && fg.isValid() ? fg.lightness() - bg.lightness() : -999));
         }
         std::printf("cfgcheck: 失败 %d 项\n", bad);
         std::fflush(stdout);
@@ -4310,6 +4340,291 @@ int main(int argc, char* argv[])
         });
     }
 
+    // --storeexit：卡片墙 ↔ 那张插件页这条**出口**的判据，全程用真鼠标事件走卡片那颗按钮。
+    // 他报的形状是"卸载完插件，商店自己跳到了注册表分析那一页，而且找不到退出的按钮"
+    // （2026-10-18 11:16:52 建页 registry → 11:17:24、11:17:35 连点两次卸载，日志里两次都是"还加载着，删不掉"）。
+    // 不删文件：离屏平台上那颗确认框立刻返回"不"，走的正是"他按了取消"那一条支路 ——
+    // 而这一按同样不该把那张页打开，卡片墙得留在原地。
+    int storeExitBad = 0;
+    if (args.contains("--storeexit")) {
+        QTimer::singleShot(150, &app, [&app, &storeExitBad] {
+            // 先把这一面钉成"离线、清单已拉到"：不这么做，ToolsPage 构造函数会自己去拉清单
+            // （沙箱里没有缓存、lastFetchDate 也是空的），CI 上就变成一条看网络脸色的判据。
+            // 那份假条目只借"清单里有 registry 这一条"这个形状，哈希故意不对 —— 卡片于是落在
+            // 「与商店不同」，那颗「卸载」照样在（这一面不点「换成商店那份」，不会下载任何东西）。
+            {
+                QString zeros(64, QLatin1Char('0'));
+                const QString idx = QStringLiteral(
+                                        "{\"schema\":1,\"plugins\":[{\"id\":\"registry\",\"name\":\"注册表分析\","
+                                        "\"desc\":\"\",\"file\":\"ltool-registry.dll\","
+                                        "\"url\":\"https://example.invalid/ltool-registry.dll\",\"sha256\":\"%1\","
+                                        "\"bytes\":4096,\"api\":%2,\"version\":\"0.0.1\"}]})")
+                                        .arg(zeros).arg(LTOOL_PLUGIN_API_VERSION);
+                QDir().mkpath(Utils::dataDir());
+                QFile f(Utils::dataDir() + QStringLiteral("/plugins_cache.json"));
+                if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                    f.write(idx.toUtf8());
+                QSettings cfg(Utils::dataDir() + QStringLiteral("/config.ini"), QSettings::IniFormat);
+                cfg.setValue(QStringLiteral("store/lastFetchDate"),
+                             QDate::currentDate().toString(Qt::ISODate));
+                cfg.sync();
+            }
+            ToolsPage page;
+            page.setAttribute(Qt::WA_DontShowOnScreen, true);
+            page.resize(940, 720);
+            page.show();
+            const auto drain = [] {
+                for (int i = 0; i < 30; ++i) {
+                    QCoreApplication::processEvents();
+                    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                }
+            };
+            const auto check = [&storeExitBad](const char* name, bool ok, const QString& got) {
+                std::printf("%s %s got=[%s]\n", ok ? "PASS" : "FAIL", name, got.toUtf8().constData());
+                std::fflush(stdout);
+                if (!ok)
+                    ++storeExitBad;
+            };
+            // 这一面全是"某个串等不等"的判据，包一层免得每处自己拼 == 又把两个数印反
+            const auto eq = [&check](const char* name, const QString& got, const QString& want) {
+                check(name, got == want, got + "  want=[" + want + "]");
+            };
+            drain();
+            const auto backBtn = [&page] {
+                for (QToolButton* b : page.findChildren<QToolButton*>())
+                    if (b->text().contains(QStringLiteral("返回")))
+                        return b;
+                return static_cast<QToolButton*>(nullptr);
+            };
+            const auto cardNamed = [&page](const QString& name) {
+                for (QFrame* card : page.findChildren<QFrame*>(QStringLiteral("row")))
+                    for (QLabel* l : card->findChildren<QLabel*>())
+                        if (l->text() == name)
+                            return card;
+                return static_cast<QFrame*>(nullptr);
+            };
+            const auto btnOn = [](QFrame* card, const QString& text) {
+                if (!card)
+                    return static_cast<QPushButton*>(nullptr);
+                for (QPushButton* b : card->findChildren<QPushButton*>())
+                    if (b->text() == text)
+                        return b;
+                return static_cast<QPushButton*>(nullptr);
+            };
+            // 一次完整的按下 + 抬起，发给那颗控件本身 —— QApplication::notify 里"事件没被接受就
+            // 往父控件冒泡"那一段就是这么走的，卡片正文的点击正是父控件收抬起。
+            const auto click = [](QWidget* w) {
+                const QPoint p = w->rect().center();
+                const QPoint g = w->mapToGlobal(p);
+                QMouseEvent pr(QEvent::MouseButtonPress, p, g, Qt::LeftButton, Qt::LeftButton,
+                               Qt::NoModifier);
+                QMouseEvent rl(QEvent::MouseButtonRelease, p, g, Qt::LeftButton, Qt::NoButton,
+                               Qt::NoModifier);
+                QApplication::sendEvent(w, &pr);
+                QApplication::sendEvent(w, &rl);
+            };
+            auto* stack = page.findChild<QStackedWidget*>();
+            // 离屏里 question() 不是"立刻返回默认值"，它是自己开一轮嵌套事件循环等一个永远不会来的
+            // 答复 —— 实测整条判据挂在那儿（timeout 60 杀掉，rc=124）。所以按下之前先架一颗定时器，
+            // 等那颗框冒出来就**用真鼠标事件点它那颗按钮**（不是 done(which)：那样走的不是他那条路，
+            // "嵌套循环套在鼠标抬起处理里"这个形状就量不到），这样外层那颗按钮的抬起才可能出问题。
+            const auto armClick = [](QMessageBox::StandardButton which) {
+                auto* t = new QTimer(qApp);
+                QObject::connect(t, &QTimer::timeout, qApp, [t, which] {
+                    for (QWidget* w : QApplication::topLevelWidgets()) {
+                        auto* mb = qobject_cast<QMessageBox*>(w);
+                        if (!mb || !mb->isVisible())
+                            continue;
+                        if (QAbstractButton* pb = mb->button(which)) {
+                            const QPoint p = pb->rect().center();
+                            const QPoint g = pb->mapToGlobal(p);
+                            QMouseEvent pr(QEvent::MouseButtonPress, p, g, Qt::LeftButton,
+                                           Qt::LeftButton, Qt::NoModifier);
+                            QMouseEvent rl(QEvent::MouseButtonRelease, p, g, Qt::LeftButton,
+                                           Qt::NoButton, Qt::NoModifier);
+                            QApplication::sendEvent(pb, &pr);
+                            QApplication::sendEvent(pb, &rl);
+                        }
+                        t->stop();
+                        t->deleteLater();
+                        return;
+                }
+                });
+                t->start(10);
+            };
+            const auto where = [&stack, &backBtn] {
+                QWidget* cur = stack ? stack->currentWidget() : nullptr;
+                return QStringLiteral("index=%1 类=%2 返回可见=%3")
+                    .arg(stack ? stack->currentIndex() : -9)
+                    .arg(cur ? QString::fromLatin1(cur->metaObject()->className())
+                             : QStringLiteral("无"))
+                    .arg(backBtn() && backBtn()->isVisible() ? 1 : 0);
+            };
+            eq("起点：那一面卡片墙在前，返回那颗藏着", where(),
+               "index=0 类=QScrollArea 返回可见=0");
+
+            QPointer<QFrame> card = cardNamed(QStringLiteral("注册表分析"));
+            check("那张「注册表分析」的卡画出来了", card != nullptr,
+                  card ? QStringLiteral("yes") : QStringLiteral("no"));
+            QStringList btnTexts;
+            if (card)
+                for (QPushButton* b : card->findChildren<QPushButton*>())
+                    btnTexts << b->text();
+            std::printf("INFO 那张卡上的按钮：%s\n", btnTexts.join(QStringLiteral(" / ")).toUtf8().constData());
+
+            if (card) {
+                // ① 点正文 = 点开那张页，出口那颗必须跟着出来
+                click(card);
+                drain();
+                card = cardNamed(QStringLiteral("注册表分析"));   // 清单回包会重排卡片墙，指针得现拿
+                check("点正文之后：页在前、返回那颗出来了",
+                      where().contains(QStringLiteral("返回可见=1"))
+                          && !where().contains(QStringLiteral("类=QScrollArea")),
+                      where());
+                // ② 按返回 = 回到卡片墙
+                if (backBtn())
+                    backBtn()->click();
+                drain();
+                eq("按返回之后：回到卡片墙、返回那颗收起来", where(),
+                   "index=0 类=QScrollArea 返回可见=0");
+                // ③ 按「卸载」那颗，确认框答"不"：这一按只该在卡片上写一句"没动。"，
+                //     不该把那张页翻出来 —— 抬起冒泡到卡片正文就是"卸载完自动跳到注册表分析"那个形状
+                if (QPushButton* ub = btnOn(card, QStringLiteral("卸载"))) {
+                    armClick(QMessageBox::No);
+                    click(ub);
+                    drain();
+                    eq("按「卸载」+ 答「不」之后：还在卡片墙（页面没被这一按翻出来）", where(),
+                       QStringLiteral("index=0 类=QScrollArea 返回可见=0"));
+                    QLabel* st = nullptr;
+                    if (QFrame* again = cardNamed(QStringLiteral("注册表分析")))
+                        for (QLabel* l : again->findChildren<QLabel*>())
+                            if (l->property("shopState").toBool())
+                                st = l;
+                    check("答「不」之后卡片上留了话", st && !st->text().isEmpty(),
+                          st ? st->text() : QStringLiteral("那张卡找不到了"));
+                } else {
+                    check("按「卸载」那颗之后：还在卡片墙（页面没被这一按翻出来）", false,
+                          "那张卡上没有「卸载」那颗，这条没量到");
+                }
+                // ④ 答"是"那一段。确认框在离屏这一按里答不出"是"（实测：done(Yes) 之后 exec() 立刻返回，
+                //     那颗 singleShot(0) 反而没轮到跑），所以按这个仓库一直的规矩走：把"答了是"那一段
+                //     抽出来的方法直接调 —— 界面那条支路调的就是这一颗，不是抄的第二遍。
+                //     这颗的 dll 在第①步已经被映射进进程，删不动 → PluginStore 记进待删表
+                //     （写的是沙箱里的 config，碰不到他真实的 %APPDATA%）。
+                //     要量的是：重排之后那张卡**还说不说得出真话**（文件明明还在盘上）。
+                const PluginHost::Meta* md = PluginHost::meta(QStringLiteral("registry"));
+                if (md) {
+                    page.applyUninstall(QFileInfo(md->file).fileName(), md->name, nullptr);
+                    drain();
+                    eq("答「是」之后：还在卡片墙", where(),
+                       QStringLiteral("index=0 类=QScrollArea 返回可见=0"));
+                    QString got;
+                    if (QFrame* again = cardNamed(QStringLiteral("注册表分析")))
+                        for (QLabel* l : again->findChildren<QLabel*>())
+                            if (l->property("shopState").toBool())
+                                got = l->text();
+                    check("那张卡说出了「已经安排卸载，下次启动才真删」",
+                          got.contains(QStringLiteral("下次启动")), got);
+                } else {
+                    check("答「是」那一段（本机得有 registry 那颗 dll 可卸）", false,
+                          QStringLiteral("宿主认不出 registry 这颗"));
+                }
+                // ⑥ 他给的稳定复现（原话）："先打开插件A，返回插件页面，卸载插件B，
+                //     插件页面自动显示插件A内容，然后内存爆炸卡死"。
+                //     A=注册表分析（先点开、再返回），B=Base64（也点开过一次 → dll 映射进进程，
+                //     于是卸它走的是"排进待删表"那一条：**这一面判据一颗 dll 都不真删**，CI 能跑）。
+                //     量的三件事：卡片墙还在原地、A 那张页没被闪出来、内存没涨。
+                page.showTool(QStringLiteral("registry"));
+                drain();
+                page.showTool(QStringLiteral("base64"));
+                drain();
+                if (backBtn())
+                    backBtn()->click();
+                drain();
+                {
+                    const PluginHost::Meta* b = PluginHost::meta(QStringLiteral("base64"));
+                    check("B（Base64）这颗在目录里", b != nullptr, b ? b->file : QStringLiteral("无"));
+                    if (b) {
+                        // A 那张页还缓存着。给它挂一颗 Show 计数器：
+                        // rebuildGrid 旧顺序是"先把卡片那格摘掉、再插回去"，摘掉那一瞬 QStackedLayout
+                        // 会把后面的格子顶成当前 —— 于是**每次重排都把 A 那张页闪出来一次**（showEvent）。
+                        // 他看到的"自动显示插件A内容"就是这个形状。
+                        QString perr;
+                        QWidget* pageA = PluginHost::page(QStringLiteral("registry"), &page, &perr);
+                        class ShowCounter : public QObject {
+                        public:
+                            explicit ShowCounter(QObject* p) : QObject(p) {}
+                            int n = 0;
+                        protected:
+                            bool eventFilter(QObject*, QEvent* e) override
+                            {
+                                if (e->type() == QEvent::Show)
+                                    ++n;
+                                return false;
+                            }
+                        };
+                        auto* counter = new ShowCounter(&page);
+                        if (pageA)
+                            pageA->installEventFilter(counter);
+                        const int wsBefore = Platform::workingSetMB();
+                        QFrame* cardB = nullptr;
+                        for (QFrame* c : page.findChildren<QFrame*>(QStringLiteral("row")))
+                            for (QLabel* l : c->findChildren<QLabel*>())
+                                if (l->text() == b->name)
+                                    cardB = c;
+                        if (QPushButton* ub = btnOn(cardB, QStringLiteral("卸载"))) {
+                            armClick(QMessageBox::Yes);
+                            click(ub);
+                            drain();
+                        } else {
+                            // 没这颗就一行都没量到 —— 报红点名，别让它变成"计数器是 0 所以过了"
+                            check("B 那张卡上有「卸载」那颗", false,
+                                  QStringLiteral("cardB=%1").arg(cardB ? QStringLiteral("找到了卡")
+                                                                       : QStringLiteral("找不到那张卡")));
+                        }
+                        const int wsAfter = Platform::workingSetMB();
+                        std::printf("INFO 卸掉 B 之后：工作集 %d→%d MB，stack 见下\n", wsBefore, wsAfter);
+                        QString cells;
+                        for (int i = 0; i < stack->count(); ++i)
+                            cells += QStringLiteral(" [%1]%2").arg(i).arg(
+                                QString::fromLatin1(stack->widget(i)->metaObject()->className()));
+                        std::printf("INFO stack：%s\n", cells.toUtf8().constData());
+                        eq("卸掉另一颗 B 之后：还在卡片墙（A 那张页没被翻出来）", where(),
+                           QStringLiteral("index=0 类=QScrollArea 返回可见=0"));
+                        check("这一按没把内存整炸（工作集涨幅 < 200MB）", wsAfter - wsBefore < 200,
+                              QStringLiteral("%1→%2 MB").arg(wsBefore).arg(wsAfter));
+                        // 这条才是"自动显示插件A内容"的量化：重排那一下 A 那张页被 Show 了几次。
+                        check("重排那一下没把 A 那张页闪出来（Show 次数=0）", counter->n == 0,
+                              QStringLiteral("Show %1 次").arg(counter->n));
+                    }
+                }
+                // ⑤ 那张页的出口。他原话是"找不到退出按钮" —— 一颗 autoRaise 的小箭头
+                //     （"‹ 返回商店"）在深色页眉里就是找不着，所以量两条：实心、并且 Esc 也能回去。
+                if (QPushButton* ub = btnOn(cardNamed(QStringLiteral("注册表分析")),
+                                            QStringLiteral("卸载")))
+                    std::printf("INFO 卸载那颗还在（答是之后卡片重排过）：%s\n",
+                                ub->text().toUtf8().constData());
+                page.showTool(QStringLiteral("registry"));
+                drain();
+                {
+                    QToolButton* b = backBtn();
+                    check("出口那颗是实心的（不是 autoRaise 的淡箭头）", b && !b->autoRaise(),
+                          b ? (b->autoRaise() ? QStringLiteral("autoRaise") : QStringLiteral("实心"))
+                            : QStringLiteral("找不到那颗"));
+                    const QString before = where();
+                    QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+                    QApplication::sendEvent(&page, &esc);
+                    drain();
+                    check("在那张页上按 Esc = 回卡片墙", where() != before && where().contains(QStringLiteral("类=QScrollArea")),
+                          before + QStringLiteral(" -> ") + where());
+                }
+            }
+            std::printf("storeexit: 失败 %d 项\n", storeExitBad);
+            std::fflush(stdout);
+            app.quit();
+        });
+    }
+
     QObject::connect(&win, &SearchWindow::hotkeyChanged, &win, applyHotkeyChange);    const int rc = app.exec();
     if (args.contains("--toggle"))
         return toggleBad;
@@ -4319,5 +4634,7 @@ int main(int argc, char* argv[])
         return capFlashBad;
     if (args.contains("--storenet"))
         return storeNetBad;
+    if (args.contains("--storeexit"))
+        return storeExitBad;
     return rc;
 }

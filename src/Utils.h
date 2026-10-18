@@ -61,6 +61,14 @@ void trayNote(const QString& title, const QString& msg, int msec = 5000);
 // 置顶窗的右键菜单就是这么变成白底压浅灰字、看不见字的（2026-10-17 他截图报的）。
 QString darkMenuStyle();
 
+// 悬停说明（tooltip）那一小块的深色样式，**只有这一份**，而且必须挂在 qApp 上。
+// 毛病和上面那条一模一样：Qt6 的 windows11 风格画 tooltip 用的是**系统**的浅色底，
+// applyDarkPalette 里设的 ToolTipBase/ToolTipText 它根本不读 —— 于是灰字压白底，
+// 一行都看不见（2026-10-18 他报的"夜间模式的鼠标悬停说明，字体是灰色，背景是白色"）。
+// 为什么不能塞进 darkMenuStyle 由各窗口自己挂：tooltip 是**独立顶层窗口**，
+// 挂在某个窗口的样式表管不到它，只有 qApp 那一份能盖住。
+QString darkTipStyle();
+
 // 运行日志：追加一行到 %APPDATA%/ltool/log.txt
 void log(const QString& msg);
 
