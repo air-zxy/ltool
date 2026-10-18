@@ -6,6 +6,7 @@
 #include "PluginHost.h"
 #include "PluginStore.h"
 #include "Utils.h"
+#include "platform/ProcInfo.h"
 
 #include <QColor>
 #include <QDesktopServices>
@@ -787,6 +788,13 @@ void ToolsPage::rebuildGrid()
         old->deleteLater();
     }
     backToGrid();
+    // 他报的是"卸完插件……然后内存爆炸卡死"，而那台是 Win10（我这台 Win11 上离屏量到 58→63 MB，
+    // 复现不了）。每重排一次就把工作集和格子数写进日志：下次炸之前那几行能分出
+    // "每次重排都长一点"（= 有东西没释放）和"某一下突然长"（= 那一下真去干了重活）。
+    Utils::log(QStringLiteral("store: 重排卡片墙（卡片 %1 张 / stack %2 格 / 工作集 %3 MB）")
+                   .arg(findChildren<QFrame*>(QStringLiteral("row")).size())
+                   .arg(m_stack->count())
+                   .arg(Platform::workingSetMB()));
 }
 
 // 回到那一面卡片墙：三处入口（那颗按钮、Esc、重排之后）共用这一条
