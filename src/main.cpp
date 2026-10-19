@@ -29,6 +29,7 @@
 #include "Pinyin.h"
 #include "ShellMenu.h"
 #include "SysTools.h"
+#include "Theme.h"
 #include "RegClean.h"
 #include "Firewall.h"
 #include "StartupAudit.h"
@@ -60,6 +61,7 @@
 #include <QFrame>
 #include <QRegularExpression>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QGroupBox>
 #include <QLayout>
 #include <QScrollArea>
@@ -581,36 +583,6 @@ int runDiskTiming()
     return 0;
 }
 
-// 深色外观必须由我们自己保证：设置页的 QSS 只覆盖了它写到的那些部件，
-// QScrollArea 视口、菜单、滚动条这些没写到的会去取调色板 —— 浅色模式的系统
-// （新虚拟机默认就是浅色）会把它们画成白底，C 盘清理页整片发白就是这么来的。
-void applyDarkPalette(QApplication& app)
-{
-    const QColor window(0x1b, 0x1c, 0x20), base(0x17, 0x18, 0x1c), alt(0x23, 0x24, 0x29);
-    const QColor text(0xe8, 0xeb, 0xf2), muted(0x8b, 0x93, 0xa1), accent(0x3f, 0x6a, 0xe0);
-    QPalette pal = app.palette();
-    pal.setColor(QPalette::Window, window);
-    pal.setColor(QPalette::Base, base);
-    pal.setColor(QPalette::AlternateBase, alt);
-    pal.setColor(QPalette::Text, text);
-    pal.setColor(QPalette::WindowText, text);
-    pal.setColor(QPalette::Button, QColor(0x2b, 0x2d, 0x34));
-    pal.setColor(QPalette::ButtonText, text);
-    pal.setColor(QPalette::ToolTipBase, alt);
-    pal.setColor(QPalette::ToolTipText, text);
-    pal.setColor(QPalette::Highlight, accent);
-    pal.setColor(QPalette::HighlightedText, Qt::white);
-    pal.setColor(QPalette::PlaceholderText, muted);
-    pal.setColor(QPalette::Link, accent);
-    for (QPalette::ColorGroup g : {QPalette::Disabled, QPalette::Inactive}) {
-        pal.setColor(g, QPalette::Text, muted);
-        pal.setColor(g, QPalette::WindowText, muted);
-        pal.setColor(g, QPalette::ButtonText, muted);
-        pal.setColor(g, QPalette::Highlight, QColor(0x3a, 0x3c, 0x45));
-    }
-    app.setPalette(pal);
-}
-
 } // namespace
 
 int main(int argc, char* argv[])
@@ -666,9 +638,7 @@ int main(int argc, char* argv[])
     QApplication::setWindowIcon(Utils::appIcon());
     // 常驻托盘：最后一个窗口关闭（比如关掉设置页）不能退出程序
     app.setQuitOnLastWindowClosed(false);
-    applyDarkPalette(app);
-    // 悬停说明那一小块：调色板它不读（见 Utils::darkTipStyle 那段注释），只能靠 qApp 这一份样式表。
-    app.setStyleSheet(Utils::darkTipStyle());
+    Theme::applyToApp(app);   // 夜间/日间（默认夜间）：调色板 + qApp 那份悬停说明样式表都在里面
 
     Utils::ensureDirs();
     // 卸载排着队的先落地：上一轮点过「卸载」但当时这个 dll 还加载在进程里（Windows 不放行），
@@ -1906,6 +1876,150 @@ int main(int argc, char* argv[])
                 QStringLiteral("底=%1 字=%2 亮差=%3")
                     .arg(bg.name(), fg.name())
                     .arg(bg.isValid() && fg.isValid() ? fg.lightness() - bg.lightness() : -999));
+        }
+        // ---- 夜间 / 日间（2026-10-20 他点名要配置页那颗切换）----
+        // 这套判据钉的是"切换真的换了颜色、而且可逆、而且落盘"，不是"有个控件在那"。
+        {
+            const int themeRows = rowCount(QStringLiteral("外观："));
+            const auto radios = page.findChildren<QRadioButton*>();
+            QStringList radioNames;
+            int checked = 0;
+            for (const QRadioButton* r : radios) {
+                radioNames << r->text();
+                if (r->isChecked())
+                    ++checked;
+            }
+            say("「外观」那一行只有一行，里面两颗单选",
+                themeRows == 1 && radioNames.size() == 2,
+                QStringLiteral("行数=%1 单选=%2").arg(themeRows).arg(radioNames.join(QStringLiteral("/"))));
+            say("默认是夜间（这一版之前的行为，不该被切换功能改掉）",
+                Theme::current() == Theme::Mode::Dark && checked == 1,
+                QStringLiteral("current=%1 选中数=%2").arg(Theme::name(Theme::current())).arg(checked));
+
+            const QColor darkWindow = Theme::color("window");
+            const QString darkTip = qApp->styleSheet();
+            // 拨到日间
+            Theme::setMode(Theme::Mode::Light);
+            const QColor lightWindow = Theme::color("window");
+            const QColor palWindow = qApp->palette().color(QPalette::Window);
+            say("切到日间：current 跟着变，调色板也真的换了",
+                Theme::current() == Theme::Mode::Light && palWindow == lightWindow
+                    && lightWindow != darkWindow,
+                QStringLiteral("夜底=%1 日底=%2 调色板=%3").arg(darkWindow.name(), lightWindow.name(),
+                                                               palWindow.name()));
+            {
+                const QColor text = Theme::color("text");
+                const int delta = qAbs(text.lightness() - lightWindow.lightness());
+                say("日间那份正文压在窗口底上够亮差（和夜间同一条口径 >120）",
+                    delta > 120, QStringLiteral("底=%1 字=%2 亮差=%3")
+                                      .arg(lightWindow.name(), text.name()).arg(delta));
+            }
+            say("切到日间：挂在 qApp 上的悬停说明跟着换底色（那一份是独立顶层窗口，只能靠它）",
+                !qApp->styleSheet().isEmpty() && qApp->styleSheet() != darkTip
+                    && qApp->styleSheet().contains(Theme::color("field").name().mid(1),
+                                                   Qt::CaseInsensitive),
+                QStringLiteral("新样式表长度=%1").arg(qApp->styleSheet().size()));
+            {
+                QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+                const QString stored = cfg.value("ui/theme").toString();
+                say("切换是落盘的（重开程序还认），不是只改内存",
+                    stored.compare(QLatin1String("light"), Qt::CaseInsensitive) == 0,
+                    QStringLiteral("config.ini ui/theme=%1").arg(stored));
+            }
+            // 反向：拨回夜间，一切得回到原值 —— 不然就是单向棘轮
+            Theme::setMode(Theme::Mode::Dark);
+            say("拨回夜间：底色/样式表一字不差回到原来那一份（不是单向的）",
+                Theme::color("window") == darkWindow && qApp->styleSheet() == darkTip,
+                QStringLiteral("底=%1 样式表回到原样=%2")
+                    .arg(Theme::color("window").name())
+                    .arg(qApp->styleSheet() == darkTip ? 1 : 0));
+            // expand() 那一步：认得的名字换成值，认不出的原样留着（写错 token 时看得见）
+            {
+                const QString probe = Theme::expand("@window and @nope");
+                say("样式表里的 @token 换成值；写错的名字原样留着，不许静默变空",
+                    probe == QStringLiteral("%1 and @nope").arg(Theme::color("window").name()),
+                    QStringLiteral("得到 %1").arg(probe));
+            }
+            // 前缀陷阱：这张表里有 5 对"一个是另一个的前缀"的角色
+            //（card/cardLine、accent/accentUp/accentDown、group/groupText、
+            //  disabled/disabledLine、border/borderHi/borderHiUp）。
+            // 按表顺序挨个 replace 的话，`@cardLine` 会先被 `@card` 吃掉，剩下一个
+            // `<card 的值>Line` 混在 QSS 里 —— 界面上是"边框颜色不对"，日志里一个字都没有。
+            {
+                const QString probe = Theme::expand(
+                    QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8")
+                        .arg(QStringLiteral("@card"), QStringLiteral("@cardLine"),
+                             QStringLiteral("@accent"), QStringLiteral("@accentUp"),
+                             QStringLiteral("@group"), QStringLiteral("@groupText"),
+                             QStringLiteral("@border"), QStringLiteral("@borderHi")));
+                const QString want = QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8")
+                    .arg(Theme::token("card"), Theme::token("cardLine"),
+                         Theme::token("accent"), Theme::token("accentUp"),
+                         Theme::token("group"), Theme::token("groupText"),
+                         Theme::token("border"), Theme::token("borderHi"));
+                say("长名字的角色不被它的短前缀抢走（@cardLine 不等于 @card 拼上 \"Line\"）",
+                    probe == want && !probe.contains(QLatin1String("LineLine"))
+                        && !probe.contains(QLatin1String("UpUp")),
+                    QStringLiteral("得到 %1").arg(probe));
+            }
+            // Theme::bind 的那份样式表要能在切换时自己重挂，而且**子控件**也得收到通知 ——
+            // 样式表挂在具体控件身上，只给顶层窗口发事件的话，配置页里的控件全是老颜色。
+            {
+                auto* win = new QWidget(nullptr);
+                win->setObjectName(QStringLiteral("themeBindProbe"));
+                auto* inner = new QLabel(QStringLiteral("探针"), win);
+                auto* lay = new QVBoxLayout(win);
+                lay->addWidget(inner);
+                Theme::bind(inner, "color: @text; background: @window;");
+                const QString nightQss = inner->styleSheet();
+                Theme::setMode(Theme::Mode::Light);
+                const QString dayQss = inner->styleSheet();
+                const bool followsMode = nightQss != dayQss
+                    && dayQss.contains(Theme::color("text").name(), Qt::CaseInsensitive)
+                    && dayQss.contains(Theme::color("window").name(), Qt::CaseInsensitive)
+                    && nightQss.contains(QStringLiteral("#1b1c20"), Qt::CaseInsensitive);
+                Theme::setMode(Theme::Mode::Dark);
+                const bool reversible = inner->styleSheet() == nightQss;
+                delete win;
+                say("挂在子控件上的那份样式表（Theme::bind）会跟着切换重挂，不是只有顶层窗口变脸",
+                    followsMode && reversible,
+                    QStringLiteral("夜间=%1 日间=%2 拨回来=%3")
+                        .arg(nightQss, dayQss).arg(reversible ? QStringLiteral("原样")
+                                                              : QStringLiteral("没回来")));
+            }
+            // 最后这一条不看样式表文本，看**渲出来的像素**：两种模式各截一张配置页存成 PNG，
+            // 再量整张的平均亮度。为什么要多这一条 —— 前面那些判据量的是"字符串里写的是哪个色号"，
+            // 而样式表写得对、画出来还是黑的是可能的（那份 QSS 没挂到这个控件上、或者控件用的是
+            // 调色板不是样式表）。2026-10-20 加切换时就是把颜色从 380 处字面量搬进角色名，
+            // 这类"搬漏一处"只有像素能抓到。
+            {
+                const QString shots = QDir::tempPath() + QStringLiteral("/ltool-cfgshots");
+                QDir().mkpath(shots);
+                page.resize(1000, 760);
+                const auto meanLightness = [&page](const QString& file) {
+                    const QPixmap pm = page.grab();
+                    const QImage img = pm.toImage().convertToFormat(QImage::Format_RGB32);
+                    pm.save(file, "PNG");
+                    long long sum = 0, n = 0;
+                    for (int y = 0; y < img.height(); y += 4) {
+                        const QRgb* line = reinterpret_cast<const QRgb*>(img.constScanLine(y));
+                        for (int x = 0; x < img.width(); x += 4, ++line) {
+                            sum += qGray(*line);
+                            ++n;
+                        }
+                    }
+                    return n > 0 ? int(sum / n) : -1;
+                };
+                Theme::setMode(Theme::Mode::Dark);
+                const int night = meanLightness(shots + QStringLiteral("/theme-night.png"));
+                Theme::setMode(Theme::Mode::Light);
+                const int day = meanLightness(shots + QStringLiteral("/theme-day.png"));
+                Theme::setMode(Theme::Mode::Dark);
+                say("两种模式各渲一张配置页，日间那张整张平均亮度明显更亮（量的是像素不是字符串）",
+                    night >= 0 && day - night > 60,
+                    QStringLiteral("夜间平均灰度=%1 日间=%2 差=%3 · PNG 在 %4")
+                        .arg(night).arg(day).arg(day - night).arg(shots));
+            }
         }
         std::printf("cfgcheck: 失败 %d 项\n", bad);
         std::fflush(stdout);
@@ -3783,9 +3897,11 @@ int main(int argc, char* argv[])
     QSystemTrayIcon tray(Utils::appIcon());
     trayPtr = &tray;
     QMenu menu;
-    // 这份样式全程序只有 Utils::darkMenuStyle() 那一份（这里以前另抄了一份字面量，
-    // 抄两份的代价就是"改了四处漏一处"，10-17 置顶窗那个白底菜单就是这么来的）
-    menu.setStyleSheet(Utils::darkMenuStyle());
+    // 这份样式全程序只有 Theme::menuStyle() 那一份（这里以前另抄了一份字面量，
+    // 抄两份的代价就是"改了四处漏一处"，10-17 置顶窗那个白底菜单就是这么来的）。
+    // 托盘这棵是启动时建一次、活一整天的，所以必须走 bind —— 直接 setStyleSheet
+    // 的话，他拨完「日间」这颗菜单还是黑的。
+    Theme::bindMenu(&menu);
     QAction* showAction = menu.addAction(QString("显示搜索框 (%1)").arg(hotkeyLabel));
     QObject::connect(showAction, &QAction::triggered, &win, &SearchWindow::showLauncher);
     updateMenuHotkey = [&] {

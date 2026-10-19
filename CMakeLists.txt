@@ -110,6 +110,7 @@ endif()
 # 那两种形状都比现在老实说"编到这里为止"更像假绿。
 if(NOT WIN32)
     set(LTOOL_CORE_PORTABLE_SRC
+        src/Theme.cpp          # 只有 Qt，没碰 Win32：弹层那两份样式表要能从 Utils.cpp 里调它
         src/Utils.cpp           # 2026-10-16 夜把里面最后六个 Win32 入口抽成 FileMeta / ProcInfo
                                 # 两道缝之后，这个 TU（所有人都在调它）终于是可移植的了
         src/Pinyin.cpp          # 搜索框的拼音匹配（表在 pinyin_data.h，只吃 QString）
@@ -156,6 +157,7 @@ endif()
 
 qt_add_library(ltoolcore SHARED
     ${LTOOL_PLATFORM_SRC}
+    src/Theme.cpp
     src/Utils.cpp
     src/EnvPath.cpp
     src/RegClean.cpp

@@ -1,4 +1,5 @@
 #include "InstallLogDialog.h"
+#include "Theme.h"
 #include "Utils.h"
 #include "platform/Launch.h"
 
@@ -23,7 +24,7 @@ InstallLogDialog::InstallLogDialog(QWidget* parent, const QString& title,
     lay->addWidget(new QLabel(QString("正在安装 %1（过程如下，完成后可直接关闭）").arg(title), this));
     auto* cmd = new QLabel("$ " + displayCommand, this);
     cmd->setWordWrap(true);
-    cmd->setStyleSheet("color:#8b93a1;");
+    Theme::bind(cmd, "color:@muted;");
     lay->addWidget(cmd);
     auto* log = new QPlainTextEdit(this);
     log->setReadOnly(true);

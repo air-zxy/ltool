@@ -10,6 +10,7 @@
 #include "FileTools.h"
 #include "FileIndexer.h"
 #include "SettingsDialog.h"
+#include "Theme.h"
 #include "SysTools.h"
 #include "PluginHost.h"
 #include "Pinyin.h"
@@ -92,7 +93,7 @@ public:
             f.setPointSizeF(8.5);
             f.setBold(true);
             p->setFont(f);
-            p->setPen(QColor(120, 128, 140));
+            p->setPen(Theme::color("sectionText"));
             p->drawText(opt.rect.adjusted(10, 0, -8, 0),
                         Qt::AlignVCenter | Qt::AlignLeft, index.data().toString());
             p->restore();
@@ -105,7 +106,7 @@ public:
         if (opt.state & QStyle::State_Selected) {
             QPainterPath path;
             path.addRoundedRect(rr, 9, 9);
-            p->fillPath(path, QColor(255, 255, 255, 28));
+            p->fillPath(path, Theme::color("hairline", 28));
         }
 
         const QRect iconRect(rr.left() + 8, rr.center().y() - 14, 28, 28);
@@ -114,7 +115,7 @@ public:
         } else {
             QPainterPath path;
             path.addEllipse(iconRect);
-            p->fillPath(path, QColor(90, 96, 108));
+            p->fillPath(path, Theme::color("badgeBg"));
             p->setPen(Qt::white);
             p->drawText(iconRect, Qt::AlignCenter, "?");
         }
@@ -123,7 +124,7 @@ public:
         f.setPointSizeF(10.5);
         f.setBold(true);
         p->setFont(f);
-        p->setPen(r.actionable ? QColor(235, 238, 245) : QColor(160, 166, 178));
+        p->setPen(Theme::color(r.actionable ? "text" : "dim"));
         const QFontMetrics tfm(f);
         p->drawText(QRect(rr.left() + 48, rr.top() + 6, rr.width() - 58, 20),
                     Qt::AlignVCenter,
@@ -132,7 +133,7 @@ public:
         f.setBold(false);
         f.setPointSizeF(8.5);
         p->setFont(f);
-        p->setPen(QColor(148, 155, 168));
+        p->setPen(Theme::color("muted"));
         const QFontMetrics sfm(f);
         p->drawText(QRect(rr.left() + 48, rr.top() + 29, rr.width() - 58, 16),
                     Qt::AlignVCenter,
@@ -243,8 +244,8 @@ void SearchWindow::buildUi()
     m_input->setObjectName(QStringLiteral("input"));   // --pinyin 的端到端断言靠它找到输入框
     m_input->setFixedHeight(48);
     m_input->setPlaceholderText("搜索应用、文件、网址");
-    m_input->setStyleSheet(
-        "QLineEdit{background:transparent;border:none;color:#eef1f7;"
+    Theme::bind(m_input,
+        "QLineEdit{background:transparent;border:none;color:@editText;"
         "font-size:15pt;padding:4px 10px;}");
     m_input->installEventFilter(this);
 
@@ -254,9 +255,9 @@ void SearchWindow::buildUi()
     m_settingsBtn->setToolTip("设置");
     m_settingsBtn->setCursor(Qt::PointingHandCursor);
     m_settingsBtn->setFixedSize(40, 40);
-    m_settingsBtn->setStyleSheet(
-        "QToolButton{background:transparent;border:none;color:#9aa3b2;font-size:20px;}"
-        "QToolButton:hover{color:#eef1f7;background:rgba(255,255,255,24);border-radius:8px;}");
+    Theme::bind(m_settingsBtn,
+        "QToolButton{background:transparent;border:none;color:@groupText;font-size:20px;}"
+        "QToolButton:hover{color:@editText;background:@card;border-radius:8px;}");
 
     auto* inputRow = new QWidget(this);
     inputRow->setStyleSheet("background:transparent;");
@@ -270,11 +271,11 @@ void SearchWindow::buildUi()
     m_list->setObjectName(QStringLiteral("list"));
     m_list->setItemDelegate(new ResultDelegate(this));
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_list->setStyleSheet(
+    Theme::bind(m_list,
         "QListWidget{background:transparent;border:none;outline:none;font-size:10.5pt;}"
         "QListWidget::item{background:transparent;}"
         "QScrollBar:vertical{background:transparent;width:6px;margin:2px;}"
-        "QScrollBar::handle:vertical{background:rgba(255,255,255,60);border-radius:3px;min-height:20px;}"
+        "QScrollBar::handle:vertical{background:@scrollHandle;border-radius:3px;min-height:20px;}"
         "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
         "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}");
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -287,7 +288,7 @@ void SearchWindow::buildUi()
         "Enter/双击 运行 · ↑↓ 选择 · Esc 隐藏 · Alt+Space 呼出 · 右键 更多操作", this);
     m_hint->setAlignment(Qt::AlignCenter);
     m_hint->setFixedHeight(24);
-    m_hint->setStyleSheet("color:#79828f;background:transparent;font-size:8.5pt;");
+    Theme::bind(m_hint, "color:@sectionText;background:transparent;font-size:8.5pt;");
 
     auto* lay = new QVBoxLayout(this);
     lay->setContentsMargins(14, 12, 14, 8);
@@ -588,8 +589,8 @@ void SearchWindow::paintEvent(QPaintEvent*)
     p.setRenderHint(QPainter::Antialiasing);
     QPainterPath path;
     path.addRoundedRect(QRectF(0.5, 0.5, width() - 1, height() - 1), 13, 13);
-    p.fillPath(path, QColor(28, 30, 36, 247));
-    p.setPen(QPen(QColor(255, 255, 255, 26), 1));
+    p.fillPath(path, Theme::color("panel", 247));
+    p.setPen(QPen(Theme::color("hairline", 26), 1));
     p.drawPath(path);
 }
 

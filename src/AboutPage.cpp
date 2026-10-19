@@ -3,6 +3,7 @@
 #include "DevEnv.h"
 #include "DownloadManager.h"
 #include "PluginHost.h"
+#include "Theme.h"
 #include "Utils.h"
 
 #include <QCoreApplication>
@@ -106,16 +107,16 @@ AboutPage::AboutPage(QWidget* parent)
     m_progress->setValue(0);
     m_progress->setTextVisible(false);
     m_progress->setFixedHeight(8);
-    m_progress->setStyleSheet(QStringLiteral(
-        "QProgressBar { background: #1f2025; border: 1px solid #2c2d34; border-radius: 4px; }"
-        "QProgressBar::chunk { background: #3f6ae0; border-radius: 3px; }"
-    ));
+    Theme::bind(m_progress,
+        "QProgressBar { background: @group; border: 1px solid @line; border-radius: 4px; }"
+        "QProgressBar::chunk { background: @accent; border-radius: 3px; }"
+    );
     m_progress->setVisible(false);
     lay->addWidget(m_progress);
 
     m_progressLabel = new QLabel(this);
     m_progressLabel->setObjectName(QStringLiteral("progressLabel"));
-    m_progressLabel->setStyleSheet(QStringLiteral("color: #8b93a1; font-size: 8.5pt;"));
+    Theme::bind(m_progressLabel, "color: @muted; font-size: 8.5pt;");
     m_progressLabel->setVisible(false);
     lay->addWidget(m_progressLabel);
 
@@ -284,8 +285,8 @@ void AboutPage::startCheck()
                     : QStringLiteral("%1%2").arg(errStr,
                                                  http ? QStringLiteral("（HTTP %1）").arg(http) : QString());
                 m_status->setText(QStringLiteral(
-                    "检查更新没走通：%1。可以直接点 <a href=\"%2\" style=\"color:#5b8def;text-decoration:underline;\">打开发布页</a> 看最新版本。")
-                    .arg(why, releasesPageUrl()));
+                    "检查更新没走通：%1。可以直接点 <a href=\"%2\" style=\"color:%3;text-decoration:underline;\">打开发布页</a> 看最新版本。")
+                    .arg(why, releasesPageUrl(), Theme::token("infoText")));
                 Utils::log(QStringLiteral("update: 检查失败 http=%1 err=%2").arg(http).arg(errStr));
                 return;
             }

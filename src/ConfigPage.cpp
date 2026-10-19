@@ -4,6 +4,7 @@
 #include "ClipboardStore.h"
 #include "DevEnv.h"
 #include "CaptureHistory.h"
+#include "Theme.h"
 #include "Utils.h"
 #include "PluginStore.h"
 
@@ -22,6 +23,7 @@
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
+#include <QRadioButton>
 #include <QListWidget>
 #include <QPushButton>
 #include <QSettings>
@@ -161,6 +163,30 @@ ConfigPage::ConfigPage(QWidget* parent)
     m_installPath = new QLineEdit(general);
     m_installPath->setPlaceholderText("D:\\software");
     generalLay->addRow("软件安装路径：", m_installPath);
+    // 外观：夜间 / 日间。拨一下就当场生效（Theme::setMode 会重刷调色板、两份弹层样式表，
+    // 并给每个顶层窗口发一次 ThemeChange），不用按保存、也不用重启。
+    auto* themeRow = new QWidget(general);
+    auto* themeLay = new QHBoxLayout(themeRow);
+    themeLay->setContentsMargins(0, 0, 0, 0);
+    themeLay->setSpacing(16);
+    m_themeDark = new QRadioButton(QString::fromUtf8("夜间"), themeRow);
+    m_themeLight = new QRadioButton(QString::fromUtf8("日间"), themeRow);
+    m_themeDark->setChecked(Theme::current() == Theme::Mode::Dark);
+    m_themeLight->setChecked(Theme::current() == Theme::Mode::Light);
+    themeLay->addWidget(m_themeDark);
+    themeLay->addWidget(m_themeLight);
+    themeLay->addStretch(1);
+    themeRow->setToolTip(QStringLiteral(
+        "夜间是这个程序一直以来的样子（默认）。\n"
+        "日间的正文/灰字对比度按 WCAG AA 对过：正文 15.34:1、灰字 5.60:1、白字压主色 6.37:1。\n"
+        "拨一下就当场生效，不用重启、也不用按保存：搜索框、托盘菜单、菜单墙、配置、关于都会当场换脸。\n"
+        "还切不动的一块：插件自己那些页（录屏、置顶窗、宫图、剪贴板…）在 dll 里各写了一份深色，"
+        "要重新构建那 19 颗 dll 才会跟着换 —— 商店里装的那批不会。"));
+    generalLay->addRow(QStringLiteral("外观："), themeRow);
+    connect(m_themeDark, &QRadioButton::toggled, this,
+            [](bool on) { if (on) Theme::setMode(Theme::Mode::Dark); });
+    connect(m_themeLight, &QRadioButton::toggled, this,
+            [](bool on) { if (on) Theme::setMode(Theme::Mode::Light); });
     m_proxy = new QLineEdit(general);
     if (const QString sys = DevEnv::systemProxyUrl(); !sys.isEmpty()) {
         m_proxy->setPlaceholderText(QString("留空 = 自动用系统代理（当前检测到 %1）").arg(sys));

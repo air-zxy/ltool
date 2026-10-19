@@ -1,5 +1,7 @@
 #include "InfoRow.h"
 
+#include "Theme.h"
+#include "Theme.h"
 #include <QCheckBox>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -10,13 +12,13 @@
 QColor InfoRow::badgeColor(Badge b)
 {
     switch (b) {
-    case Good:    return QColor(96, 190, 120);
-    case Warn:    return QColor(216, 168, 84);
-    case Bad:     return QColor(224, 108, 108);
-    case Muted:   return QColor(140, 148, 160);
+    case Good:    return Theme::color("good");
+    case Warn:    return Theme::color("warn");
+    case Bad:     return Theme::color("bad");
+    case Muted:   return Theme::color("mutedBadge");
     case Neutral: break;
     }
-    return QColor(120, 150, 210);
+    return Theme::color("neutralBadge");
 }
 
 InfoRow::InfoRow(const QString& title, const QString& subtitle, const QString& badge,
@@ -63,7 +65,7 @@ InfoRow::InfoRow(const QString& title, const QString& subtitle, const QString& b
     // 横向 Ignored：让标题/副标题可以被压缩，不会因为一行长文本把整个列表撑出横向滚动条
     head->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto* sub = new QLabel(subtitle, this);
-    sub->setStyleSheet(QStringLiteral("color:#8b93a1;font-size:8.5pt;background:transparent;"));
+    Theme::bind(sub, "color:@muted;font-size:8.5pt;background:transparent;");
     sub->setTextInteractionFlags(Qt::NoTextInteraction);
     sub->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     text->addWidget(head);

@@ -5,7 +5,10 @@
 #include "AboutPage.h"
 #include "ToolsPage.h"
 #include "WebsitesPage.h"
+#include "Theme.h"
 #include "Utils.h"
+
+#include <QEvent>
 
 #include <QHBoxLayout>
 #include <QIcon>
@@ -39,97 +42,97 @@ QIcon spinnerIcon(int frame)
 
 // 设置页整体深色主题（子页面共享）
 const char* kSettingsQss = R"QSS(
-QDialog { background: #1b1c20; }
+QDialog { background: @window; }
 
-QLabel { color: #e8ebf2; background: transparent; }
-QLabel#tip { color: #8b93a1; }
+QLabel { color: @text; background: transparent; }
+QLabel#tip { color: @muted; }
 QLabel#pageTitle { font-size: 14pt; font-weight: 600; }
-QLabel#muted { color: #8b93a1; }
+QLabel#muted { color: @muted; }
 
 QGroupBox {
-    color: #9aa3b2;
-    border: 1px solid #2c2d34;
+    color: @groupText;
+    border: 1px solid @line;
     border-radius: 10px;
     margin-top: 16px;
     padding: 10px 6px 6px 6px;
     font-weight: 600;
-    background: #1f2025;
+    background: @group;
 }
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; }
 
 QPlainTextEdit {
-    background: #17181c;
-    border: 1px solid #2c2d34;
+    background: @edit;
+    border: 1px solid @line;
     border-radius: 8px;
-    color: #9fe0a8;
+    color: @okText;
     font-family: Consolas, monospace;
     font-size: 9pt;
 }
 QLineEdit, QComboBox, QSpinBox, QTimeEdit, QKeySequenceEdit {
-    background: #232429;
-    border: 1px solid #33353d;
+    background: @field;
+    border: 1px solid @border;
     border-radius: 8px;
     padding: 5px 8px;
-    color: #e8ebf2;
-    selection-background-color: #3f6ae0;
+    color: @text;
+    selection-background-color: @accent;
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTimeEdit:focus, QKeySequenceEdit:focus {
-    border: 1px solid #3f6ae0;
+    border: 1px solid @accent;
 }
 QComboBox::drop-down { border: none; width: 22px; }
 QComboBox QAbstractItemView {
-    background: #232429;
-    color: #e8ebf2;
-    selection-background-color: #3f6ae0;
-    border: 1px solid #33353d;
+    background: @field;
+    color: @text;
+    selection-background-color: @accent;
+    border: 1px solid @border;
     outline: none;
 }
 
 QPushButton {
-    background: #2b2d34;
-    color: #e8ebf2;
-    border: 1px solid #3a3c45;
+    background: @button;
+    color: @text;
+    border: 1px solid @border;
     border-radius: 8px;
     padding: 6px 14px;
 }
-QPushButton:hover { background: #33353d; }
-QPushButton:pressed { background: #26272c; }
-QPushButton:disabled { color: #5b616e; background: #232429; }
+QPushButton:hover { background: @hover; }
+QPushButton:pressed { background: @pressed; }
+QPushButton:disabled { color: @disabled; background: @field; }
 QPushButton#primary {
-    background: #3f6ae0;
-    border: 1px solid #3f6ae0;
-    color: white;
+    background: @accent;
+    border: 1px solid @accent;
+    color: @onAccent;
     font-weight: 600;
 }
-QPushButton#primary:hover { background: #4f79e8; }
-QPushButton#primary:pressed { background: #3560cc; }
+QPushButton#primary:hover { background: @accentUp; }
+QPushButton#primary:pressed { background: @accentDown; }
 /* #primary 的 ID 选择器比 :disabled 优先，不补这条的话"禁用的主按钮"看着还是能点 */
-QPushButton#primary:disabled { background: #232429; border: 1px solid #2c2d34; color: #5b616e; }
+QPushButton#primary:disabled { background: @field; border: 1px solid @line; color: @disabled; }
 /* 列表行上的小动作按钮：一行四个，要紧凑，但禁用时必须一眼看出来 */
 QPushButton#rowBtn {
     padding: 2px 9px;
     font-size: 8.5pt;
     border-radius: 6px;
 }
-QPushButton#rowBtn:disabled { background: transparent; border: 1px solid #2c2d34; color: #4d525d; }
+QPushButton#rowBtn:disabled { background: transparent; border: 1px solid @line; color: @disabledLine; }
 /* 软件列表的表头：比正文淡、比说明文字重一点，好认但不抢 */
-QLabel#colHead { color: #8b93a4; font-size: 8.5pt; font-weight: 600; background: transparent; }
+QLabel#colHead { color: @muted; font-size: 8.5pt; font-weight: 600; background: transparent; }
 
-QCheckBox { color: #e8ebf2; spacing: 8px; background: transparent; }
+QCheckBox { color: @text; spacing: 8px; background: transparent; }
 QCheckBox::indicator {
     width: 16px; height: 16px;
-    border: 1px solid #3a3c45;
+    border: 1px solid @border;
     border-radius: 4px;
-    background: #232429;
+    background: @field;
 }
-QCheckBox::indicator:checked { background: #3f6ae0; border-color: #3f6ae0; }
-QCheckBox::indicator:hover { border-color: #4f79e8; }
+QCheckBox::indicator:checked { background: @accent; border-color: @accent; }
+QCheckBox::indicator:hover { border-color: @accentUp; }
 
 QListWidget {
-    background: #1f2025;
-    border: 1px solid #2c2d34;
+    background: @group;
+    border: 1px solid @line;
     border-radius: 10px;
-    color: #d7dbe4;
+    color: @text;
     outline: none;
 }
 /* 条目背景不能只靠 padding：Qt 的行高来自 sizeHint，padding 只会把画出来的
@@ -137,8 +140,8 @@ QListWidget {
    压掉 18px，看着就是"上下背景色挤在一起"）。行高在下面用 setSizeHint 给足，
    这里只留水平方向的呼吸和圆角。 */
 QListWidget::item { padding: 0 8px; border-radius: 6px; }
-QListWidget::item:selected { background: #3f6ae0; color: white; }
-QListWidget::item:hover:!selected { background: #2a2b31; }
+QListWidget::item:selected { background: @accent; color: @onAccent; }
+QListWidget::item:hover:!selected { background: @hover; }
 
 QListWidget#menuList {
     font-size: 11pt;
@@ -149,42 +152,60 @@ QListWidget#menuList::item {
     border-radius: 8px;
 }
 
-// QMenu 那几条不在这里了：它在 Utils::darkMenuStyle() 里，全程序共用一份（见那里的注释）
+
+
+
 
 QTabWidget::pane { border: none; background: transparent; }
-QTabBar::tab { background: #232429; color: #9aa3b2; border: 1px solid #2c2d34;
+QTabBar::tab { background: @field; color: @groupText; border: 1px solid @line;
     padding: 7px 16px; margin-right: 4px; border-top-left-radius: 8px; border-top-right-radius: 8px; }
-QTabBar::tab:selected { background: #2b2d34; color: #e8ebf2; border-bottom-color: #3f6ae0; }
-QTabBar::tab:hover:!selected { background: #26272c; color: #d7dbe4; }
+QTabBar::tab:selected { background: @button; color: @text; border-bottom-color: @accent; }
+QTabBar::tab:hover:!selected { background: @pressed; color: @text; }
 
 QScrollArea#cfgScroll, QScrollArea#cfgScroll > QWidget#qt_scrollarea_viewport { background: transparent; }
 QWidget#cfgBody { background: transparent; }
 QWidget#rowsHost { background: transparent; }
 /* 列表分组表头（软件页）：不属于 #row 的盒子，只要一行小字 + 上方的呼吸 */
-QLabel#catHead { color: #7d8698; font-weight: 600; font-size: 9pt; padding: 6px 2px 0 2px; }
+QLabel#catHead { color: @muted; font-weight: 600; font-size: 9pt; padding: 6px 2px 0 2px; }
 QWidget#row {
-    background: #1f2025;
-    border: 1px solid #2c2d34;
+    background: @group;
+    border: 1px solid @line;
     border-radius: 8px;
 }
-QWidget#row:hover { background: #24252b; border-color: #3a3c45; }
+QWidget#row:hover { background: @hover; border-color: @border; }
 QWidget#row QLabel { background: transparent; }
 
 QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
-QScrollBar::handle:vertical { background: #33353d; border-radius: 4px; min-height: 24px; }
-QScrollBar::handle:vertical:hover { background: #43464f; }
+QScrollBar::handle:vertical { background: @border; border-radius: 4px; min-height: 24px; }
+QScrollBar::handle:vertical:hover { background: @disabledLine; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 )QSS";
 
 } // namespace
 
+// 这一页的样式表 = 那份 token 化的 QSS + 弹层那一份。抽成一颗函数是因为
+// Theme::setMode() 会发 QEvent::ThemeChange 过来，届时原样再算一遍（见 event()）。
+void SettingsDialog::applyThemeQss()
+{
+    // QMenu 那几条不在这里写了：全程序只有 Theme::menuStyle() 那一份（Utils::darkMenuStyle
+    // 现在是它的转接，插件那边符号名不能动）
+    setStyleSheet(Theme::expand(kSettingsQss) + Theme::menuStyle());
+}
+
+bool SettingsDialog::event(QEvent* e)
+{
+    if (e->type() == QEvent::ThemeChange)
+        applyThemeQss();     // 配置页拨完那颗单选，这扇已经开着的窗当场就要变脸
+    return QDialog::event(e);
+}
+
 SettingsDialog::SettingsDialog(QWidget* parent)
     : QDialog(parent)
 {
     setWindowTitle("ltool 设置");
     resize(1140, 790);
-    setStyleSheet(QString::fromUtf8(kSettingsQss) + Utils::darkMenuStyle());
+    applyThemeQss();   // 见下面那颗：夜间/日间切换时要能原地重算这一份
 
     m_menu = new QListWidget(this);
     m_menu->setObjectName("menuList");
@@ -240,10 +261,10 @@ void SettingsDialog::buildBusyRow()
     m_busy->setAutoRaise(true);
     m_busy->setCursor(Qt::PointingHandCursor);
     m_busy->setFixedHeight(28);
-    m_busy->setStyleSheet(
-        "QToolButton{background:transparent;border:none;color:#78c8ff;font-size:8.5pt;"
+    Theme::bind(m_busy,
+        "QToolButton{background:transparent;border:none;color:@infoText;font-size:8.5pt;"
         "text-align:left;padding:2px 6px;}"
-        "QToolButton:hover{background:rgba(255,255,255,26);border-radius:6px;}");
+        "QToolButton:hover{background:@hoverSoft;border-radius:6px;}");
     m_busy->setVisible(false);
     connect(m_busy, &QToolButton::clicked, this, [] { SilentInstallLog::showLog(); });
 

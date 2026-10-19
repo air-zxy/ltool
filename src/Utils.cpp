@@ -1,5 +1,7 @@
 #include "Utils.h"
 
+#include "Theme.h"
+
 #include "platform/Paths.h"
 #include "platform/ProcInfo.h"
 
@@ -343,23 +345,16 @@ int compareVersions(const QString& a, const QString& b)
 }
 
 
-// 深色弹出菜单那一套样式，只有这一份（见 Utils.h 的注释：为什么非用样式表不可）。
+// 弹层那两份：名字留着（已发布的插件 dll 把符号名写死进导入表了，见 #91），
+// 里面转调 Theme —— 2026-10-20 加了夜间/日间切换之后，样式表只有一份的事实不能裂成两份。
 QString darkMenuStyle()
 {
-    return QStringLiteral(
-        "QMenu { background: #232429; border: 1px solid #33353d; border-radius: 8px;"
-        " padding: 4px; color: #e8ebf2; font-size: 10pt; }"
-        "QMenu::item { padding: 6px 20px 6px 12px; border-radius: 6px; }"
-        "QMenu::item:selected { background: #3f6ae0; color: white; }"
-        "QMenu::separator { height: 1px; background: #33353d; margin: 4px 6px; }");
+    return Theme::menuStyle();
 }
 
-// 见 Utils.h 那段注释：这一条只能挂在 qApp 上，所以它不并进 darkMenuStyle，单独一颗。
 QString darkTipStyle()
 {
-    return QStringLiteral(
-        "QToolTip { background: #232429; color: #e8ebf2; border: 1px solid #3a3c45;"
-        " padding: 6px 8px; }");
+    return Theme::tipStyle();
 }
 
 } // namespace Utils

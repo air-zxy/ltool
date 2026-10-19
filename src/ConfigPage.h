@@ -8,6 +8,7 @@ class QComboBox;
 class QLabel;
 class QSpinBox;
 class QLineEdit;
+class QRadioButton;
 class QKeySequenceEdit;
 
 // 配置 - 配置页：开机启动 / 快捷键 / 搜索引擎 / 定时扫描（索引刷新）/ 应用目录 / 剪贴板 / 微软拼音标点
@@ -38,6 +39,8 @@ private:
     QKeySequenceEdit* m_hotkey = nullptr;
     QLineEdit* m_installPath = nullptr;
     QLineEdit* m_proxy = nullptr;
+    QRadioButton* m_themeDark = nullptr;
+    QRadioButton* m_themeLight = nullptr;
     QLineEdit* m_storeUrl = nullptr;
     QLineEdit* m_storeMirrors = nullptr;   // 拉插件时先试的这些前缀，留空=内置那两条   // 插件商店那份 index.json 的地址，留空=内置那条
     QComboBox* m_engine = nullptr;

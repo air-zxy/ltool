@@ -1,5 +1,6 @@
 #include "WebsitesPage.h"
 
+#include "Theme.h"
 #include "Utils.h"
 #include "WebShortcuts.h"
 
@@ -55,7 +56,7 @@ bool entryDialog(QWidget* parent, WebEntry* e)
         QStringLiteral("关键字：搜索框里第一个词命中它就打开这个网站。多个关键字用逗号或空格隔开。\n"
                        "搜索地址可留空；填了就把查询词写进 %s，例如 https://github.com/search?q=%s"),
         &dlg);
-    hint->setStyleSheet(QStringLiteral("color:#8b93a7; font-size: 9pt;"));
+    Theme::bind(hint, "color:@muted; font-size: 9pt;");
     lay->addWidget(hint);
 
     auto* btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -104,15 +105,15 @@ public:
         keysLay->setSpacing(5);
         for (const QString& k : e.keys) {
             auto* tag = new QLabel(k, keysWidget);
-            tag->setStyleSheet(QStringLiteral(
-                "background: rgba(6, 182, 212, 0.16); "
-                "color: #06b6d4; "
-                "border: 1px solid rgba(6, 182, 212, 0.32); "
+            Theme::bind(tag,
+                "background: @tintCyan; "
+                "color: @cyan; "
+                "border: 1px solid @tintCyanLine; "
                 "border-radius: 4px; "
                 "padding: 1px 6px; "
                 "font-family: Consolas, 'Courier New', monospace; "
                 "font-size: 9pt; "
-                "font-weight: 600;"));
+                "font-weight: 600;");
             keysLay->addWidget(tag);
         }
         keysLay->addStretch(1);
@@ -125,13 +126,13 @@ public:
         urlCol->setContentsMargins(0, 0, 0, 0);
 
         auto* urlLabel = new QLabel(e.url, this);
-        urlLabel->setStyleSheet(QStringLiteral("color: #d7dbe4; font-size: 9.5pt;"));
+        Theme::bind(urlLabel, "color: @text; font-size: 9.5pt;");
         urlLabel->setToolTip(e.url);
         urlCol->addWidget(urlLabel);
 
         if (!e.searchUrl.isEmpty()) {
             auto* searchLabel = new QLabel(QStringLiteral("🔍 搜索: %1").arg(e.searchUrl), this);
-            searchLabel->setStyleSheet(QStringLiteral("color: #7d8698; font-size: 8.5pt;"));
+            Theme::bind(searchLabel, "color: @muted; font-size: 8.5pt;");
             searchLabel->setToolTip(e.searchUrl);
             urlCol->addWidget(searchLabel);
         }

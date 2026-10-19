@@ -15,6 +15,7 @@
 #include <QVBoxLayout>
 
 #include "SettingsDialog.h"
+#include "Theme.h"
 #include "Utils.h"
 
 namespace {
@@ -58,25 +59,27 @@ SilentInstallLog::SilentInstallLog(QWidget* parent)
     setWindowTitle("静默安装日志");
     setModal(false);
     resize(780, 460);
-    setStyleSheet(R"QSS(
-QDialog, QWidget { background: #1b1c20; }
-QLabel { color: #e8ebf2; background: transparent; }
-QLabel#muted { color: #8b93a1; }
+    // 这扇窗是启动时建一次、之后反复 show/hide 复用的，所以走 Theme::bind：
+    // 直接 setStyleSheet 的话，他拨完「日间」再打开它，里面还是一片黑。
+    Theme::bind(this, R"QSS(
+QDialog, QWidget { background: @window; }
+QLabel { color: @text; background: transparent; }
+QLabel#muted { color: @muted; }
 QListWidget {
-    background: #17181c; border: 1px solid #2c2d34; border-radius: 8px;
-    color: #e8ebf2; outline: none;
+    background: @base; border: 1px solid @line; border-radius: 8px;
+    color: @text; outline: none;
 }
 QListWidget::item { padding: 6px 8px; border-radius: 6px; }
-QListWidget::item:selected { background: #2c3550; }
+QListWidget::item:selected { background: @selBg; }
 QPlainTextEdit {
-    background: #17181c; border: 1px solid #2c2d34; border-radius: 8px;
-    color: #9fe0a8; font-family: Consolas, monospace; font-size: 9pt;
+    background: @base; border: 1px solid @line; border-radius: 8px;
+    color: @okText; font-family: Consolas, monospace; font-size: 9pt;
 }
 QPushButton {
-    background: #2b2d34; color: #e8ebf2; border: 1px solid #3a3c45;
+    background: @button; color: @text; border: 1px solid @borderHi;
     border-radius: 8px; padding: 6px 14px;
 }
-QPushButton:hover { background: #33353d; }
+QPushButton:hover { background: @hover; }
 )QSS");
 
     auto* lay = new QVBoxLayout(this);

@@ -5,6 +5,7 @@
 #include "DevEnv.h"
 #include "PluginHost.h"
 #include "PluginStore.h"
+#include "Theme.h"
 #include "Utils.h"
 #include "platform/ProcInfo.h"
 
@@ -96,14 +97,14 @@ public:
                                       : QStringLiteral("v%1").arg(version);
             auto* verBadge = new QLabel(vText, this);
             verBadge->setObjectName(QStringLiteral("verBadge"));
-            verBadge->setStyleSheet(QStringLiteral(
-                "background: rgba(255, 255, 255, 0.08); "
-                "color: #9aa3b2; "
-                "border: 1px solid rgba(255, 255, 255, 0.12); "
+            Theme::bind(verBadge,
+                "background: @card; "
+                "color: @groupText; "
+                "border: 1px solid @cardLine; "
                 "border-radius: 4px; "
                 "padding: 1px 6px; "
                 "font-size: 8.5pt; "
-                "font-weight: 500;"));
+                "font-weight: 500;");
             topRow->addWidget(verBadge, 0, Qt::AlignVCenter);
         }
 
@@ -111,8 +112,8 @@ public:
 
         // 可更新那颗卡片的标记：一个绿色向上箭头，钉在右上角。
         m_arrow = new QLabel(QStringLiteral("\u2191"), this);
-        m_arrow->setStyleSheet(QStringLiteral(
-            "color: #10b981; font-size: 14pt; font-weight: 700; background: transparent;"));
+        Theme::bind(m_arrow,
+            "color: @ok; font-size: 14pt; font-weight: 700; background: transparent;");
         m_arrow->setVisible(false);
         topRow->addWidget(m_arrow, 0, Qt::AlignVCenter);
 
@@ -152,36 +153,36 @@ public:
         b->setFixedHeight(30);
         if (isPrimary) {
             b->setObjectName(QStringLiteral("cardBtnPrimary"));
-            b->setStyleSheet(QStringLiteral(
+            Theme::bind(b,
                 "QPushButton {"
-                "  background: #3f6ae0;"
-                "  border: 1px solid #3f6ae0;"
-                "  color: #ffffff;"
+                "  background: @accent;"
+                "  border: 1px solid @accent;"
+                "  color: @onAccent;"
                 "  border-radius: 6px;"
                 "  font-size: 9pt;"
                 "  font-weight: 600;"
                 "  padding: 0 10px;"
                 "}"
-                "QPushButton:hover { background: #4f79e8; border-color: #4f79e8; }"
-                "QPushButton:pressed { background: #3560cc; }"
-                "QPushButton:disabled { background: #232429; border: 1px solid #2c2d34; color: #5b616e; }"
-            ));
+                "QPushButton:hover { background: @accentUp; border-color: @accentUp; }"
+                "QPushButton:pressed { background: @accentDown; }"
+                "QPushButton:disabled { background: @field; border: 1px solid @line; color: @disabled; }"
+            );
         } else {
             b->setObjectName(QStringLiteral("cardBtn"));
-            b->setStyleSheet(QStringLiteral(
+            Theme::bind(b,
                 "QPushButton {"
-                "  background: #2b2d34;"
-                "  border: 1px solid #3a3c45;"
-                "  color: #e8ebf2;"
+                "  background: @button;"
+                "  border: 1px solid @borderHi;"
+                "  color: @text;"
                 "  border-radius: 6px;"
                 "  font-size: 9pt;"
                 "  font-weight: 500;"
                 "  padding: 0 10px;"
                 "}"
-                "QPushButton:hover { background: #363842; border-color: #4f5360; }"
-                "QPushButton:pressed { background: #222328; }"
-                "QPushButton:disabled { color: #5b616e; background: #232429; border-color: #2c2d34; }"
-            ));
+                "QPushButton:hover { background: @buttonUp; border-color: @borderHiUp; }"
+                "QPushButton:pressed { background: @buttonDown; }"
+                "QPushButton:disabled { color: @disabled; background: @field; border-color: @line; }"
+            );
         }
         m_foot->addWidget(b);
         return b;
@@ -309,24 +310,24 @@ ToolsPage::ToolsPage(QWidget* parent)
         QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/mateo-ki/ltool_plugin")));
     });
 
-    const QString topBtnQss = QStringLiteral(
+    const char* const kTopBtnQss =
         "QPushButton {"
-        "  background: #2b2d34;"
-        "  border: 1px solid #3a3c45;"
-        "  color: #e8ebf2;"
+        "  background: @button;"
+        "  border: 1px solid @borderHi;"
+        "  color: @text;"
         "  border-radius: 7px;"
         "  font-size: 9pt;"
         "  font-weight: 500;"
         "  padding: 4px 12px;"
         "  min-height: 26px;"
         "}"
-        "QPushButton:hover { background: #363842; border-color: #4f5360; }"
-        "QPushButton:pressed { background: #222328; }"
-    );
-    refresh->setStyleSheet(topBtnQss);
-    repoBtn->setStyleSheet(topBtnQss);
+        "QPushButton:hover { background: @buttonUp; border-color: @borderHiUp; }"
+        "QPushButton:pressed { background: @buttonDown; }"
+    ;
+    Theme::bind(refresh, kTopBtnQss);
+    Theme::bind(repoBtn, kTopBtnQss);
     // 出口那颗和它们同款：autoRaise 的淡箭头在深色页眉里就是"找不到退出按钮"（他 2026-10-18 的原话）
-    m_back->setStyleSheet(topBtnQss);
+    Theme::bind(m_back, kTopBtnQss);
 
     head->addWidget(m_back);
     head->addWidget(m_heading);
@@ -488,7 +489,7 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
                                     ? stateWord
                                     : QStringLiteral("%1 · %2").arg(stateWord, noteText));
     if (r.state == PluginStore::State::Update)
-        card->stateLabel()->setStyleSheet(QStringLiteral("color: #10b981; font-weight: 600;"));
+        Theme::bind(card->stateLabel(), "color: @ok; font-weight: 600;");
 
     using S = PluginStore::State;
     const PluginStore::Entry e = r.remote;

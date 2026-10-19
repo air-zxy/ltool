@@ -46,5 +46,11 @@ private:
 
 protected:
     void showEvent(QShowEvent* e) override;
+    // 配置页拨「夜间/日间」那颗时，Theme::setMode() 会给每个顶层窗口发一次 ThemeChange；
+    // 这一页的样式表是挂在窗口上的（qApp 那份传导不下来），所以在这儿原地重算。
+    bool event(QEvent* e) override;
+
+private:
+    void applyThemeQss();
     void reject() override;
 };
