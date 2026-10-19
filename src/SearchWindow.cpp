@@ -1018,6 +1018,8 @@ void SearchWindow::runSearch()
     // 中文词只认**整条相等** —— "关机后怎么恢复文件"是一句查询，前缀匹配会把它当成要点电源。
     // 英文词按"命令行形状"认：`shutdown`、`shutdown.exe`、`shutdown /s` 都是要动手，
     // `shutdown 怎么用` 是在查资料（尾巴是普通词，不是开关），不算。
+    // `shut` 是同一动作的口头缩写（他 2026-10-19 点名要），走同一条尾巴规矩 ——
+    // 所以 `shutter`、`shut down the pc` 这类尾巴是普通词的仍然只当查询。
     // 也不清场：应用/文件/网站那几节照常在下面列出来（直达那条 2026-10-16 吃过亏的规矩）。
     const auto powerWord = [&low](const char* word) {
         const QString w = QLatin1String(word);
@@ -1030,7 +1032,7 @@ void SearchWindow::runSearch()
             && (tail.at(1) == QLatin1Char('/') || tail.at(1) == QLatin1Char('-'));
     };
     const bool wantHiber = low == QStringLiteral("休眠") || powerWord("sleep") || powerWord("hibernate");
-    const bool wantOff = low == QStringLiteral("关机") || powerWord("shutdown");
+    const bool wantOff = low == QStringLiteral("关机") || powerWord("shutdown") || powerWord("shut");
     if (wantHiber) {
         addSection(QStringLiteral("系统动作"));
         SearchResult r;

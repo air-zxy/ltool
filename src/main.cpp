@@ -2450,6 +2450,22 @@ int main(int argc, char* argv[])
                   hasPower(QStringLiteral("shutdown 怎么用"), "power:shutdown") ? QStringLiteral("yes")
                                                                                : QStringLiteral("no"),
                   QStringLiteral("no"));
+            // 他 2026-10-19 补的一句：`shut` 也要出关机。走的是同一条"尾巴"规矩，
+            // 所以 `shut` / `shut.exe` 算，`shutter`、`shut down 怎么用` 这种尾巴是普通词的不算。
+            check("输 shut 也算要点电源",
+                  hasPower(QStringLiteral("shut"), "power:shutdown") ? QStringLiteral("yes")
+                                                                     : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+            check("shut 后面带开关也算（shut /f）",
+                  hasPower(QStringLiteral("shut /f"), "power:shutdown") ? QStringLiteral("yes")
+                                                                       : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+            check("但 shut 当前缀不算：shutter / 「shut down 怎么用」不许把机器关了",
+                  (!hasPower(QStringLiteral("shutter"), "power:shutdown")
+                   && !hasPower(QStringLiteral("shut down 怎么用"), "power:shutdown"))
+                      ? QStringLiteral("yes")
+                      : QStringLiteral("no"),
+                  QStringLiteral("yes"));
             check("中文那条没放宽：「关机」整条才算，「关机后…」不算",
                   (hasPower(QStringLiteral("关机"), "power:shutdown")
                    && !hasPower(QStringLiteral("关机后怎么恢复文件"), "power:shutdown"))
