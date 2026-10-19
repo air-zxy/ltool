@@ -30,68 +30,66 @@ const char* const kTipQss =
     "QToolTip { background: @field; color: @text;"
     " border: 1px solid @border; padding: 6px 8px; }";
 
-// 日间那一份是按 WCAG 对过的（2026-10-20 现算）：正文 #1b1c20 压 #f2f3f6 = 15.34:1、
-// 灰字 #5b616e = 5.60:1、输入框底上正文 = 17.02:1、白字压主色 #2f56c9 = 6.37:1，
-// 全部过 AA（4.5:1）。夜间那一份是原来就有的：正文 14.26:1、灰字 5.50:1、
-// 白字压主色 #3f6ae0 = 4.83:1。主色在两个模式下不同值，就是为了白字压上去都够。
+// 日间这一份是 2026-10-20 他挑的 **A 冷灰纸 + 青碧强调色**（第一版是"整块接近纯白"，
+// 他回"太白了换一个白色"）。左边那列是夜间、一直以来的样子，一个字符都没动。
+// 现算的对比度（WCAG 相对亮度）：正文 #191a1e 压窗口 #e9edf3 = 14.76:1、
+// 灰字 #525863 = 6.07:1、白字压主色 #0a6c86 = 6.00:1、启动器那圈描边 #6f7783 压窗口 = 3.84:1，
+// 前三条过 AA（4.5:1）、最后一条过 1.4.11 非文本（3:1）。
+// "不是一片白纸"靠的是三层分开：窗口 #e9edf3 → 面板 #f4f6fa（1.10:1）→ 输入框 #ffffff（1.07:1）。
+// 这三档差得小是故意的 —— 再拉大就要往灰里走（那是他没选的 C 石板灰）。
+// 主色两个模式下不同值（夜 #3f6ae0 白字压上去 4.83:1 / 日 #0a6c86 = 6.00:1），
+// 就是为了白字压上去两头都够。
 const Role kRoles[] = {
-    { "window",     "#1b1c20", "#f2f3f6" },
+    { "window",     "#1b1c20", "#e9edf3" },
     { "base",       "#17181c", "#ffffff" },
-    { "alt",        "#232429", "#f6f7fa" },
-    { "text",       "#e8ebf2", "#1b1c20" },
-    { "muted",      "#8b93a1", "#5b616e" },
+    { "alt",        "#232429", "#f4f6fa" },
+    { "text",       "#e8ebf2", "#191a1e" },
+    { "muted",      "#8b93a1", "#525863" },
     { "groupText",  "#9aa3b2", "#4a5160" },
-    { "accent",     "#3f6ae0", "#2f56c9" },
-    { "accentUp",   "#4f79e8", "#3a63d6" },
-    { "accentDown", "#3560cc", "#264aad" },
-    { "border",     "#33353d", "#d6d9e0" },
-    { "line",       "#2c2d34", "#e3e5ea" },
+    { "accent",     "#3f6ae0", "#0a6c86" },
+    { "accentUp",   "#4f79e8", "#0d7d9b" },
+    { "accentDown", "#3560cc", "#075a70" },
+    { "border",     "#33353d", "#bcc3ce" },
+    { "line",       "#2c2d34", "#dfe3ea" },
     { "field",      "#232429", "#ffffff" },
     { "group",      "#1f2025", "#ffffff" },
     { "edit",       "#17181c", "#ffffff" },
-    { "button",     "#2b2d34", "#e9ebf0" },
-    { "hover",      "#33353d", "#dfe2e9" },
-    { "pressed",    "#26272c", "#d3d7e0" },
+    { "button",     "#2b2d34", "#f4f6fa" },
+    { "hover",      "#33353d", "#e6eaf1" },
+    { "pressed",    "#26272c", "#dbe0e9" },
     { "disabled",   "#5b616e", "#9aa3b2" },
-    { "disabledLine", "#4d525d", "#cdd1da" },
+    { "disabledLine", "#4d525d", "#c8cdd6" },
     { "okText",     "#9fe0a8", "#12692b" },
     { "ok",         "#10b981", "#0b7a4b" },
-    { "infoText",   "#78c8ff", "#1d5fbf" },
-    { "borderHi",   "#3a3c45", "#c3c8d2" },
-    { "borderHiUp", "#4f5360", "#a9b0be" },
-    { "buttonUp",   "#363842", "#dde0e7" },
-    { "buttonDown", "#222328", "#cfd4de" },
-    { "editText",   "#eef1f7", "#15171c" },
-    { "dim",        "#a0a6b2", "#5b616e" },
-    { "sectionText","#78808c", "#6b7280" },
-    { "badgeBg",    "#5a606c", "#c2c8d2" },
-    { "selBg",      "#2c3550", "#d3ddf5" },
+    { "infoText",   "#78c8ff", "#0a6c86" },
+    { "borderHi",   "#3a3c45", "#a8b0bd" },
+    { "borderHiUp", "#4f5360", "#8f98a8" },
+    { "buttonUp",   "#363842", "#e6eaf1" },
+    { "buttonDown", "#222328", "#dbe0e9" },
+    { "editText",   "#eef1f7", "#191a1e" },
+    { "dim",        "#a0a6b2", "#6b7280" },
+    { "sectionText","#78808c", "#5f6772" },
+    { "badgeBg",    "#5a606c", "#c5cbd5" },
+    { "selBg",      "#2c3550", "#cfe3ea" },
     { "good",       "#60be78", "#1f7a3d" },
     { "warn",       "#d8a854", "#8a5b0b" },
     { "bad",        "#e06c6c", "#b3261e" },
-    { "mutedBadge", "#8c94a0", "#5b616e" },
-    { "neutralBadge", "#7896d2", "#2f56c9" },
+    { "mutedBadge", "#8c94a0", "#525863" },
+    { "neutralBadge", "#7896d2", "#0a6c86" },
     { "cyan",       "#06b6d4", "#0a6c86" },
-    // 下面这几个只给 QSS 用（`@name`）：值是 CSS 的 rgba() 写法，QColor 解析不了，
-    // 自绘代码要半透明请用 color("角色", alpha)，所以这两类都必须是 #rrggbb。
-    // 启动器那扇是 WA_TranslucentBackground + 无边框 —— "搜索框在哪儿"这件事只由这一圈
-    // 描边说给他看，所以 panelEdge 必须和 panel 自己差得开（2026-10-20 他第一句反馈就是
-    // "这个白色不好，完全看不清搜索框的边框"：日间那份底是**纯白**、描边是黑压 26/255，
+    // 启动器那扇是 WA_TranslucentBackground + 无边框 —— "搜索框在哪儿"这件事只由这一圈描边
+    // 说给他看，所以 panelEdge 必须和 panel 自己差得开（2026-10-20 他第一句反馈就是
+    // "这个白色不好，完全看不清搜索框的边框"：那份底是纯白、描边和夜里共用一颗黑压 26/255，
     // grab() 出来量到 1.51:1，等于没有）。#AARRGGBB 是 QColor 和 QSS 都认的写法，
     // 半透明因此能存进表里，不用在调用点补 alpha。
-    // 夜间那一份是这一版一直以来的样子（白压 26/255，实测 1.86:1）—— 他没说要改，
-    // 所以值原样搬进来，只把"别再变差"钉进判据；日间这颗 #848c9a 压 #f7f8fa = 3.15:1，
-    // 过 WCAG 1.4.11 那条非文本对比度 ≥3:1。
-    { "panel",      "#f71c1e24", "#fff7f8fa" },
-    { "panelEdge",  "#1affffff", "#848c9a" },
-    { "rowSel",     "#1cffffff", "#4d7f96c8" },
+    // 夜间那两份是这一版一直以来的样子（底黑压 247、描边白压 26/255，实测 1.86:1）——
+    // 他点的是"这个白色不好"、没说要改夜里，所以值原样搬进来，判据只钉"别再变糊"。
+    { "panel",      "#f71c1e24", "#ffe9edf3" },
+    { "panelEdge",  "#1affffff", "#6f7783" },
+    { "rowSel",     "#1cffffff", "#330a6c86" },
     { "hairline",   "#ffffff", "#14182a" },
-    { "good",       "#60be78", "#1f7a3d" },
-    { "warn",       "#d8a854", "#8a5b0b" },
-    { "bad",        "#e06c6c", "#b3261e" },
-    { "mutedBadge", "#8c94a0", "#5b616e" },
-    { "neutralBadge", "#7896d2", "#2f56c9" },
-    { "cyan",       "#06b6d4", "#0a6c86" },
+    // 再往下这几颗的值是 CSS 的 rgba() 写法，QColor 解析不了 —— 只准在 QSS 里写 @name，
+    // 自绘要半透明请用 color("角色", alpha)。
     { "tintCyan",   "rgba(6, 182, 212, 0.16)", "rgba(6, 182, 212, 0.12)" },
     { "tintCyanLine", "rgba(6, 182, 212, 0.32)", "rgba(6, 182, 212, 0.40)" },
     { "hoverSoft",  "rgba(255,255,255,26)", "rgba(20,24,40,22)" },

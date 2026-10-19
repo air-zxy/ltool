@@ -41,4 +41,21 @@ done < <(printf '%s\n' "$sites")
 
 printf 'THEME_GATE_SITES=%d\n' "$total"
 printf 'THEME_GATE_BAD=%d\n' "$bad"
+
+# 第二件事：那张「角色 → 两套取值」表里名字不许重复。
+# findRole() 取的是第一条命中的，所以重复的那颗会**静默盖掉**后面那条 ——
+# 表现是"我明明把日间那格改了，界面不动"。2026-10-20 换 A 那套配色时真就这么撞了一次
+# （good/warn/bad/mutedBadge/neutralBadge/cyan 被搬进表两遍），编译器一个字都不报。
+roles=$(grep -oE '\{\s*"[A-Za-z]+"\s*,' src/Theme.cpp | grep -oE '"[A-Za-z]+"' | sort)
+n_roles=$(printf '%s\n' "$roles" | grep -c .)
+n_uniq=$(printf '%s\n' "$roles" | sort -u | grep -c .)
+if [ "$n_roles" != "$n_uniq" ]; then
+    printf '  重  角色名有重复：%d 条里只有 %d 个不同的名字，下面这些出现了两遍以上\n' "$n_roles" "$n_uniq"
+    printf '%s\n' "$roles" | uniq -d
+    bad=$((bad + 1))
+else
+    printf 'THEME_GATE_ROLES=%d（无重复）\n' "$n_uniq"
+fi
+
+printf 'THEME_GATE_BAD=%d\n' "$bad"
 exit "$bad"
