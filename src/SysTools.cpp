@@ -1,5 +1,15 @@
 #include "SysTools.h"
 
+#include "Utils.h"
+#include "platform/Launch.h"
+
+#include <QProcess>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <powrprof.h>   // CallNtPowerInformation(SystemPowerCapabilities) —— 休眠开没开
+#endif
+
 namespace {
 
 // 一条系统面板/工具：target 直接交给 ShellExecute，所以 .cpl/.msc/ms-settings:/裸 exe 都行。
@@ -67,5 +77,61 @@ QVector<AppEntry> systemTools()
 
     return v;
 }
+
+namespace {
+
+// 走系统自带的 shutdown.exe，而不是 SetSuspendState/ExitWindowsEx：那条要新链 powrprof、
+// 还要自己拼特权，而 shutdown.exe 的报错是给人看的（"休眠功能未启用"这类），直接回给界面。
+// QProcess + Platform::runWithoutConsole = 不闪黑窗；拿得到退出码和 stderr，失败就能说实话。
+QString runShutdown(const QStringList& args)
+{
+    QProcess p;
+    Platform::runWithoutConsole(&p);
+    p.start(QStringLiteral("shutdown"), args);
+    if (!p.waitForStarted(3000))
+        return QStringLiteral("shutdown.exe 起不来：%1").arg(p.errorString());
+    // 成功的话这台机器立刻就没了，等 3 秒只为拿一个"它当场就报错"的回话；超时当作已动手。
+    if (!p.waitForFinished(3000))
+        return QString();
+    if (p.exitCode() == 0)
+        return QString();
+    const QString err = Utils::ConsoleLines::decode(p.readAllStandardError()).trimmed();
+    return QStringLiteral("shutdown %1 没成（退出码 %2）%3")
+        .arg(args.join(QLatin1Char(' ')))
+        .arg(p.exitCode())
+        .arg(err.isEmpty() ? QString() : QStringLiteral("：") + err);
+}
+
+} // namespace
+
+QString hibernateNow()
+{
+    return runShutdown({ QStringLiteral("/h") });
+}
+
+QString shutDownNow()
+{
+    return runShutdown({ QStringLiteral("/s"), QStringLiteral("/t"), QStringLiteral("0") });
+}
+
+// 这颗 TU 在"非 Windows 也编得过"那份名单里（LTOOL_CORE_PORTABLE_SRC），所以 Win32 那截必须圈起来。
+#ifdef _WIN32
+bool hibernationEnabled()
+{
+    SYSTEM_POWER_CAPABILITIES caps{};
+    if (CallNtPowerInformation(SystemPowerCapabilities, nullptr, 0, &caps, sizeof(caps)) != 0)
+        return false;              // 问不到就按"不能"说，那一行照样给得出路（回车那次仍会报真原因）
+    // 成员名按 SDK 那份（winnt.h 的 SYSTEM_POWER_CAPABILITIES）。**两格都要看**：
+    // SystemS4 只是"固件支持 S4"，HiberFilePresent 才是"休眠文件在 = 休眠当前启用"。
+    // 只查 SystemS4 会和 `powercfg /a` 打架 —— 这台机器实测 SystemS4=1 而 powercfg 说
+    // 「休眠：尚未启用休眠」，第一版就因此写错了一行话（2026-10-19 复测抓出来的）。
+    return caps.SystemS4 != 0 && caps.HiberFilePresent != 0;
+}
+#else
+bool hibernationEnabled()
+{
+    return false;                  // 非 Windows 上没有"休眠"这个可叫的东西（#90 那一档）
+}
+#endif
 
 } // namespace SysTools

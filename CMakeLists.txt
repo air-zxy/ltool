@@ -251,6 +251,7 @@ function(ltool_target_setup tgt)
             runtimeobject
             version
             dwmapi
+            powrprof
             rstrtmgr
             iphlpapi
             crypt32

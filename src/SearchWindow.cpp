@@ -1003,6 +1003,32 @@ void SearchWindow::runSearch()
         if (w.keys.contains(webTok) || w.name.compare(webTok, Qt::CaseInsensitive) == 0)
             webKeywordWins = true;
 
+    // 电源那两件事（2026-10-19 他点名要的：输 sleep/休眠 就休眠，输 shutdown/关机 就关机）。
+    // 只认**整条相等** —— 谁搜"关机后怎么恢复文件"都不许把这机器关了。
+    // 也不清场：应用/文件/网站那几节照常在下面列出来（直达那条 2026-10-16 吃过亏的规矩）。
+    if (low == QStringLiteral("休眠") || low == QStringLiteral("sleep")
+        || low == QStringLiteral("hibernate")) {
+        addSection(QStringLiteral("系统动作"));
+        SearchResult r;
+        r.kind = SearchResult::Command;
+        r.title = QStringLiteral("休眠（Hibernate）");
+        r.subtitle = SysTools::hibernationEnabled()
+            ? QStringLiteral("按 Enter 立刻休眠这台电脑（回到桌面时东西都还在）")
+            : QStringLiteral("这台机器现在没开休眠，按 Enter 会失败 —— 管理员命令行跑一次 powercfg /h on");
+        r.target = QStringLiteral("power:hibernate");
+        r.icon = letterIcon(QStringLiteral("眠"), QColor(120, 90, 200));
+        addItem(r);
+    } else if (low == QStringLiteral("关机") || low == QStringLiteral("shutdown")) {
+        addSection(QStringLiteral("系统动作"));
+        SearchResult r;
+        r.kind = SearchResult::Command;
+        r.title = QStringLiteral("关机");
+        r.subtitle = QStringLiteral("按 Enter 立刻关闭这台电脑 —— 这条路不问第二遍（点名要的快路径）");
+        r.target = QStringLiteral("power:shutdown");
+        r.icon = letterIcon(QStringLiteral("关"), QColor(214, 69, 69));
+        addItem(r);
+    }
+
     QVector<int> toolLoose;
     {
         const auto& metas = PluginHost::scan();
@@ -1342,6 +1368,20 @@ void SearchWindow::activateRow(int row)
         if (r.target == "rescan") {
             m_hint->setText("正在重新扫描，完成后会自动刷新…");
             startScan(false, true);
+        } else if (r.target == QLatin1String("power:hibernate")
+                   || r.target == QLatin1String("power:shutdown")) {
+            // 动手之前不弹确认框（他要的就是"回车直接执行"），但**失败必须就地写在提示行上、
+            // 窗口不许收** —— "按了没反应"是这程序里最难查的形状。
+            const bool hib = r.target.endsWith(QLatin1String("hibernate"));
+            const QString err = hib ? SysTools::hibernateNow() : SysTools::shutDownNow();
+            if (err.isEmpty()) {
+                Utils::log(QStringLiteral("power: %1 已叫起来（回车直达）")
+                               .arg(hib ? QStringLiteral("休眠") : QStringLiteral("关机")));
+                hide();
+            } else {
+                Utils::log(QStringLiteral("power: %1").arg(err));
+                m_hint->setText(err);
+            }
         } else if (r.target.startsWith(QLatin1String("tool:"))) {
             // 工具就是 DLL 插件：先弹设置页，再展开那张卡；r.extra 有内容就顺手递给那页
             hide();

@@ -27,6 +27,7 @@
 #include "Archives.h"
 #include "Pinyin.h"
 #include "ShellMenu.h"
+#include "SysTools.h"
 #include "RegClean.h"
 #include "Firewall.h"
 #include "StartupAudit.h"
@@ -2357,6 +2358,51 @@ int main(int argc, char* argv[])
             check("全拼 paiban 直达「图片排版」（关键词「排版」开头）", t5.first ? "yes" : "no", "yes");
             const auto t6 = query(QStringLiteral("gongge"));
             check("全拼 gongge 直达「图片排版」（关键词「宫格」开头）", t6.first ? "yes" : "no", "yes");
+            // 电源那两条（2026-10-19 他点名：输 sleep/休眠 就休眠，输 shutdown/关机 就关机）。
+            // **这里只量路由**：第一行是不是那颗、target 对不对 —— 一次都不真按回车，
+            // 否则跑判据的这台机器当场就睡过去了。
+            const auto powerOf = [&](const QString& q) {
+                input->setText(q);
+                settle();
+                // 第 0 行是那一节的标题（addSection 先落一行标题），所以要找**第一条能按的行**
+                for (int i = 0; i < w.resultCount(); ++i) {
+                    const SearchResult& r = w.resultAt(i);
+                    if (!r.isSection)
+                        return r.target;
+                }
+                return QString();
+            };
+            check("输「休眠」第一行就是休眠那一条", powerOf(QStringLiteral("休眠")),
+                  QStringLiteral("power:hibernate"));
+            check("输 sleep 同上", powerOf(QStringLiteral("sleep")), QStringLiteral("power:hibernate"));
+            check("输「关机」第一行就是关机那一条", powerOf(QStringLiteral("关机")),
+                  QStringLiteral("power:shutdown"));
+            check("输 shutdown 同上", powerOf(QStringLiteral("shutdown")), QStringLiteral("power:shutdown"));
+            // 这台机器（实测 `powercfg /a`：休眠「尚未启用」）不能休眠，那一行就得**当场**把
+            // powercfg /h on 说出来，而不是等他按下回车再报错。判据按机器的实际状态分支，
+            // 两种机器上都成立。
+            QString hibSub;
+            input->setText(QStringLiteral("休眠"));
+            settle();
+            for (int i = 0; i < w.resultCount(); ++i) {
+                const SearchResult& r = w.resultAt(i);
+                if (!r.isSection) {
+                    hibSub = r.subtitle;
+                    break;
+                }
+            }
+            const bool canHib = SysTools::hibernationEnabled();
+            std::printf("INFO 这台机器能休眠=%d，那一行写的是：%s\n", canHib ? 1 : 0,
+                        hibSub.toUtf8().constData());
+            check("没开休眠的那台机器，那一行点名 powercfg /h on（开了的不许出现这句）",
+                  (canHib != hibSub.contains(QStringLiteral("powercfg"))) ? QStringLiteral("yes")
+                                                                        : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+            // 反向那条是安全绳：只有**整条相等**才算要点电源，搜"关机后…"绝不能把机器关了
+            const QString nearMiss = powerOf(QStringLiteral("关机后怎么恢复文件"));
+            check("整条相等才算：搜「关机后怎么恢复文件」不许把关机那条排第一",
+                  nearMiss == QStringLiteral("power:shutdown") ? QStringLiteral("yes") : QStringLiteral("no"),
+                  QStringLiteral("no"));
             // 他报的第三件事：搜 `gg` 搜不到 Google。原因是「广告弹窗」的首字母也是 gg，
             // 工具直达那一节 return 得早，网站那节根本没机会跑。规则改成"显式网站关键字 >
             // 工具名首字母拼音"之后：gg 归 Google，广告弹窗还能靠整串首字母 ggdc 或 广告 到达。
