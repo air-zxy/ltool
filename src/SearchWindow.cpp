@@ -106,7 +106,7 @@ public:
         if (opt.state & QStyle::State_Selected) {
             QPainterPath path;
             path.addRoundedRect(rr, 9, 9);
-            p->fillPath(path, Theme::color("hairline", 28));
+            p->fillPath(path, Theme::color("rowSel"));
         }
 
         const QRect iconRect(rr.left() + 8, rr.center().y() - 14, 28, 28);
@@ -589,8 +589,8 @@ void SearchWindow::paintEvent(QPaintEvent*)
     p.setRenderHint(QPainter::Antialiasing);
     QPainterPath path;
     path.addRoundedRect(QRectF(0.5, 0.5, width() - 1, height() - 1), 13, 13);
-    p.fillPath(path, Theme::color("panel", 247));
-    p.setPen(QPen(Theme::color("hairline", 26), 1));
+    p.fillPath(path, Theme::color("panel"));
+    p.setPen(QPen(Theme::color("panelEdge"), 1));
     p.drawPath(path);
 }
 

@@ -74,7 +74,17 @@ const Role kRoles[] = {
     { "cyan",       "#06b6d4", "#0a6c86" },
     // 下面这几个只给 QSS 用（`@name`）：值是 CSS 的 rgba() 写法，QColor 解析不了，
     // 自绘代码要半透明请用 color("角色", alpha)，所以这两类都必须是 #rrggbb。
-    { "panel",      "#1c1e24", "#ffffff" },
+    // 启动器那扇是 WA_TranslucentBackground + 无边框 —— "搜索框在哪儿"这件事只由这一圈
+    // 描边说给他看，所以 panelEdge 必须和 panel 自己差得开（2026-10-20 他第一句反馈就是
+    // "这个白色不好，完全看不清搜索框的边框"：日间那份底是**纯白**、描边是黑压 26/255，
+    // grab() 出来量到 1.51:1，等于没有）。#AARRGGBB 是 QColor 和 QSS 都认的写法，
+    // 半透明因此能存进表里，不用在调用点补 alpha。
+    // 夜间那一份是这一版一直以来的样子（白压 26/255，实测 1.86:1）—— 他没说要改，
+    // 所以值原样搬进来，只把"别再变差"钉进判据；日间这颗 #848c9a 压 #f7f8fa = 3.15:1，
+    // 过 WCAG 1.4.11 那条非文本对比度 ≥3:1。
+    { "panel",      "#f71c1e24", "#fff7f8fa" },
+    { "panelEdge",  "#1affffff", "#848c9a" },
+    { "rowSel",     "#1cffffff", "#4d7f96c8" },
     { "hairline",   "#ffffff", "#14182a" },
     { "good",       "#60be78", "#1f7a3d" },
     { "warn",       "#d8a854", "#8a5b0b" },

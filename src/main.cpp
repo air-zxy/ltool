@@ -86,6 +86,7 @@
 #include <QVector>
 
 #include <functional>
+#include <cmath>
 
 #include <windows.h>
 #include <dwmapi.h>
@@ -2019,6 +2020,60 @@ int main(int argc, char* argv[])
                     night >= 0 && day - night > 60,
                     QStringLiteral("夜间平均灰度=%1 日间=%2 差=%3 · PNG 在 %4")
                         .arg(night).arg(day).arg(day - night).arg(shots));
+            }
+            // 启动器那扇是 WA_TranslucentBackground + 无边框 —— 也就是说"搜索框在哪儿"
+            // 这件事**只由那一圈 1px 描边**说给他看。2026-10-20 他第一句反馈就是
+            // "这个白色不好，完全看不清搜索框的边框"：日间那份底是纯白、描边是黑压 26/255，
+            // 两者差 1.15:1，等于没有。所以这条量的就是渲染出来的**描边那一行 vs 紧贴里面的底**，
+            // 按 WCAG 1.4.11（非文本对比度 ≥3:1）判，两个模式各判一次。
+            // 这条不读 Theme 里的任何常量，读的是 grab() 出来的像素 —— 换个画法它就红。
+            {
+                auto* launcher = new SearchWindow;
+                const QString shots = QDir::tempPath() + QStringLiteral("/ltool-cfgshots");
+                launcher->resize(560, 300);
+                const auto relLum = [](QRgb c) {
+                    const auto ch = [](int v) {
+                        const double s = v / 255.0;
+                        return s <= 0.03928 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4);
+                    };
+                    return 0.2126 * ch(qRed(c)) + 0.7152 * ch(qGreen(c)) + 0.0722 * ch(qBlue(c));
+                };
+                const auto edgeContrast = [launcher, &relLum](const QString& file, QString* why) {
+                    const QPixmap pm = launcher->grab();
+                    const QImage img = pm.toImage().convertToFormat(QImage::Format_ARGB32);
+                    pm.save(file, "PNG");
+                    // 沿**左边缘那一列**、竖着中间那一行取点：路径是 QRectF(0.5, 0.5, …) 配
+                    // 1px 画笔 → 描边正好盖满第 0 列（上下那两行不行，那里有 13px 圆角，
+                    // 第一版我从顶行取，日间那颗底一变成不透明就"描边和底同一行"了）。
+                    // Format_ARGB32 非预乘，所以第 0 列的 r/g/b 就是描边本身的颜色；
+                    // 往里第 8 列过了布局那 14px 左边距的空白区，是纯窗口底。
+                    const int cy = img.height() / 2;
+                    if (qAlpha(img.pixel(0, cy)) == 0 || qAlpha(img.pixel(8, cy)) == 0) {
+                        *why = QStringLiteral("第 0 列或第 8 列在这一行是空的（窗口没画满？）");
+                        return -1.0;
+                    }
+                    const QRgb e = img.pixel(0, cy);
+                    const QRgb f = img.pixel(8, cy);
+                    const double a = relLum(e), b = relLum(f);
+                    *why = QStringLiteral("描边=%1 底=%2").arg(QColor(e).name(), QColor(f).name());
+                    return (qMax(a, b) + 0.05) / (qMin(a, b) + 0.05);
+                };
+                Theme::setMode(Theme::Mode::Dark);
+                QString whyN;
+                const double cn = edgeContrast(shots + QStringLiteral("/launcher-night.png"), &whyN);
+                Theme::setMode(Theme::Mode::Light);
+                QString whyD;
+                const double cd = edgeContrast(shots + QStringLiteral("/launcher-day.png"), &whyD);
+                Theme::setMode(Theme::Mode::Dark);
+                delete launcher;
+                // 日间按 WCAG 1.4.11（非文本对比度）要 ≥3:1；夜间那颗 1.86:1 是这一版一直以来
+                // 的样子，他这次点的是"这个白色不好"、没说要改夜里 —— 所以夜里这条只钉
+                // "别再变糊"，不拿 3:1 去动他用了很久的默认外观。
+                say("启动器那圈描边和它自己的底差得开（无边框窗，看得见边=看得见框）："
+                    "日间 ≥3:1、夜间只钉住不比现在这份更糊",
+                    cd >= 3.0 && cn >= 1.8,
+                    QStringLiteral("夜间 %1:1（%2）· 日间 %3:1（%4）")
+                        .arg(cn, 0, 'f', 2).arg(whyN).arg(cd, 0, 'f', 2).arg(whyD));
             }
         }
         std::printf("cfgcheck: 失败 %d 项\n", bad);
