@@ -824,3 +824,14 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 他接着问"为什么搜索框没有 shutdown 的下拉选项" —— 原来那条规则是**整条相等**才算，`shutdown.exe`、`shutdown /s` 这类都落不进来。改成：**中文词仍只认整条**（"关机后怎么恢复文件"是一句查询，前缀匹配会误关机），**英文词按"命令行形状"认**：尾巴为空、`.exe`、或"空格 + `/`/`-` 开关"才算，`shutdown 怎么用` 不算。判据 +4 条（`--pinyin` 59 → **63**，离线 **707 条 0 红**）：`shutdown.exe` 有、`shutdown /s` 有、`shutdown 怎么用` 没有、中文那条没放宽。
 - 他补的第四句：`shut` 也要出关机。没另起一条规则 —— 把 `shut` 当英文词喂给同一个 `powerWord()`，尾巴那三道（空 / `.exe` / `空格 + /`或`-`）照旧生效，所以 `shut`、`shut.exe`、`shut /f` 算，`shutter`、`shut down 怎么用` 落不进来（尾巴是普通词 = 在查资料）。判据 +3 条（`--pinyin` 63 → **66 条 0 红**）：`shut` 有、`shut /f` 有、`shutter` 与 `shut down 怎么用` 没有。反向那条特意一次钉两个词，只放宽前缀不钉尾巴的话，`shutter` 会被顺手关机器。
 - 版本：`v1.1.0` 已经打了 tag 并在 CI 发版流水线上跑（指向 `9fd13fa`，不含这一句），所以这刀升 **1.1.1**（patch：同一档功能加一个关键词，不动数据格式、不动插件 ABI）。改的全在 core（`src/SearchWindow.cpp`、`src/main.cpp`），十九颗插件一行没动。
+
+## 下载全走本地代理：八处新建管理器，漏的那处是 OCR 引擎包（2026-10-19 深夜，他一句"如果有代理的情况下使用本地代理下载"）
+- 先量这台机器的真值：注册表 `ProxyEnable=1`、`ProxyServer=127.0.0.1:9980`，`%APPDATA%\ltool\config.ini` 里 `net/proxy` 留空 ⇒ `--seamtest` 打的是 `INFO 生效代理=[http://127.0.0.1:9980]`（留空 = 跟系统代理这条规矩本身是好的）。
+- 逐处数管理器（新闸 `tools/proxy_gate.sh`：每处新建 `QNetworkAccessManager` 之后 15 行内必须有 `applyProxy(`/`setProxy(`，结论行按纯 ASCII 打 `PROXY_GATE_SITES=` / `PROXY_GATE_BAD=`）：**8 处，漏 1 处** —— 漏的是 `plugins/capture/OcrBundle.cpp` 那个**栈上的** nam。其余七处（DownloadManager 每次取用都重读、PluginStore 镜像→代理→直连那条链、AboutPage、LinuxdoWatch、SoftwarePage 的 favicon、两处判据）本来就走代理。
+- 这条漏要命的地方在于它是**境外源**：OCR 引擎包 27.9MB 从 `files.pythonhosted.org` 下（两个 PyPI wheel + 钉死 SHA256），这台机器直连那域名是不通的 ⇒ 表现就是"提取文字"第一次开下载永远转圈，而失败那句话里连"走的哪条路"都没有。
+- 修法两步：`DevEnv::applyProxy(&nam)`（用现成那颗，不另起一套），失败那句话点名路线 —— 有代理时 `这趟走的是本地代理 http://…，想换一个就在配置页「下载代理」那格填新的地址`，没检测到代理时 `这趟是直连`。
+- 端到端实测（沙箱 APPDATA 里塞一条 `net/proxy=127.0.0.1:1` 这个必然被拒的地址，跑 `--ocrget`，一行真网络都没上）：`err=下载失败：Proxy connection refused（这趟走的是本地代理 http://127.0.0.1:1…）` —— "连代理都被拒"就是"这条请求确实经过代理"的正面证据；改之前同一条探针是直连 pythonhosted，报的是连接超时那一族。
+- 已知没解决、也没偷偷发明的第三态：配置页那格**留空只能退回系统代理**，没有"这台机器有系统代理，但我这次要强制直连"那一档。要加就是 `net/proxy` 认一个 `direct` 关键字，等他拍。
+- 闸接进 CI：`.github/workflows/build.yml` 里排在插件版本闸后面（同一步形状，`shell: bash`）。反向验过：改之前跑同一道闸，红的正是 `plugins/capture/OcrBundle.cpp:70` 那一行。
+- 数字：`--seamtest` 38、`--cfgcheck` 13、`--plugintest` **242**、`--storenet` **17/0**（这次实测走的是 `镜像 gh-proxy.com`，1 次成功）、`--pinyin` 66 全 0 红。README 那张表里 `--plugintest` 还写着 221，按实测改成 242。
+- 交付分层要说清：改的是**源码 + 本机构建那份 `ltool-capture.dll`**（它自己版本号 1.0.4 → **1.0.5**，过版本闸）。安装包是「开箱零插件」，所以这一条**不随主程序安装包出去**；商店里那颗（`ltool_plugin` 仓库 dist 那批）还带着 #91 那三个符号的坑，等重发。
