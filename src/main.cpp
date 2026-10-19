@@ -3706,6 +3706,31 @@ int main(int argc, char* argv[])
             check("不存在的插件不报禁用", PluginHost::isDisabled(QStringLiteral("nonexistent_plug")) ? "yes" : "no", "no");
         }
 
+        // ---- 「本机装着这个 dll 但它起不来」那行卡片文案的**拼法** ----
+        // 为什么测拼法而不是测卡片：这一支只有装载真失败过才走得到，判据造不出一颗坏 dll
+        //（造出来就得往真插件目录里写东西）。搬进 --storetest 是因为 --storenet 要联网、
+        // 不进 CI，放那儿等于没人跑 —— 第一次我就把它插进 storenet 了，73 条一条没多。
+        // 2026-10-20 他问"注册表分析和开机分析为什么点不开"，那两张卡上写的是
+        // "已安装 · 本机有这个 dll 但没通过检查：" —— 冒号后面是空的，因为老写法在
+        // `meta` 存在那一支三元取的是 `QString()`。第三条钉的就是"结尾不许是冒号"。
+        {
+            const QString head = QStringLiteral("已安装 · 本机有这个 dll 但它起不来：");
+            const QString real = ToolsPage::cannotOpenText(
+                QStringLiteral("已安装"), QStringLiteral("缺少导入函数 Utils::revealInExplorer"),
+                QString());
+            check("有装载原因时那句话把原因原样带出来",
+                  real == head + QStringLiteral("缺少导入函数 Utils::revealInExplorer")
+                      ? "yes" : "no", "yes");
+            const QString pri = ToolsPage::cannotOpenText(QStringLiteral("已安装"),
+                                                          QStringLiteral("装载失败 A"),
+                                                          QStringLiteral("元数据失败 B"));
+            check("装载原因和元数据原因都在时说装载那个（他看见的症状是点不开）",
+                  pri == head + QStringLiteral("装载失败 A") ? "yes" : "no", "yes");
+            const QString none = ToolsPage::cannotOpenText(QStringLiteral("已安装"), QString(), QString());
+            check("三个来源全空也必须落到一句有人话的兜底，不许留一个以冒号结尾的空原因",
+                  none == head + QStringLiteral("目录里认不出这个文件") ? "yes" : "no", "yes");
+        }
+
         // 全程没碰真目录：商店判的是传进去的那个 dir
         check("没把假 dll 写进真正的插件目录",
               QFile::exists(PluginHost::pluginsDir() + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("new"))) ? "yes" : "no", "no");

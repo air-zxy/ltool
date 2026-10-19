@@ -32,6 +32,14 @@ public:
     // 返回 false = 这个 id 没加载起来（错误已经进日志，界面上说了一句人话）。
     bool showTool(const QString& id, const QString& text = QString());
 
+    // 「本机装着这个 dll 但它起不来」那行卡片文案怎么拼。抽成静态纯函数是因为这一支
+    // 只有装载真失败过才走得到，判据造不出一颗坏 dll —— 那就把**拼法**本身钉住：
+    // 三个来源都给不出原因时必须落到兜底那句，绝不允许留一个以冒号结尾的空原因。
+    // 2026-10-20 他问"注册表分析和开机分析为什么点不开"，那两张卡上写的正是
+    // "已安装 · 本机有这个 dll 但没通过检查："—— 冒号后面是空的。
+    static QString cannotOpenText(const QString& stateWord, const QString& loadErr,
+                                  const QString& metaErr);
+
     void rebuildGrid();      // 重扫目录之后重画那一面卡片（装完/禁用完走的就是这条）    // 答了「是」之后那一段：删文件 / 排队 / 重扫 + 重排，答复写进卡片的状态标签。
     // 公开是为了离屏判据能跑同一条（无窗口平台上那个模态确认框会立刻返回「不」）。
     void applyUninstall(const QString& file, const QString& name, QLabel* state);

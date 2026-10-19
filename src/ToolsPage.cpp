@@ -433,6 +433,15 @@ QWidget* ToolsPage::buildGrid()
 }
 
 // "卸了之后还能不能装回来"只有拉过清单才答得上来；没拉过就别假装有把握
+QString ToolsPage::cannotOpenText(const QString& stateWord, const QString& loadErr,
+                                  const QString& metaErr)
+{
+    const QString why = !loadErr.isEmpty()    ? loadErr
+                        : !metaErr.isEmpty()  ? metaErr
+                                              : QStringLiteral("目录里认不出这个文件");
+    return QStringLiteral("%1 · 本机有这个 dll 但它起不来：%2").arg(stateWord, why);
+}
+
 QString ToolsPage::reinstallHint(const PluginStore::Row& r) const
 {
     if (!m_haveStore)
@@ -558,11 +567,14 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
         card->setBodyClick(std::function<void()>());
         break;
     }
-    if (installed && !openable)
-        card->stateLabel()->setText(QStringLiteral("%1 · 本机有这个 dll 但没通过检查：%2")
-                                        .arg(stateWord,
-                                             PluginHost::meta(id) ? QString()
-                                                    : QStringLiteral("目录里认不出它")));
+    if (installed && !openable) {
+        // 这一行原来有个洞：`md` 存在时三元取的是 `QString()` —— 界面上就是一句以冒号结尾的
+        // "本机有这个 dll 但没通过检查："，后面什么都没有。他 2026-10-20 问"注册表分析和开机
+        // 分析为什么点不开"，卡片上确实标了"没通过检查"，可**没说什么检查没过**。
+        card->stateLabel()->setText(ToolsPage::cannotOpenText(
+            stateWord, PluginHost::loadErrorOf(id), md ? md->error : QString()));
+        Theme::bind(card->stateLabel(), "color: @bad; font-weight: 600;");
+    }
     return card;
 }
 
@@ -749,7 +761,13 @@ bool ToolsPage::showTool(const QString& id, const QString& text)
     QString err;
     QWidget* w = PluginHost::page(id, this, &err);
     if (!w) {
-        m_heading->setText(QStringLiteral("插件商店"));
+        // 光写日志等于没写：他点了卡片，屏幕上只是回到卡片墙，谁也看不出"点了但没开成"。
+        // 页眉就在卡片墙顶上，那一行本来就是"现在在哪个插件"的位置 —— 把原因写在那儿。
+        const PluginHost::Meta* md = PluginHost::meta(id);
+        m_heading->setText(QStringLiteral("插件商店 · %1 打不开：%2")
+                               .arg(md ? md->name : id,
+                                    err.isEmpty() ? QStringLiteral("原因未知（看日志 plugin: 那几行）")
+                                                  : err));
         Utils::log(QStringLiteral("plugin: 打不开 %1：%2").arg(id, err));
         return false;
     }
