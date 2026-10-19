@@ -56,6 +56,33 @@ if (Test-Path $pub) {
   Phase 'abi' $sw ('SKIP 没有 ' + $pub + ' —— 没查，不是通过')
 }
 
+# ---- 第二道：名字齐不等于能一起跑。比"这颗 dll 是什么时候编的"和"它吃的 core 头
+# 之后有没有动过布局"（2026-10-20 他报"软件在磁盘清理闪退了"查出来的）。----
+# `DiskScan::Tree` 加了两个 QString 之后大小和偏移全变了，而装着的 ltool-disk.dll 是加之前编的
+# —— abi_check 那条只看导出名字，报"缺 0"、LoadLibrary 也真成功，然后运行期 0xc0000005。
+# 所以这里数的是时间：dll 的 PE 编译时刻 vs 它 include 的那些头最后一次"动布局"的提交时刻。
+# 装的那棵（D:\software\ltool\ltool-plugins）也一起查 —— 崩的是它，不是商店 dist。
+$installed = 'D:\software\ltool\ltool-plugins'
+$targets = @()
+if (Test-Path $pub) { $targets += $pub }
+if (Test-Path $installed) { $targets += $installed }
+if ($targets.Count -eq 0) {
+  Phase 'stale' $sw 'SKIP 商店 dist 和安装目录都不在 —— 没查，不是通过'
+} else {
+  # 不写 PYTHONIOENCODING 的话 python 按控制台 GBK 输出，中文行会成乱码、
+  # 下面按"陈"字挑行就挑不到（数字那行是 ASCII，所以判定本身不会错，只是点不了名）。
+  $env:PYTHONIOENCODING = 'utf-8'
+  $stale = & python "$root\tools\abi_stale.py" @targets 2>&1
+  $staleCode = $LASTEXITCODE
+  $stLine = ($stale | Select-String 'STALE_GATE_BAD=(\d+)')
+  $stN = if ($stLine) { [int]$stLine.Matches[0].Groups[1].Value } else { -1 }
+  $stNote = if ($stN -lt 0) { ' -> 这一栏没数出来（python 没打 STALE_GATE_BAD=），别当成通过' } `
+            elseif ($stN -gt 0) { ' -> 这些插件按老布局编的，读新 core 的结构体会错位（会崩，不是加载失败）' } `
+            else { ' -> 没有陈的' }
+  Phase 'stale' $sw ('布局陈旧的插件 ' + $stN + ' 颗' + $stNote)
+  if ($stN -gt 0) { (($stale | Select-String '陈|DiskScan|Clipboard|CaptureHistory|STALE_GATE') -join [Environment]::NewLine) | Write-Host }
+}
+
 $iscc = 'D:\software\InnoSetup6\ISCC.exe'
 # 档位见 ltool.iss 里那张实测表：默认 normal（6.7 秒 / 22.2MB），-Quick 出快包，
 # -Final 回到 max+solid 出最小体积的正式包（9.9 秒 / 21.5MB）

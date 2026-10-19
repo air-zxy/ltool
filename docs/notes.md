@@ -945,3 +945,17 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 渲染判据补了一张 `theme-look-tab.png`：拆 tab 之后只截第一页等于没截到新东西，"这一页是不是空得只剩一行"得用眼睛过。我 Read 过了 —— 是空的，只有一行，这是他要的形状。
 - 一处冗余我**没自作主张改**：外观那一页上分组框标题是「外观」、里面那行的标签也是「外观：」，看着重复；通用那一页同理（tab 叫通用、第一颗分组框也叫通用）。他说"其他的不动"，所以留着，改法是把行标签去掉 / 把分组框标题去掉，一句话的事。
 - 版本：**1.3.0 不升**（同前几刀）。
+
+## 「软件在磁盘清理闪退了」：名字齐 ≠ 能一起跑 —— 结构体布局漂移，`abi_check` 那一栏是假绿（2026-10-20 04:00 起查）
+- 两层取证先分清"崩没崩"：事件日志 `10-20 03:52:31 Application Error id=1000` —— 故障模块 **`ltool-disk.dll`**、异常码 **0xc0000005**、偏移 **0x706a**；WER 有 `ltool.exe.33708.dump`（03:52:36）。**不是我 03:57 那次 `deliver.ps1` 停的实例**（时间对不上，差 5 分钟）。它自己的日志留了现场：`03:51:40 建页 disk` → `03:52:31 FATAL CRASH: code=0xC0000005 addr=7ffc44b3706a`。
+- 反汇编那颗 dll 的 `0x18000706a`（image base `0x180000000` + RVA `0x706a`）：`mov (%rcx),%rax` → `call *0x20(%rax)`，前后夹着 `lock incl 0x8(%rdi)` / `lock xadd %eax,0xc(%rdi)` —— **拿垃圾指针做引用计数和虚调用**。错位读出来的 `QString` 就是这个形状。
+- 根因：`src/DiskScan.h` 的 `struct Tree` 在 `d42eb64`（**10-17 18:56**，磁盘清理 MFT 第一刀）里加了 `QString engine; QString engineNote;`（`Progress`/`Timing` 也各加了）—— 大小和字段偏移全变了。而**装着的 `ltool-disk.dll` 的 PE 时间戳是 10-16 11:27**，比那次改动早一天多。它按老偏移读新 core 返回的 `Tree`。
+- **为什么 `abi_check.py` 没抓到**：它只比**导出名字**。disk 导入 core 的 5 颗名字**一个不缺**，`LoadLibrary` 也真成功 —— 于是那一栏报"缺 0"、一片绿，然后运行期崩。#91 之前被理解成"6 张卡打不开"，这次证明它的另一半是**"名字齐的这批会闪退"**。
+- 更要紧的是：**`d42eb64` 已经在发布出去的 v1.1.1 里**（`git merge-base --is-ancestor d42eb64 v1.1.1` = 是）。所以这颗雷从 10-19 装上 v1.1.1 那会儿就在，不是今天这几刀带进来的。
+- 新增 `tools/abi_stale.py`（第二道 ABI 闸，接进 `deliver.ps1` 的 `stale` 栏）：数 **dll 的 PE 编译时刻 vs 它 include 的那些 core 头最后一次"动布局"的提交时刻**。判定"动布局"= diff 里加/删了数据成员（那行**既无 `(` 也无 `)`**）或 `virtual`；`static`/`constexpr`/`inline` 开头的排掉（不占对象空间）。当前：装的那棵 **只有 `disk` 陈**（= 崩的那颗）、商店 dist 里 `disk` + `clipboard` 两颗陈。
+- 写这道闸自己踩了三个坑，全都会造成假绿，都记下来：
+  - `git diff <base>.. HEAD` 是**非法用法**（rc=129），我第一版没查退出码 ⇒ 直接报"33 颗全 OK"，而 disk 明明该报陈。**git 非 0 退出必须抛。**
+  - `subprocess(text=True)` 在这台机器上按 **GBK** 解 diff 里的中文注释 ⇒ 抛异常被吞、又是假绿。要 `encoding='utf-8'`。
+  - 只按"这头被改过就算陈" ⇒ 33 颗里报 31 颗（全是 `Utils.h` 那种只加函数声明的改动），等于没信号；而 `bool async = false);` 这种**函数签名续行**会被当成数据成员。
+- 影响面（量化）：10-16 以来**动了布局**的 core 头有 7 颗（`DiskScan.h` +10、`PluginStore.h` +19、`AboutPage.h` +3、`ToolsPage.h` +3、`PluginHost.h` +2、`CaptureHistory.h` +2、`ClipboardStore.h` +1），其中真被装着的插件吃到的只有三对：**disk←DiskScan（已崩）**、clipboard←ClipboardStore、capture←CaptureHistory。后两颗装的是 10-19 新编版，所以现在没事 —— 但**在商店点「更新」会把它们换回 10-16 那批陈的**。
+- 结论对 #91 的影响：**"在 core 里补几颗转接壳"这个选项治不了这次的问题** —— 壳只能补名字，补不了结构体大小和字段偏移。要么把 19 颗插件全部对这份 core 重编重发，要么每次发 core 都同时发插件。等他在这一层重拍。
