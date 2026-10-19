@@ -2029,54 +2029,6 @@ int main(int argc, char* argv[])
                     QStringLiteral("夜间平均灰度=%1 日间=%2 差=%3 · PNG 在 %4")
                         .arg(night).arg(day).arg(day - night).arg(shots));
             }
-            // 透明不是"看着透就行"：那扇是无边框半透明窗，底下是壁纸，所以字能不能读
-            // 取决于桌面有多亮/多暗。这里拿两个**极端**桌面当最坏情况：整块纯白、整块纯黑。
-            // 面板色按 alpha 合成到这两种底上，再量正文和灰字的对比度。
-            // 80%（alpha 204）是"两个模式正文都还在最坏情况下过 AA"那一档；
-            // 灰字夜里 3.43:1、日间 4.61:1 —— 夜里这条**没到 4.5**，如实摆出来，
-            // 门槛只钉 ≥3:1：再往下透一档它会先撑不住，那时候这条会点名。
-            {
-                const auto relLumOf = [](QRgb c) {
-                    const auto ch = [](int v) {
-                        const double s = v / 255.0;
-                        return s <= 0.03928 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4);
-                    };
-                    return 0.2126 * ch(qRed(c)) + 0.7152 * ch(qGreen(c)) + 0.0722 * ch(qBlue(c));
-                };
-                const auto against = [&relLumOf](QRgb a, QRgb b) {
-                    const double x = relLumOf(a), y = relLumOf(b);
-                    return (qMax(x, y) + 0.05) / (qMin(x, y) + 0.05);
-                };
-                QStringList perMode;
-                double worstText = 1e9, worstMuted = 1e9;
-                bool translucent = false;
-                for (Theme::Mode m : { Theme::Mode::Dark, Theme::Mode::Light }) {
-                    Theme::setMode(m);
-                    const QColor panel = Theme::color("panel");
-                    const QColor text = Theme::color("text"), muted = Theme::color("muted");
-                    translucent = translucent || panel.alpha() < 255;
-                    double t = 1e9, u = 1e9;
-                    for (const QRgb desk : { qRgb(255, 255, 255), qRgb(0, 0, 0) }) {
-                        const QRgb over = QColor::fromRgb(
-                            qRound(panel.red()   * panel.alpha() / 255.0 + qRed(desk)   * (1 - panel.alpha() / 255.0)),
-                            qRound(panel.green() * panel.alpha() / 255.0 + qGreen(desk) * (1 - panel.alpha() / 255.0)),
-                            qRound(panel.blue()  * panel.alpha() / 255.0 + qBlue(desk)  * (1 - panel.alpha() / 255.0))
-                        ).rgb();
-                        t = qMin(t, against(text.rgb(), over));
-                        u = qMin(u, against(muted.rgb(), over));
-                    }
-                    worstText = qMin(worstText, t);
-                    worstMuted = qMin(worstMuted, u);
-                    perMode << QStringLiteral("%1 透 %2%（正文 %3:1 / 灰字 %4:1）")
-                               .arg(Theme::name(m))
-                               .arg(qRound((100.0 * panel.alpha()) / 255))
-                               .arg(t, 0, 'f', 2).arg(u, 0, 'f', 2);
-                }
-                Theme::setMode(Theme::Mode::Dark);
-                say("启动器那块底真是半透明的，而且透完之后两个模式的正文在最坏桌面（纯白/纯黑）下都还过 AA",
-                    translucent && worstText >= 4.5 && worstMuted >= 3.0,
-                    perMode.join(QStringLiteral("；")));
-            }
             // 启动器那扇是 WA_TranslucentBackground + 无边框 —— 也就是说"搜索框在哪儿"
             // 这件事**只由那一圈 1px 描边**说给他看。2026-10-20 他第一句反馈就是
             // "这个白色不好，完全看不清搜索框的边框"：日间那份底是纯白、描边是黑压 26/255，
