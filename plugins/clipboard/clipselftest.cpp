@@ -18,6 +18,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QImage>
+#include <QRect>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -208,6 +209,58 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
 
     check("没过滤时列表四行", QString::number(page.rowCount()), "4");
     check("每一行都对得上自己的下标", rowsAgreeWithTheirIndexes(cs.items(), page), "ok");
+
+    // ---- 卡片那三块（2026-10-19 他把这张列表改成卡片）----
+    // IconMode 和 delegate 两个条件都要成立，少一个画出来还是一列（viewKind 就是为这条准备的）
+    check("这张页现在是卡片墙（IconMode + 自绘 delegate 都在）", page.viewKind(), "卡片墙");
+    {   // 版面自己渲一张出来复核（离屏没有中文字形，字会是豆腐块 —— 那就核色块、格子和压字）
+        page.resize(700, 460);
+        page.grab().save(QDir::tempPath() + "/ltool-clip-cards.png");
+        std::printf("INFO 卡片版面渲了一张（肉眼复核用）：%s · %dx%d\n",
+                    (QDir::tempPath() + "/ltool-clip-cards.png").toUtf8().constData(),
+                    page.width(), page.height());
+    }
+    check("第一张卡占的格子和 cardSize() 是同一个数（不是每行自己算的）",
+          QStringLiteral("%1x%2").arg(page.cardSizeAt(0).width()).arg(page.cardSizeAt(0).height())
+              == QStringLiteral("%1x%2").arg(ClipboardPage::cardSize().width())
+                       .arg(ClipboardPage::cardSize().height())
+                  ? "yes" : "no", "yes");
+    {
+        const QRect card(QPoint(0, 0), ClipboardPage::cardSize());
+        const QRect t = ClipboardPage::timeRect(card);
+        const QRect im = ClipboardPage::thumbRect(card);
+        const QRect bi = ClipboardPage::bodyRect(card, true);
+        const QRect bt = ClipboardPage::bodyRect(card, false);
+        std::printf("INFO 卡片几何 卡=%dx%d 时间=%dx%d@y%d 图=%dx%d@y%d 文案(有图)=%dx%d@y%d 文案(无图)=%dx%d@y%d\n",
+                    card.width(), card.height(), t.width(), t.height(), t.top(),
+                    im.width(), im.height(), im.top(), bi.width(), bi.height(), bi.top(),
+                    bt.width(), bt.height(), bt.top());
+        check("三块都落在卡里（上下左右都没出界、也没被裁）",
+              card.contains(t) && card.contains(im) && card.contains(bi) && card.contains(bt)
+                  ? "yes" : "no", "yes");
+        check("时间那块不许压到缩略图或文案（自绘最容易字压字）",
+              !t.intersects(im) && !t.intersects(bi) && !t.intersects(bt) ? "yes" : "no", "yes");
+        check("缩略图那块和文案那块也不许互相压", !im.intersects(bi) ? "yes" : "no", "yes");
+        check("有图的卡把文案压矮了（图占的位置真是从文案那儿让出来的）",
+              bi.height() < bt.height() ? "yes" : "no", "yes");
+        check("缩略图那块至少 120x84（图标就是按这块落盘的，小了会糊）",
+              im.width() >= 120 && im.height() >= 84 ? "yes" : "no", "yes");
+        // 这一条是拿 PNG 复核时补的：文本卡的图标是**空 QIcon**，而 `QVariant(QIcon())`
+        // 不是 null —— 用 DecorationRole 判"有没有图"，三张文本卡都会空出上半截图位。
+        {
+            const int imgTop = ClipboardPage::bodyRect(card, true).top();
+            const int txtTop = ClipboardPage::bodyRect(card, false).top();
+            const QString got = QStringLiteral("%1,%2,%3,%4")
+                                    .arg(page.bodyTopAt(0)).arg(page.bodyTopAt(1))
+                                    .arg(page.bodyTopAt(2)).arg(page.bodyTopAt(3));
+            const QString want = QStringLiteral("%1,%2,%2,%2")
+                                     .arg(imgTop).arg(txtTop);     // 第 0 条是那张图，其余三条是文本
+            std::printf("INFO 每张卡文案起点(实际)=[%s] 期望=[%s]（有图=%d 无图=%d）\n",
+                        got.toUtf8().constData(), want.toUtf8().constData(), imgTop, txtTop);
+            check("文本卡不许给一块不存在的图位让路（只有那张图卡文案才往下挪）", got, want);
+        }
+    }
+
     filter->setText(QStringLiteral("alpha"));
     check("过滤成一条之后列表只剩一行", QString::number(page.rowCount()), "1");
     check("过滤后第 0 行映射回的下标是 1（不是 0）", QString::number(page.storeIndexAt(0)), "1");
@@ -338,11 +391,11 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     {
         const QImage ti(bigThumb);
         std::printf("INFO 落盘那张缩略图的尺寸=%dx%d\n", ti.width(), ti.height());
-        check("落盘那张真的是 40px 以内的小图（不是把整图另存一遍）",
-              (!ti.isNull() && ti.width() <= 40 && ti.height() <= 40) ? "yes" : "no", "yes");
+        check("落盘那张真的是卡片那么大、而不是把整图另存一遍（≤120x84）",
+              (!ti.isNull() && ti.width() <= 120 && ti.height() <= 84) ? "yes" : "no", "yes");
     }
     check("thumbPath 只换后缀、和原图同目录（不另开一棵目录，免得孤儿清理要写两遍）",
-          bigThumb.endsWith(QStringLiteral("noise.t40.png"))
+          bigThumb.endsWith(QStringLiteral("noise.t120.png"))
               && QFileInfo(bigThumb).absolutePath() == QFileInfo(bigPath).absolutePath()
                   ? "yes" : "no", "yes");
     qint64 repeatMs = 0;
@@ -401,7 +454,7 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
         t.fill(QColor(20, 90, 200));
         t.save(liveThumb, "PNG");
     }
-    const QString deadThumb = QDir::toNativeSeparators(data + "/clipimg/nobody.t40.png");
+    const QString deadThumb = QDir::toNativeSeparators(data + "/clipimg/nobody.t120.png");
     {
         QImage t(4, 4, QImage::Format_RGB32);
         t.fill(QColor(0, 0, 0));

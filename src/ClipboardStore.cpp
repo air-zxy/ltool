@@ -375,11 +375,15 @@ void ClipboardStore::clear()
 
 QString ClipboardStore::thumbPath(const QString& imagePath)
 {
-    // clipimg/<sha1>.png -> clipimg/<sha1>.t40.png：和原图同一个目录、同一次清理，
+    // clipimg/<sha1>.png -> clipimg/<sha1>.t120.png：和原图同一个目录、同一次清理，
     // 不另开一棵目录树（开一棵就得再写一遍"孤儿怎么撤"，两处迟早对不上）。
     const QFileInfo fi(imagePath);
-    return fi.absolutePath() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral(".t40.png");
+    return fi.absolutePath() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral(".t120.png");
 }
+
+// 卡片上那块图最多 120×84（2026-10-19 他把这张列表改成卡片之后，40px 那颗就不够看了）。
+constexpr int kThumbW = 120;
+constexpr int kThumbH = 84;
 
 QIcon ClipboardStore::iconFor(const Item& it) const
 {
@@ -396,7 +400,7 @@ QIcon ClipboardStore::iconFor(const Item& it) const
         QPixmap full(it.imagePath);
         if (full.isNull())
             return QIcon();
-        pm = full.scaled(40, 40, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        pm = full.scaled(kThumbW, kThumbH, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         pm.save(thumb, "PNG");
     }
     const QIcon icon(pm);
