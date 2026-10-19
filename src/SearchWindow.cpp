@@ -1015,10 +1015,23 @@ void SearchWindow::runSearch()
             webKeywordWins = true;
 
     // 电源那两件事（2026-10-19 他点名要的：输 sleep/休眠 就休眠，输 shutdown/关机 就关机）。
-    // 只认**整条相等** —— 谁搜"关机后怎么恢复文件"都不许把这机器关了。
+    // 中文词只认**整条相等** —— "关机后怎么恢复文件"是一句查询，前缀匹配会把它当成要点电源。
+    // 英文词按"命令行形状"认：`shutdown`、`shutdown.exe`、`shutdown /s` 都是要动手，
+    // `shutdown 怎么用` 是在查资料（尾巴是普通词，不是开关），不算。
     // 也不清场：应用/文件/网站那几节照常在下面列出来（直达那条 2026-10-16 吃过亏的规矩）。
-    if (low == QStringLiteral("休眠") || low == QStringLiteral("sleep")
-        || low == QStringLiteral("hibernate")) {
+    const auto powerWord = [&low](const char* word) {
+        const QString w = QLatin1String(word);
+        if (!low.startsWith(w))
+            return false;
+        const QString tail = low.mid(w.size());
+        if (tail.isEmpty() || tail == QLatin1String(".exe"))
+            return true;
+        return tail.size() >= 2 && tail.startsWith(QLatin1Char(' '))
+            && (tail.at(1) == QLatin1Char('/') || tail.at(1) == QLatin1Char('-'));
+    };
+    const bool wantHiber = low == QStringLiteral("休眠") || powerWord("sleep") || powerWord("hibernate");
+    const bool wantOff = low == QStringLiteral("关机") || powerWord("shutdown");
+    if (wantHiber) {
         addSection(QStringLiteral("系统动作"));
         SearchResult r;
         r.kind = SearchResult::Command;
@@ -1029,7 +1042,7 @@ void SearchWindow::runSearch()
         r.target = QStringLiteral("power:hibernate");
         r.icon = letterIcon(QStringLiteral("眠"), QColor(120, 90, 200));
         addItem(r);
-    } else if (low == QStringLiteral("关机") || low == QStringLiteral("shutdown")) {
+    } else if (wantOff) {
         addSection(QStringLiteral("系统动作"));
         SearchResult r;
         r.kind = SearchResult::Command;

@@ -2428,6 +2428,34 @@ int main(int argc, char* argv[])
             check("整条相等才算：搜「关机后怎么恢复文件」不许把关机那条排第一",
                   nearMiss == QStringLiteral("power:shutdown") ? QStringLiteral("yes") : QStringLiteral("no"),
                   QStringLiteral("no"));
+            // 英文词按"命令行形状"放宽（他 2026-10-19 问"为什么没有 shutdown 的下拉选项"）：
+            // `shutdown.exe` / `shutdown /s` 是要动手，`shutdown 怎么用` 是在查资料。
+            const auto hasPower = [&](const QString& s, const char* want) {
+                input->setText(s);
+                settle();
+                for (int i = 0; i < w.resultCount(); ++i)
+                    if (w.resultAt(i).target == QLatin1String(want))
+                        return true;
+                return false;
+            };
+            check("输 shutdown.exe 也算要点电源",
+                  hasPower(QStringLiteral("shutdown.exe"), "power:shutdown") ? QStringLiteral("yes")
+                                                                            : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+            check("输 shutdown /s 也算",
+                  hasPower(QStringLiteral("shutdown /s"), "power:shutdown") ? QStringLiteral("yes")
+                                                                           : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+            check("但「shutdown 怎么用」不算（那是查资料，不许把机器关了）",
+                  hasPower(QStringLiteral("shutdown 怎么用"), "power:shutdown") ? QStringLiteral("yes")
+                                                                               : QStringLiteral("no"),
+                  QStringLiteral("no"));
+            check("中文那条没放宽：「关机」整条才算，「关机后…」不算",
+                  (hasPower(QStringLiteral("关机"), "power:shutdown")
+                   && !hasPower(QStringLiteral("关机后怎么恢复文件"), "power:shutdown"))
+                      ? QStringLiteral("yes")
+                      : QStringLiteral("no"),
+                  QStringLiteral("yes"));
             // 他报的第三件事：搜 `gg` 搜不到 Google。原因是「广告弹窗」的首字母也是 gg，
             // 工具直达那一节 return 得早，网站那节根本没机会跑。规则改成"显式网站关键字 >
             // 工具名首字母拼音"之后：gg 归 Google，广告弹窗还能靠整串首字母 ggdc 或 广告 到达。
