@@ -239,6 +239,10 @@ void ClipboardStore::capture()
                 return;
             f.write(raw);
             f.close();
+            // 收进来的这一刻顺手落一张 40px 的：那张页以后每一行都只读这张小的，
+            // 不该为了"你刚截的那张 2560×1440"在 GUI 线程上等一次整图解码。
+            canon.scaled(40, 40, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+                .save(thumbPath(it.imagePath), "PNG");
         }
     } else if (mime->hasText()) {
         const QString text = mime->text();
@@ -306,8 +310,10 @@ void ClipboardStore::prune()
         return;
     QSet<QString> keep;
     for (const Item& it : m_items)
-        if (it.isImage)
+        if (it.isImage) {
             keep.insert(keepKey(it.imagePath));
+            keep.insert(keepKey(thumbPath(it.imagePath)));   // 缩略图跟着原图活：原图在，它就不算孤儿
+        }
     int wiped = 0;
     const auto files = QDir(imageDir()).entryList(QStringList() << QStringLiteral("*.png"), QDir::Files);
     for (const QString& name : files) {
@@ -367,14 +373,35 @@ void ClipboardStore::clear()
     Utils::log("clipboard: history cleared");
 }
 
+QString ClipboardStore::thumbPath(const QString& imagePath)
+{
+    // clipimg/<sha1>.png -> clipimg/<sha1>.t40.png：和原图同一个目录、同一次清理，
+    // 不另开一棵目录树（开一棵就得再写一遍"孤儿怎么撤"，两处迟早对不上）。
+    const QFileInfo fi(imagePath);
+    return fi.absolutePath() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral(".t40.png");
+}
+
 QIcon ClipboardStore::iconFor(const Item& it) const
 {
     if (!it.isImage)
         return QIcon();
-    QPixmap pm(it.imagePath);
-    if (pm.isNull())
-        return QIcon();
-    return QIcon(pm.scaled(40, 40, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    const QString thumb = thumbPath(it.imagePath);
+    // 这张页每敲一个过滤字、每次被看见都要把列表重铺一遍 —— 原来那是 51 张整图重解码（实测 632ms）。
+    // 键用路径而不是 hash：路径本来就由 hash 派生，多一个键源只会多一处不一致。
+    static QHash<QString, QIcon> cache;
+    if (auto hit = cache.constFind(thumb); hit != cache.constEnd())
+        return hit.value();
+    QPixmap pm(thumb);
+    if (pm.isNull()) {   // 没有缩略图（老历史里的第一批）：拿原图做一次，落盘，之后只读这张小的
+        QPixmap full(it.imagePath);
+        if (full.isNull())
+            return QIcon();
+        pm = full.scaled(40, 40, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        pm.save(thumb, "PNG");
+    }
+    const QIcon icon(pm);
+    cache.insert(thumb, icon);
+    return icon;
 }
 
 QString ClipboardStore::summary(const Item& it)

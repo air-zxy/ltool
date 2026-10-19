@@ -14,6 +14,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QImage>
@@ -305,6 +306,114 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
           QFile::exists(pngPath) ? "yes" : "no", "yes");
     check("这一趟没顺带删掉任何历史条目", QString::number(cs.items().size()), "2");
     cs.setKeepDays(0);
+
+    // ---- 缩略图那本账（2026-10-19 他报「打开剪贴板很卡」）----
+    // 原来每一行的图标都是 `QPixmap(整图)` + Smooth 缩到 40px：他真实那份是 51 张图、
+    // 合计 51.6 百万像素，一趟 **632ms**（另一条只读 40px 缩略图的同款趟是 10ms，差 63×），
+    // 而这张页每次被看见、每敲一个过滤字都要重铺一遍列表 ⇒ 卡在 GUI 线程上。
+    // 夹具故意放在 clipimg **外面**：那儿是孤儿图清理扫的范围，
+    // 中途把测试用的大图删掉的话，后面量的就不再是"缓存命中"那条路了。
+    const QString cacheDir = data + "/clipimg_cache";
+    const QString bigPath = cacheDir + "/noise.png";
+    {
+        QDir().mkpath(cacheDir);
+        QImage n(1600, 1600, QImage::Format_RGB32);
+        for (int y = 0; y < n.height(); ++y) {
+            auto* line = reinterpret_cast<QRgb*>(n.scanLine(y));
+            for (int x = 0; x < n.width(); ++x)
+                line[x] = qRgb((x * 7 + y * 13) & 0xff, (x * 31 + y * 5) & 0xff, (x + y) & 0xff);
+        }
+        n.save(bigPath, "PNG");
+    }
+    ClipboardStore::Item big;
+    big.isImage = true;
+    big.imagePath = bigPath;
+    const QString bigThumb = ClipboardStore::thumbPath(bigPath);
+    QFile::remove(bigThumb);
+    QElapsedTimer ec;
+    ec.start();
+    const QIcon first = cs.iconFor(big);        // 这一趟没有缩略图：整图解一次，顺手落一张小的
+    const qint64 missMs = ec.restart();
+    check("没有缩略图时第一趟会落一张小的在盘上", QFile::exists(bigThumb) ? "yes" : "no", "yes");
+    {
+        const QImage ti(bigThumb);
+        std::printf("INFO 落盘那张缩略图的尺寸=%dx%d\n", ti.width(), ti.height());
+        check("落盘那张真的是 40px 以内的小图（不是把整图另存一遍）",
+              (!ti.isNull() && ti.width() <= 40 && ti.height() <= 40) ? "yes" : "no", "yes");
+    }
+    check("thumbPath 只换后缀、和原图同目录（不另开一棵目录，免得孤儿清理要写两遍）",
+          bigThumb.endsWith(QStringLiteral("noise.t40.png"))
+              && QFileInfo(bigThumb).absolutePath() == QFileInfo(bigPath).absolutePath()
+                  ? "yes" : "no", "yes");
+    qint64 repeatMs = 0;
+    for (int i = 0; i < 40; ++i) {              // 重铺一行就是问一次这个调用
+        const qint64 t0 = ec.elapsed();
+        (void)cs.iconFor(big);
+        repeatMs += ec.elapsed() - t0;
+    }
+    std::printf("INFO 缩略图：第一趟(解码+落盘)=%lldms，之后 40 次合计=%lldms（没缓存时这台一趟就是几百 ms）\n",
+                static_cast<long long>(missMs), static_cast<long long>(repeatMs));
+    check("缩略图落盘后再重铺 40 行，不再把整图解 40 遍（<120ms）",
+          repeatMs < 120 ? "yes" : "no", "yes");
+    check("缓存命中那次照样给得出图标", (!first.isNull() && !cs.iconFor(big).isNull()) ? "yes" : "no", "yes");
+    // 这条才是"读的是小的那张"的正面证据，比量时间硬：把**原图写成一份坏 PNG**，
+    // 缩略图留着 —— 整图那条路必然给空图标，只有真的去读那张 40px 才会还有图。
+    const QString brokenPath = cacheDir + "/broken.png";
+    const QString brokenThumb = ClipboardStore::thumbPath(brokenPath);
+    {
+        QFile bf(brokenPath);
+        if (bf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            bf.write("这不是 PNG，是故意写坏的原图");
+            bf.close();
+        }
+        QImage t(40, 40, QImage::Format_RGB32);
+        t.fill(QColor(9, 180, 90));
+        t.save(brokenThumb, "PNG");
+    }
+    ClipboardStore::Item brokenItem;
+    brokenItem.isImage = true;
+    brokenItem.imagePath = brokenPath;
+    const QIcon viaThumb = cs.iconFor(brokenItem);
+    check("原图坏了、缩略图在：还给得出图标（= 这一趟读的是那张小的）",
+          !viaThumb.isNull() && !viaThumb.availableSizes().isEmpty() ? "yes" : "no", "yes");
+    // 反过来钉住"没有缩略图时才去碰原图"：另起一颗坏图（换个文件名，免得撞上上面那次
+    // 的内存缓存），小的也没有 ⇒ 必须老实给空，不许崩。
+    const QString gonePath = cacheDir + "/broken2.png";
+    {
+        QFile bf(gonePath);
+        if (bf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            bf.write("这也不是 PNG");
+            bf.close();
+        }
+    }
+    ClipboardStore::Item goneItem;
+    goneItem.isImage = true;
+    goneItem.imagePath = gonePath;
+    const QIcon viaFull = cs.iconFor(goneItem);
+    check("原图坏、缩略图也没了：给空图标就行（不许崩，也不许装作有图）",
+          viaFull.isNull() ? "yes" : "no", "yes");
+    // 和孤儿清理的接口：还在历史里的那张图，它的缩略图不许被当孤儿扫掉；没人要的那张要走。
+    // 这里**自己写**那颗小的，不调 iconFor 去补 —— 同进程里内存缓存早就有这颗了，
+    // 它一命中就再也不落盘，那样量到的是缓存不是清理（2026-10-19 这条第一版就是这么红的）。
+    const QString liveThumb = ClipboardStore::thumbPath(pngPath);
+    {
+        QImage t(40, 40, QImage::Format_RGB32);
+        t.fill(QColor(20, 90, 200));
+        t.save(liveThumb, "PNG");
+    }
+    const QString deadThumb = QDir::toNativeSeparators(data + "/clipimg/nobody.t40.png");
+    {
+        QImage t(4, 4, QImage::Format_RGB32);
+        t.fill(QColor(0, 0, 0));
+        t.save(deadThumb, "PNG");
+    }
+    cs.setKeepDays(7);                          // 触发一次 prune
+    check("还在用的那张，它的缩略图没被当孤儿删掉", QFile::exists(liveThumb) ? "yes" : "no", "yes");
+    check("没人要的那张缩略图照样算孤儿（不然原图删了小的堆着）", QFile::exists(deadThumb) ? "yes" : "no", "no");
+    cs.setKeepDays(0);
+    QFile::remove(bigPath);
+    QFile::remove(bigThumb);
+    QDir(cacheDir).removeRecursively();
 
     // 清空
     clearBtn->click();

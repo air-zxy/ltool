@@ -43,6 +43,14 @@ public:
     // 时间戳读不出来的条目按"超龄"处理：界面本来就画不出它是哪天复制的。
     static bool expired(const Item& it, int keepDays, const QDateTime& now);
 
+    // 一张图片的 40px 缩略图落在哪儿（和原图同一个目录、同一次清理，后缀 .t40.png）。
+    // 为什么要有这东西：列表里每一行的图标原来都走 `QPixmap(整图)` + Smooth 缩放 ——
+    // 2026-10-19 实测他那份 51 张图（合计 51.6 百万像素）一趟要 **632ms**，而这张页
+    // 每次被看见、每敲一个过滤字都要重铺一遍列表，那几百毫秒就挂在 GUI 线程上。
+    // 缩略图落盘之后同款趟是 **10ms**（63×）。它跟着原图一起进 prune() 那张 keep 表，
+    // 原图被撤了小的也当孤儿扫走 —— 不另开目录，免得"孤儿怎么撤"要写第二遍。
+    static QString thumbPath(const QString& imagePath);
+
     // 孤儿图清理的那道闸门和路径归一化：都暴露出来是为了能被判据直接问（批量删文件
     // 这件事一旦写歪就是丢历史，不该只有跑起来才发现）。
     static bool sweepAllowed(int itemCount);

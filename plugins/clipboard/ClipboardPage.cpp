@@ -1,7 +1,9 @@
 #include "ClipboardPage.h"
 
 #include "ClipboardStore.h"
+#include "Utils.h"
 
+#include <QElapsedTimer>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
@@ -141,16 +143,27 @@ void ClipboardPage::refresh()
 
 void ClipboardPage::buildRows()
 {
+    QElapsedTimer clock;
+    clock.start();
     const QVector<ClipboardStore::Item>& items = ClipboardStore::instance().items();
     const QVector<int> picked = filterIndices(items, m_filter ? m_filter->text() : QString());
     m_list->clear();
+    int images = 0;
     for (const int idx : picked) {
         const ClipboardStore::Item& it = items[idx];
+        if (it.isImage)
+            ++images;
         auto* row = new QListWidgetItem(ClipboardStore::instance().iconFor(it),
                                         rowText(it), m_list);
         row->setData(Qt::UserRole, idx);        // 存的是**存储下标**，行号会变，这个不会
         row->setToolTip(it.isImage ? it.imagePath : it.text.left(4000));
     }
+    // 慢的时候要说得出慢在哪一行数据上：2026-10-19 他报"打开剪贴板很卡"，
+    // 而那时离屏判据跑的是空 store，量不到他真实那 52 张图 —— 这颗日志就是留给那一趟的。
+    const qint64 ms = clock.elapsed();
+    if (ms > 60)
+        Utils::log(QString("clipboard: 重铺列表 %1 行（其中图片 %2 张）用了 %3 ms")
+                       .arg(picked.size()).arg(images).arg(ms));
 }
 
 int ClipboardPage::rowCount() const
