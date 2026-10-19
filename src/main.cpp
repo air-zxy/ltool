@@ -3658,11 +3658,9 @@ int main(int argc, char* argv[])
     QSystemTrayIcon tray(Utils::appIcon());
     trayPtr = &tray;
     QMenu menu;
-    menu.setStyleSheet(
-        "QMenu { background: #232429; border: 1px solid #33353d; border-radius: 8px; padding: 4px; color: #e8ebf2; font-size: 10pt; }"
-        "QMenu::item { padding: 6px 20px 6px 12px; border-radius: 6px; }"
-        "QMenu::item:selected { background: #3f6ae0; color: white; }"
-        "QMenu::separator { height: 1px; background: #33353d; margin: 4px 6px; }");
+    // 这份样式全程序只有 Utils::darkMenuStyle() 那一份（这里以前另抄了一份字面量，
+    // 抄两份的代价就是"改了四处漏一处"，10-17 置顶窗那个白底菜单就是这么来的）
+    menu.setStyleSheet(Utils::darkMenuStyle());
     QAction* showAction = menu.addAction(QString("显示搜索框 (%1)").arg(hotkeyLabel));
     QObject::connect(showAction, &QAction::triggered, &win, &SearchWindow::showLauncher);
     updateMenuHotkey = [&] {
