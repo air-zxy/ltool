@@ -66,6 +66,7 @@
 #include <QLayout>
 #include <QScrollArea>
 #include <QStackedWidget>
+#include <QTabWidget>
 #include <QSet>
 #include <QFile>
 #include <QFileInfo>
@@ -1747,24 +1748,37 @@ int main(int argc, char* argv[])
         // 于是标签 findChild 找得到、--cfgcheck 一片绿，界面上却一行都没有（2026-10-12 他报的）。
         // 所以这条把"布局里能走到"当成结构不变量，逐个分组框验一遍，谁没挂上就点谁的名。
         QSet<const QWidget*> laidOut;
-        std::function<void(QLayout*)> walk = [&](QLayout* l) {
+        std::function<void(QLayout*)> walk;
+        // 「访问一个控件」这件事只写一遍：它自己的布局 + 两种"内容不是布局项"的容器
+        //（滚动区的 viewport 件、tab 的每一页）。上一版这里只有 walk() 一条递归，
+        // 配置页拆成 通用/外观 两个 tab 之后当场把 7 个分组框全报成"没摆进布局" ——
+        // 因为 tab 的第一页本身就是那颗 QScrollArea，从它走只能拿到它自己的 layout()。
+        std::function<void(QWidget*)> visit = [&](QWidget* w) {
+            if (!w || laidOut.contains(w))
+                return;
+            laidOut.insert(w);
+            walk(w->layout());
+            if (auto* sc = qobject_cast<QScrollArea*>(w))   // 滚动区里那层不是布局项
+                if (sc->widget())
+                    visit(sc->widget());
+            if (auto* tw = qobject_cast<QTabWidget*>(w))    // tab 的非当前页也取不到布局项
+                for (int i = 0; i < tw->count(); ++i)
+                    visit(tw->widget(i));
+        };
+        walk = [&](QLayout* l) {
             if (!l)
                 return;
             for (int i = 0; i < l->count(); ++i) {
                 QLayoutItem* it = l->itemAt(i);
                 if (!it)
                     continue;
-                if (QWidget* w = it->widget()) {
-                    laidOut.insert(w);
-                    walk(w->layout());
-                    if (auto* sc = qobject_cast<QScrollArea*>(w))   // 滚动区里那层不是布局项
-                        if (sc->widget())
-                            walk(sc->widget()->layout());
-                } else if (QLayout* sub = it->layout())
+                if (QWidget* w = it->widget())
+                    visit(w);
+                else if (QLayout* sub = it->layout())
                     walk(sub);
             }
         };
-        walk(page.layout());
+        visit(&page);
         QString orphans;
         int groups = 0;
         for (const QGroupBox* g : page.findChildren<QGroupBox*>()) {
@@ -1774,6 +1788,52 @@ int main(int argc, char* argv[])
         }
         say("每个分组框都真的摆在布局里（没摆=界面上看不见）", orphans.isEmpty(),
             orphans.isEmpty() ? QStringLiteral("%1 个分组框全在布局里").arg(groups) : orphans);
+        // ---- 2026-10-20 他把配置页拆成「通用 / 外观」两个 tab，日间夜间那颗搬进外观 ----
+        // 这三条盯的是搬家的形状，不是"有没有 tab"：
+        // ① 就两个、名字对得上（多一个少一个都算没照做）；
+        // ② 那两颗单选**在外观这一页上**（搬一半 = 界面上找不到，比不搬更糟）；
+        // ③ 通用那一页不许长出外观的东西、外观那一页也不许被塞进别的分组框 ——
+        //    这条是防"以后加开关的人随手往外观页里塞下载代理"那种回潮。
+        {
+            auto* tabs = page.findChild<QTabWidget*>(QStringLiteral("cfgTabs"));
+            const QStringList tabNames = [&] {
+                QStringList n;
+                if (tabs)
+                    for (int i = 0; i < tabs->count(); ++i)
+                        n << tabs->tabText(i);
+                return n;
+            }();
+            say("配置页正好两个 tab，顺序是 通用/外观",
+                tabNames.join(QStringLiteral(" / ")) == QStringLiteral("通用 / 外观"),
+                tabNames.isEmpty() ? QStringLiteral("没找到 cfgTabs 那颗 QTabWidget")
+                                   : tabNames.join(QStringLiteral(" / ")));
+            QWidget* generalPage = tabs && tabs->count() > 0 ? tabs->widget(0) : nullptr;
+            QWidget* lookPage = tabs && tabs->count() > 1 ? tabs->widget(1) : nullptr;
+            const auto radios = page.findChildren<QRadioButton*>();
+            int onLook = 0, elsewhere = 0;
+            for (const QRadioButton* r : radios) {
+                if (lookPage && lookPage->isAncestorOf(const_cast<QRadioButton*>(r)))
+                    ++onLook;
+                else
+                    ++elsewhere;
+            }
+            say("夜间/日间那两颗单选都在「外观」这一页上（不在通用那一页）",
+                radios.size() == 2 && onLook == 2 && elsewhere == 0,
+                QStringLiteral("找到 %1 颗 · 在外观页 %2 颗 · 别处 %3 颗")
+                    .arg(radios.size()).arg(onLook).arg(elsewhere));
+            int generalGroups = 0, lookGroups = 0;
+            for (QGroupBox* g : page.findChildren<QGroupBox*>()) {
+                if (generalPage && generalPage->isAncestorOf(g))
+                    ++generalGroups;
+                if (lookPage && lookPage->isAncestorOf(g))
+                    ++lookGroups;
+            }
+            say("其余分组框全在通用那一页、外观那一页只有「外观」自己这一颗分组框",
+                generalGroups == groups - 1 && lookGroups == 1,
+                QStringLiteral("通用页 %1 颗 · 外观页 %2 颗 · 整页共 %3 颗")
+                    .arg(generalGroups).arg(lookGroups).arg(groups));
+        }
+
         // 「语言与环境」已剥离为独立插件，配置页不再塞入该分组框
         {
             QStringList titles;
@@ -2023,6 +2083,15 @@ int main(int argc, char* argv[])
                 const int night = meanLightness(shots + QStringLiteral("/theme-night.png"));
                 Theme::setMode(Theme::Mode::Light);
                 const int day = meanLightness(shots + QStringLiteral("/theme-day.png"));
+                // 再补一张「外观」那一页单独的图：拆 tab 之后只截第一页就等于没截到新东西，
+                // 而"这一页是不是空得只剩一行"必须用眼睛过一遍，不能只靠上面那条数分组框。
+                if (auto* tw = dlg.findChild<QTabWidget*>(QStringLiteral("cfgTabs"))) {
+                    tw->setCurrentIndex(1);
+                    QCoreApplication::processEvents();
+                    const QPixmap pm = dlg.grab();
+                    pm.save(shots + QStringLiteral("/theme-look-tab.png"), "PNG");
+                    tw->setCurrentIndex(0);
+                }
                 Theme::setMode(Theme::Mode::Dark);
                 say("两种模式各渲一整扇设置窗，日间那张整张平均亮度明显更亮（量的是像素不是字符串）",
                     night >= 0 && day - night > 60,

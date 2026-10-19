@@ -19,6 +19,7 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QGroupBox>
+#include <QTabWidget>
 #include <QScrollArea>
 #include <QKeySequenceEdit>
 #include <QLabel>
@@ -141,7 +142,12 @@ ConfigPage::ConfigPage(QWidget* parent)
     // 配置项越加越多，早就超出窗口高度了：整页放进滚动区，不然下面的分组看不见也点不到
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
-    auto* scroller = new QScrollArea(this);
+    // 2026-10-20 他点名把配置页拆成两个 tab：通用 / 外观。
+    // 外观那一页眼下只有「夜间 / 日间」这一行，但它以后是所有跟长相有关的开关的落点 ——
+    // 继续挤在通用那张长列表里，下次加字号/密度就得再搬一次。
+    auto* tabs = new QTabWidget(this);
+    tabs->setObjectName(QStringLiteral("cfgTabs"));
+    auto* scroller = new QScrollArea(tabs);
     scroller->setObjectName(QStringLiteral("cfgScroll"));
     scroller->setWidgetResizable(true);
     scroller->setFrameShape(QFrame::NoFrame);
@@ -149,7 +155,8 @@ ConfigPage::ConfigPage(QWidget* parent)
     auto* body = new QWidget;
     body->setObjectName(QStringLiteral("cfgBody"));
     scroller->setWidget(body);
-    outer->addWidget(scroller);
+    tabs->addTab(scroller, QString::fromUtf8("通用"));
+    outer->addWidget(tabs, 1);
     auto* lay = new QVBoxLayout(body);
     lay->setContentsMargins(12, 4, 4, 4);
 
@@ -163,31 +170,6 @@ ConfigPage::ConfigPage(QWidget* parent)
     m_installPath = new QLineEdit(general);
     m_installPath->setPlaceholderText("D:\\software");
     generalLay->addRow("软件安装路径：", m_installPath);
-    // 外观：夜间 / 日间。拨一下就当场生效（Theme::setMode 会重刷调色板、两份弹层样式表，
-    // 并给每个顶层窗口发一次 ThemeChange），不用按保存、也不用重启。
-    auto* themeRow = new QWidget(general);
-    auto* themeLay = new QHBoxLayout(themeRow);
-    themeLay->setContentsMargins(0, 0, 0, 0);
-    themeLay->setSpacing(16);
-    m_themeDark = new QRadioButton(QString::fromUtf8("夜间"), themeRow);
-    m_themeLight = new QRadioButton(QString::fromUtf8("日间"), themeRow);
-    m_themeDark->setChecked(Theme::current() == Theme::Mode::Dark);
-    m_themeLight->setChecked(Theme::current() == Theme::Mode::Light);
-    themeLay->addWidget(m_themeDark);
-    themeLay->addWidget(m_themeLight);
-    themeLay->addStretch(1);
-    themeRow->setToolTip(QStringLiteral(
-        "夜间是这个程序一直以来的样子（默认）。\n"
-        "日间那套是 iOS 设置页那种「浅灰页面 + 纯白卡片 + 发丝线」，对比度按 WCAG 现算过："
-        "正文 16.83:1、次级 5.07:1、白字压主色 5.57:1、启动器那圈描边 3.11:1。\n"
-        "拨一下就当场生效，不用重启、也不用按保存：搜索框、托盘菜单、菜单墙、配置、关于都会当场换脸。\n"
-        "还切不动的一块：插件自己那些页（录屏、置顶窗、宫图、剪贴板…）在 dll 里各写了一份深色，"
-        "要重新构建那 19 颗 dll 才会跟着换 —— 商店里装的那批不会。"));
-    generalLay->addRow(QStringLiteral("外观："), themeRow);
-    connect(m_themeDark, &QRadioButton::toggled, this,
-            [](bool on) { if (on) Theme::setMode(Theme::Mode::Dark); });
-    connect(m_themeLight, &QRadioButton::toggled, this,
-            [](bool on) { if (on) Theme::setMode(Theme::Mode::Light); });
     m_proxy = new QLineEdit(general);
     if (const QString sys = DevEnv::systemProxyUrl(); !sys.isEmpty()) {
         m_proxy->setPlaceholderText(QString("留空 = 自动用系统代理（当前检测到 %1）").arg(sys));
@@ -383,6 +365,43 @@ ConfigPage::ConfigPage(QWidget* parent)
     auto* clipClear = new QPushButton("清空剪贴板历史", clip);
     clipClear->setToolTip("删除所有记录和已保存的图片文件");
     clipLay->addRow(clipClear);
+
+    // ---- 「外观」那一页：夜间 / 日间 从通用那张长列表里搬到这里（他 2026-10-20 点名）----
+    // 搬完，通用那一行「外观：」的标签就没了 —— 判据盯着"外观那一行只有一颗、而且它在
+    // 外观这一页上"，别哪天又被人加回通用。
+    auto* appearancePage = new QWidget(tabs);
+    auto* appearance = new QGroupBox("外观", appearancePage);
+    auto* appearanceLay = new QFormLayout(appearance);
+    auto* appearanceLayBox = new QVBoxLayout(appearancePage);
+    appearanceLayBox->setContentsMargins(12, 12, 12, 12);
+    appearanceLayBox->addWidget(appearance);
+    appearanceLayBox->addStretch(1);   // 这一页东西少，别把分组框拉到整页高
+    // 外观：夜间 / 日间。拨一下就当场生效（Theme::setMode 会重刷调色板、两份弹层样式表，
+    // 并给每个顶层窗口发一次 ThemeChange），不用按保存、也不用重启。
+    auto* themeRow = new QWidget(appearance);
+    auto* themeLay = new QHBoxLayout(themeRow);
+    themeLay->setContentsMargins(0, 0, 0, 0);
+    themeLay->setSpacing(16);
+    m_themeDark = new QRadioButton(QString::fromUtf8("夜间"), themeRow);
+    m_themeLight = new QRadioButton(QString::fromUtf8("日间"), themeRow);
+    m_themeDark->setChecked(Theme::current() == Theme::Mode::Dark);
+    m_themeLight->setChecked(Theme::current() == Theme::Mode::Light);
+    themeLay->addWidget(m_themeDark);
+    themeLay->addWidget(m_themeLight);
+    themeLay->addStretch(1);
+    themeRow->setToolTip(QStringLiteral(
+        "夜间是这个程序一直以来的样子（默认）。\n"
+        "日间那套是 iOS 设置页那种「浅灰页面 + 纯白卡片 + 发丝线」，对比度按 WCAG 现算过："
+        "正文 16.83:1、次级 5.07:1、白字压主色 5.57:1、启动器那圈描边 3.11:1。\n"
+        "拨一下就当场生效，不用重启、也不用按保存：搜索框、托盘菜单、菜单墙、配置、关于都会当场换脸。\n"
+        "还切不动的一块：插件自己那些页（录屏、置顶窗、宫图、剪贴板…）在 dll 里各写了一份深色，"
+        "要重新构建那 19 颗 dll 才会跟着换 —— 商店里装的那批不会。"));
+    appearanceLay->addRow(QStringLiteral("外观："), themeRow);
+    connect(m_themeDark, &QRadioButton::toggled, this,
+            [](bool on) { if (on) Theme::setMode(Theme::Mode::Dark); });
+    connect(m_themeLight, &QRadioButton::toggled, this,
+            [](bool on) { if (on) Theme::setMode(Theme::Mode::Light); });
+    tabs->addTab(appearancePage, QString::fromUtf8("外观"));
 
     auto* save = new QPushButton("保存", this);
     save->setDefault(true);
