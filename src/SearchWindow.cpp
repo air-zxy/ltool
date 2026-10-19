@@ -799,7 +799,8 @@ void SearchWindow::runSearch()
             r.extra = a.lnkPath;
             if (!a.iconFile.isEmpty())
                 r.icon = QIcon(a.iconFile);
-            else if (a.category == QLatin1String("system"))
+            else if (a.category == QLatin1String("system")
+                     || a.category == QLatin1String("appsfolder"))
                 r.icon = Utils::letterIcon(a.name, QColor(31, 141, 160));
             addItem(r);
         };
@@ -1176,7 +1177,8 @@ void SearchWindow::runSearch()
         r.extra = a.lnkPath;
         if (!a.iconFile.isEmpty())
             r.icon = QIcon(a.iconFile);
-        else if (a.category == "system")
+        else if (a.category == QLatin1String("system")
+                 || a.category == QLatin1String("appsfolder"))
             r.icon = Utils::letterIcon(a.name, QColor(31, 141, 160));
         addItem(r);
     }

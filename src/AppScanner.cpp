@@ -1,4 +1,5 @@
 #include "AppScanner.h"
+#include "platform/AppsFolder.h"
 #include "platform/FileMeta.h"
 #include "platform/Paths.h"
 
@@ -351,8 +352,41 @@ QVector<AppEntry> scan()
                        .arg(appDirs.size()).arg(appDepth).arg(appCollected).arg(appFiltered)
                        .arg(appShadowed).arg(appClock.elapsed()));
 
+    // ---- 打包应用（MSIX / Appx）：开始菜单从 shell:AppsFolder 列它们，磁盘上没有 .lnk ----
+    // 2026-10-19 他报"开始菜单搜得到 ChatGPT，ltool 搜索框搜不到"：这台机器开始菜单 312 个
+    // 应用里有 43 个是这种（ChatGPT = OpenAI.Codex_2p2nqsd0c76g0!App），而上面那三个来源
+    // 一个都覆盖不到它们。启动入口是 `shell:AppsFolder\<AUMID>`，ShellExecute("open") 认。
+    QElapsedTimer pkgClock;
+    pkgClock.start();
+    const auto packaged = Platform::packagedApps();
+    QSet<QString> haveNames;
+    for (const AppEntry& e : all)
+        haveNames.insert(e.name.toLower());
+    int pkgAdded = 0;
+    int pkgDup = 0;
+    for (const Platform::PackagedApp& p : packaged) {
+        if (p.name.isEmpty())
+            continue;
+        if (haveNames.contains(p.name.toLower())) {   // 同名已经有 .lnk 了：让快捷方式那条说话
+            ++pkgDup;
+            continue;
+        }
+        haveNames.insert(p.name.toLower());
+        AppEntry e;
+        e.name = p.name;
+        e.lnkPath = p.launchPath;
+        e.category = "appsfolder";
+        if (!p.iconSrc.isEmpty())
+            e.iconFile = iconCachePng(p.iconSrc, p.iconIndex);
+        all.append(e);
+        ++pkgAdded;
+    }
+    Utils::log(QString("appscan: 打包应用(AppsFolder) 列出 %1 颗、收 %2 颗、同名让位给快捷方式 %3 颗，用了 %4ms")
+                   .arg(packaged.size()).arg(pkgAdded).arg(pkgDup).arg(pkgClock.elapsed()));
+
+
     // 去重：
-    //   目标为空（如 UWP）→ 按名称去重
+    //   目标为空（如打包应用）→ 按名称去重
     //   同一目标的多条 → 只保留一条，优先无参数的（开始菜单副本常带 --scene 之类的内部参数）
     QVector<AppEntry> out;
     out.reserve(all.size());

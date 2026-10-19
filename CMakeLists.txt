@@ -90,12 +90,14 @@ endif()
 if(WIN32)
     set(LTOOL_PLATFORM_SRC src/platform/Paths_win.cpp src/platform/Launch_win.cpp
         src/platform/Autostart_win.cpp src/platform/FileMeta_win.cpp src/platform/ProcInfo_win.cpp
-        src/platform/FileOps_win.cpp src/platform/SysConfig_win.cpp)
+        src/platform/FileOps_win.cpp src/platform/SysConfig_win.cpp
+        src/platform/AppsFolder_win.cpp)
 else()
     set(LTOOL_PLATFORM_SRC src/platform/Paths_posix.cpp src/platform/Launch_posix.cpp
         src/platform/Autostart_posix.cpp src/platform/FileMeta_posix.cpp
         src/platform/ProcInfo_posix.cpp src/platform/FileOps_posix.cpp
-        src/platform/SysConfig_posix.cpp)
+        src/platform/SysConfig_posix.cpp
+        src/platform/AppsFolder_posix.cpp)
 endif()
 
 # ---- 非 Windows：台阶一，只编"量过确实可移植"的那些 TU，然后到此为止 ----
