@@ -678,6 +678,17 @@ void SearchWindow::scheduleSearch()
     m_debounce->start();
 }
 
+// 输入框有 120ms 的去抖：打字快一点、立刻按回车，列表还停在"少一个字母"的那一版。
+// 搜 shutdown 却"什么都搜不出来"就是这么来的（他 2026-10-19 报的）—— 那一版列表是空的，
+// 回车自然什么也没启动，而那 120ms 还没到。
+void SearchWindow::flushSearch()
+{
+    if (m_debounce && m_debounce->isActive()) {
+        m_debounce->stop();
+        runSearch();
+    }
+}
+
 void SearchWindow::addSection(const QString& text)
 {
     SearchResult r;
@@ -1285,6 +1296,7 @@ void SearchWindow::moveCurrent(int dir)
 
 void SearchWindow::activateCurrent()
 {
+    flushSearch();          // 先把还压着的那一拍补上，别拿"少一个字母"的旧列表当结果
     const int row = m_list->currentRow();
     if (row < 0)
         return;

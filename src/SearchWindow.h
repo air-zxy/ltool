@@ -63,6 +63,9 @@ public:
 
     const SearchResult& resultAt(int i) const { return m_results[i]; }
     int resultCount() const { return m_results.size(); }   // 给离屏自测用（--pinyin 数第一行是谁）
+    // 把还压在 120ms 去抖里的那一拍立刻补上（回车之前必须做，见 .cpp 里 activateCurrent 的注释）。
+    // 公开是为了离屏判据能量到"回车用的是新列表还是少一个字母的旧列表"。
+    void flushSearch();
 
 signals:
     void hotkeyChanged(const QString& sequence);

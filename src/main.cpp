@@ -2378,6 +2378,31 @@ int main(int argc, char* argv[])
             check("输「关机」第一行就是关机那一条", powerOf(QStringLiteral("关机")),
                   QStringLiteral("power:shutdown"));
             check("输 shutdown 同上", powerOf(QStringLiteral("shutdown")), QStringLiteral("power:shutdown"));
+            // 120ms 去抖那一拍不能被回车漏掉（他 2026-10-19 报"搜 shutdown 什么都没有搜出来"）：
+            // 故意不 settle —— 先看列表（还是上一个查询那一版，没有这条），再走 flushSearch
+            // （= 回车做的第一件事），这条就该出现了。
+            input->setText(QStringLiteral("zzz-这条什么都搜不到-qqq"));
+            settle();                     // 先把列表清干净，下面量的才是"少一拍"那一版
+            input->setText(QStringLiteral("shutdown"));
+            bool staleHas = false;
+            QStringList staleTargets;
+            for (int i = 0; i < w.resultCount(); ++i) {
+                staleTargets << (w.resultAt(i).isSection ? QStringLiteral("§")
+                                                         : w.resultAt(i).target.left(22));
+                if (w.resultAt(i).target == QLatin1String("power:shutdown"))
+                    staleHas = true;
+            }
+            std::printf("INFO 没补那一拍时列表长这样：%s\n",
+                        staleTargets.join(QStringLiteral(",")).left(200).toUtf8().constData());
+            w.flushSearch();
+            bool flushedHas = false;            for (int i = 0; i < w.resultCount(); ++i)
+                if (w.resultAt(i).target == QLatin1String("power:shutdown"))
+                    flushedHas = true;
+            check("回车前那一拍补得回来（不补=旧列表没这条，补了=有）",
+                  (!staleHas && flushedHas) ? QStringLiteral("yes") : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+            std::printf("INFO 去抖那一拍：不补时列表里有 power 条=%d，补了之后=%d\n", staleHas ? 1 : 0,
+                        flushedHas ? 1 : 0);
             // 这台机器（实测 `powercfg /a`：休眠「尚未启用」）不能休眠，那一行就得**当场**把
             // powercfg /h on 说出来，而不是等他按下回车再报错。判据按机器的实际状态分支，
             // 两种机器上都成立。

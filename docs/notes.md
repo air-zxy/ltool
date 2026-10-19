@@ -819,3 +819,5 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 判据 +6 条（`--pinyin` 52 → **58**）：四个词各自的路由、反向那条"整条相等才算"、以及"没开休眠的那台必须点名 powercfg / 开了的那台不许出现这句"（按机器实际状态分支，两种机器上都成立）。**判据一次都不真按回车** —— 只读 `resultAt(i).target`，跑判据的机器不能睡过去。
 - 可移植那份没破：`src/SysTools.cpp` 在 `LTOOL_CORE_PORTABLE_SRC` 名单里，Win32 那截用 `#ifdef _WIN32` 圈住了；WSL 里 `g++ -std=c++20 -fsyntax-only` 复跑过 = `POSIX_SYNTAX_OK`。core 多链一颗 `powrprof`（只在 `if(WIN32)` 那一串里）。
 - 数字：离线合计 696 → **702 条 0 红**。版本：可感知新功能本该 minor，但工作树 **1.1.0 从没打过 tag**（最新 tag 还是 v1.0.3），按"未发布的号吸收同批功能"并进 1.1.0，不另起号；插件一行没动，闸绿。
+- 他装完立刻报"搜 shutdown 什么都没有搜出来" —— 根因不在匹配规则，在**回车和 120ms 去抖抢拍**：`textChanged → m_debounce(120ms) → runSearch`，回车走的是 `activateCurrent()`，读的是**上一个查询那一版**列表（少一个字母那一版里没有电源那条，只剩"用搜索引擎搜索"）。修法：`SearchWindow::flushSearch()`（去抖还压着就立刻补一拍），`activateCurrent()` 第一件事就是它。这条不只关电源 —— 任何"打字快 + 立刻回车"都在抢这一拍。
+- 判据踩到一次测量陷阱：第一次写这条判据红了，因为"没补那一拍"时读到的列表是**上一个查询留下的**（里面正好有 `power:shutdown`）。改成先 `setText("zzz-什么都搜不到-qqq") + settle()` 把列表清干净，再 `setText("shutdown")` **不 settle** —— 读到的才是"少一拍"那一版（= 0 条），`flushSearch()` 之后 = 1 条。`--pinyin` 58 → **59 条 0 红**，离线合计 **703 条 0 红**。
