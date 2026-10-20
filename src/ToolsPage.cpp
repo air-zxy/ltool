@@ -515,23 +515,30 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
     switch (r.state) {
     case S::Missing:
     case S::Update: {
-        auto* install = card->addButton(r.state == S::Missing ? QStringLiteral("装")
-                                                               : QStringLiteral("更新"),
-                                        /*isPrimary=*/true);
-        connect(install, &QPushButton::clicked, this, [this, e, card, install] {
-            install->setEnabled(false);
-            installEntry(e, install, card->stateLabel());
-        });
+        // 商店那一条在这台机器上装得了吗（`Api` 对得上）。对不上就**不给「装/更新」**，
+        // 但本机那颗照旧能禁、照旧能卸、照旧能点开 —— 10-20 他报"注册表/开机分析还是点不开"，
+        // 形状就是原来那张卡被整条锁死：一颗按钮都不给、点正文也没反应。
+        QPushButton* install = nullptr;
+        if (r.entryUsable) {
+            install = card->addButton(r.state == S::Missing ? QStringLiteral("装")
+                                                            : QStringLiteral("更新"),
+                                      /*isPrimary=*/true);
+            connect(install, &QPushButton::clicked, this, [this, e, card, install] {
+                install->setEnabled(false);
+                installEntry(e, install, card->stateLabel());
+            });
+        }
         if (r.state == S::Update) {
             // 本机确实装着它（只是哈希不同）：禁得掉、也卸得掉，不能只剩"更新"这一条路
             addToggleButton(this, card, file, /*enableIt=*/false);
             addUninstallButton(this, card, e.name, file,
                                 QStringLiteral("清单里有它，卸完还能从这一面再装回来。"));
         }
-        if (r.state == S::Missing) {
+        if (r.state == S::Missing && install) {
             // 还没装的那张：点正文就是按同一颗按钮。这里绝不能去 showTool —— 本机没那个 dll
+            // （而"没装着 + 商店那条对不上号"根本走不到这里：那一档在 compare 里就叫 ApiMismatch）
             card->setBodyClick([install] { install->click(); });
-        } else {
+        } else if (r.state == S::Update) {
             // 「可更新」是装了但哈希不同：那张页本来就能看，正文照常打开，更新交给按钮
             card->setBodyClick(openable ? [this, id] { showTool(id); } : std::function<void()>());
         }
@@ -540,11 +547,14 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
     case S::Different: {
         // 本机装着、哈希与商店那份不一样，但商店版本号不比本机新 —— 这不叫"有更新"。
         // 出路还是要给：开发机上手工同步过、或本机这份是更旧的测试产物时，能换回商店那份。
-        auto* swap = card->addButton(QStringLiteral("换成商店那份"), /*isPrimary=*/true);
-        connect(swap, &QPushButton::clicked, this, [this, e, card, swap] {
-            swap->setEnabled(false);
-            installEntry(e, swap, card->stateLabel());
-        });
+        // 商店那条对不上号时这条出路是坏的（换过去当场起不来），所以它跟着 entryUsable 走。
+        if (r.entryUsable) {
+            auto* swap = card->addButton(QStringLiteral("换成商店那份"), /*isPrimary=*/true);
+            connect(swap, &QPushButton::clicked, this, [this, e, card, swap] {
+                swap->setEnabled(false);
+                installEntry(e, swap, card->stateLabel());
+            });
+        }
         addToggleButton(this, card, file, /*enableIt=*/false);
         addUninstallButton(this, card, e.name, file, reinstallHint(r));
         card->setBodyClick(openable ? [this, id] { showTool(id); } : std::function<void()>());

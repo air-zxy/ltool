@@ -3425,15 +3425,36 @@ int main(int argc, char* argv[])
 
         }
         {
+            // 先把"已装"那一步用的那颗文件撤掉：这一段两条判据分别要"本机没这颗"和"本机有这颗"，
+            // 谁先谁后写死在这里，不然上一条会读到上一条留下的文件（第一版就因为这个红了：
+            // 拿着"装着"的目录去问"没装着"那一条，got=[已装] want=[装不了]）。
+            QFile::remove(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("good")));
             Entry old = good;
             old.api = 1;
-            check("清单里的 Api 和宿主对不上 = 装不了", word(PluginStore::compare(old, &note, box)), "装不了");
-            QFile::remove(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("good")));
+            check("清单里的 Api 和宿主对不上、本机又没这颗 = 装不了",
+                  word(PluginStore::compare(old, &note, box)), "装不了");
+            check("装不了那条 = 界面不许给「装/更新/换成商店那份」",
+                  PluginStore::installable(old) ? "yes" : "no", "no");
+            // 原来这里钉的是"就算文件在，Api 不对也先拒" —— 那正是 10-20 他报
+            // "注册表分析和开机分析还是点不开"的形状：本机明明装着、也起得来，
+            // 卡片却因为**商店那一条**对不上号被锁成"装不了"，一颗按钮都不给、点正文没反应。
+            // 现在两件事分开判：本机这颗能不能用看宿主认不认它，商店那条能不能装看 Api。
             makeFile(box + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("old2")), QByteArray("x"));
             Entry o2 = good;
             o2.file = Platform::pluginFileName(QStringLiteral("old2"));
             o2.api = 99;
-            check("就算文件在，Api 不对也先拒", word(PluginStore::compare(o2, &note, box)), "装不了");
+            check("本机装着那颗时，商店那条 Api 不对不再锁死卡片（还是按内容比）",
+                  word(PluginStore::compare(o2, &note, box)), QStringLiteral("与商店不同"));
+            check("那句原因把两半说开：换不了商店那份 · 本机这颗照旧",
+                  note.contains(QStringLiteral("换不了商店那份"))
+                      && note.contains(QStringLiteral("本机这颗照旧"))
+                      ? "yes" : "no", "yes");
+            check("按钮该不该给问的是同一个谓词（这条装不了）",
+                  PluginStore::installable(o2) ? "yes" : "no", "no");
+            Entry o3 = good;
+            o3.api = LTOOL_PLUGIN_API_VERSION;
+            check("Api 对得上就装得了（按钮回来了）",
+                  PluginStore::installable(o3) ? "yes" : "no", "yes");
         }
 
         // ---- 3. 落盘：先验哈希，再改名；半成品不许冒充 ----

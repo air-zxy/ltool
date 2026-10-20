@@ -356,16 +356,13 @@ QVector<Entry> parseIndex(const QByteArray& json, QStringList* problems)
     return out;
 }
 
-State compare(const Entry& e, QString* note, const QString& dir)
+// 本机那一颗的状态。**接口号对不上的那一条不再在这里判**（2026-10-20 他报"注册表/开机分析还是点不开"）：
+// 原来第一行就 `return ApiMismatch`，于是**已经装着、也真能打开**的那张卡被锁成"装不了"，
+// 一颗按钮都不给、点正文也没反应 —— 商店那条能不能装，和本机这颗能不能用，是两件事。
+// 接口号那一半挪到下面的 compare()：没装着的时候才叫"装不了"，装着的时候只是"换不了商店那份"。
+static State localCompare(const Entry& e, QString* note, const QString& dir)
 {
     const QString d = local(dir);
-    if (e.api != LTOOL_PLUGIN_API_VERSION) {
-        if (note)
-            *note = QStringLiteral("清单里的 Api 是 %1，这台机器上的宿主只认 %2 —— "
-                                   "要么这个插件太新（等 ltool 升级），要么太旧（作者要重编）")
-                        .arg(e.api).arg(LTOOL_PLUGIN_API_VERSION);
-        return State::ApiMismatch;
-    }
     const QString live = d + QLatin1Char('/') + e.file;
     if (QFileInfo::exists(live)) {
         const QString got = sha256Of(live);
@@ -415,6 +412,37 @@ State compare(const Entry& e, QString* note, const QString& dir)
     return State::Missing;
 }
 
+// 商店那一条 + 本机这一颗，合起来给界面用的那一档。
+State compare(const Entry& e, QString* note, const QString& dir)
+{
+    QString localNote;
+    const State st = localCompare(e, &localNote, dir);
+    if (e.api != LTOOL_PLUGIN_API_VERSION) {
+        const QString why = QStringLiteral("清单里的 Api 是 %1，这台机器上的宿主只认 %2")
+                                .arg(e.api).arg(LTOOL_PLUGIN_API_VERSION);
+        if (st == State::Missing) {
+            // 本机没有能用的那颗：这一条确实装不了，老那句原样留着
+            if (note)
+                *note = why + QStringLiteral(" —— 要么这个插件太新（等 ltool 升级），要么太旧（作者要重编）");
+            return State::ApiMismatch;
+        }
+        // 本机装着（甚至正在跑）：那扇页不该因为"商店那条对不上号"就被锁死 ——
+        // 只关掉从商店换一份那几颗出路，界面上说清是哪一半不行。
+        if (note)
+            *note = why + QStringLiteral("：换不了商店那份 · 本机这颗照旧（%1）").arg(localNote);
+        return st;
+    }
+    if (note)
+        *note = localNote;
+    return st;
+}
+
+// 「这一条能不能从商店拿下来装」——界面只有这一个入口，别再自己比 api（比第二处就会和这里说法不一）。
+bool installable(const Entry& e)
+{
+    return e.api == LTOOL_PLUGIN_API_VERSION;
+}
+
 QVector<Row> rows(const QVector<Entry>& entries, const QString& dir)
 {
     QVector<Row> out;
@@ -423,6 +451,7 @@ QVector<Row> rows(const QVector<Entry>& entries, const QString& dir)
         Row r;
         r.remote = e;
         r.state = compare(e, &r.note, dir);
+        r.entryUsable = installable(e);
         out.append(r);
     }
     return out;
