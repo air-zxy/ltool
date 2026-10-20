@@ -193,6 +193,9 @@ public:
         // 点不动的那张卡（没页可看、又没按钮可按）不该画成一只手
         setCursor(m_onClick ? Qt::PointingHandCursor : Qt::ArrowCursor);
     }
+    // 判据量的是"这件事到底给没给"（m_onClick 那个决策本身），不是光标形状那种二手证据 ——
+    // 他 10-20 报"点不开"那次，卡片状态词是对的、按钮也对，只有正文点了个空函数。
+    bool hasBodyClick() const { return static_cast<bool>(m_onClick); }
 
 protected:
     void mouseReleaseEvent(QMouseEvent* e) override
@@ -511,6 +514,13 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
     const bool openable = md && md->ok();
     const bool installed = r.state == S::Installed || r.state == S::Update
                          || r.state == S::LocalOnly || r.state == S::Different;
+    // 这三颗是给离屏判据挂的"决策的输入"：卡片红不红要能说出是哪一半决定的，
+    // 只量状态词和按钮的话，"正文给了空函数"这一类（10-20 他报的点不开）会漏掉。
+    card->setProperty("ltoolId", id);
+    card->setProperty("ltoolOpenable", openable);
+    // 「清单这一条在这台机器上装得了吗」管的是「装 / 更新 / 换成商店那份」那三颗按钮，
+    // 不许管正文点击、禁用、卸载 —— 那是上面那颗 openable 的事。
+    card->setProperty("ltoolEntryUsable", r.entryUsable);
 
     switch (r.state) {
     case S::Missing:
@@ -586,6 +596,9 @@ QWidget* ToolsPage::makeCard(const PluginStore::Row& r)
             stateWord, PluginHost::loadErrorOf(id), md ? md->error : QString()));
         Theme::bind(card->stateLabel(), "color: @bad; font-weight: 600;");
     }
+    // 最后那颗要在所有 setBodyClick 都走完之后读：它量的是"这件事到底给没给"。
+    // （第一版我把它写在 makeCard 开头，读到的永远是 false —— 19 张卡一起红，红的是判据自己。）
+    card->setProperty("ltoolClickable", card->hasBodyClick());
     return card;
 }
 

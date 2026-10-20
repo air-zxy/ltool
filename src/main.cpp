@@ -4414,6 +4414,10 @@ int main(int argc, char* argv[])
             const auto m = re.match(st);
             check("拉到了就在状态行把数说清（没拉到会走另一句，不当成通过）", m.hasMatch(), st.left(70));
             if (!m.hasMatch()) {
+                // 这一句别说漏：下面那一大段"逐张卡片核对状态词↔按钮↔正文可点"全挂在 hasMatch 里。
+                // 清单没落地（比如这一版还没发商店资产）时它们一条都不会跑，
+                // 而 storenet 只红这一条 —— 不说出来就像"卡片都验过了"。
+                std::printf("WARN 逐张卡片的核对这次没跑（清单没落地，卡片来自缓存或压根没画）：别当成验过\n");
                 for (QLabel* l : page.findChildren<QLabel*>())
                     if (!l->text().isEmpty())
                         std::printf("  [%s]\n", l->text().left(90).toUtf8().constData());
@@ -4510,12 +4514,29 @@ int main(int argc, char* argv[])
                     }
                     ++states;
                     ++perState[idx];
+                    // 「装了却点不开」这一类要当场抓到：正文该不该有点击，界面上是三样东西一起动的
+                    // （状态词、按钮、手形），而只有 makeCard 里那个 `openable` 是决定它的一半 ——
+                    // 判据量那颗 bool（卡片属性），不量光标形状那种二手证据。
+                    // 10-20 那次两张卡的正文被给了空函数，状态词和按钮都还是对的。
+                    const bool clickable = card->property("ltoolClickable").toBool();
+                    const bool open = card->property("ltoolOpenable").toBool();
+                    const bool wantClickable = idx == 0                       // 没装那张：点正文 = 按「装」
+                        || (idx >= 1 && idx != 3 && idx != 4 && open);        // 装了的、宿主认得出来的那张
+                    if (clickable != wantClickable) {
+                        ++wrong;
+                        wrongs << QStringLiteral("「%1」(%2) 那张 正文可点=%3（该=%4，宿主认得出=%5）")
+                                      .arg(words[idx], card->property("ltoolId").toString())
+                                      .arg(clickable ? QStringLiteral("有") : QStringLiteral("没"))
+                                      .arg(wantClickable ? QStringLiteral("有") : QStringLiteral("没"))
+                                      .arg(open ? QStringLiteral("是") : QStringLiteral("否"));
+                    }
                     // 「与商店不同」其实两回事：本机号比商店高（新号已经发了、商店还没重打那批产物），
                     // 和同号但内容不同（本机构建 vs CI 构建，天生两串哈希）。这两句只写在悬停里，
                     // 不量就得人手开界面逐张看 —— 「每颗自己递增」到底生效没有就靠这两个数说话。
                     if (idx == 6 && card->toolTip().contains(QStringLiteral("还新")))
                         ++diffNewer;
-                    const bool wantInstall = idx == 0 || idx == 1;
+                    const bool wantInstall = (idx == 0 || idx == 1)
+                        && card->property("ltoolEntryUsable").toBool();
                     const bool wantToggle = idx >= 1 && idx != 4;   // 装了的（含可更新、清单外、已禁用）都能动
                     // 「卸载」跟着 toggle 走：本机真有那个文件（含 .off）才谈得上删它
                     const bool wantUninstall = wantToggle;
