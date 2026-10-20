@@ -8,10 +8,10 @@
 #include "Utils.h"
 
 #include <QApplication>
-#include <QApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QDir>
+#include <QLabel>
 #include <QLayout>
 #include <QSet>
 #include <QFile>

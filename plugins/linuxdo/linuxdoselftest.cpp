@@ -19,6 +19,8 @@
 #include <QEventLoop>
 #include <QSettings>
 #include <QSpinBox>
+#include <QThread>
+#include <QTimer>
 
 #include <cstdio>
 #include <functional>

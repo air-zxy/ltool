@@ -1074,3 +1074,19 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
   14:08:09 `registry page: deleted 0/2` —— 那张页**真被他自己点开并跑了一次清理**。
   `deleted 0/2` 的另一半也已经是实话：状态行写「已删除 0/2 项 · 备份在 backups\registry-backup-*.reg ·
   失败 2 项（<第一条原因>）」，而 `RegClean` 对 `ERROR_ACCESS_DENIED` 给的正是「需要管理员权限」。
+
+## PCH 藏住漏 include：只有"独立编"那一侧会红（2026-10-20 14:3x，1.3.3）
+- 把插件仓库的 `plugins/` 按主仓库源码同步过来、SDK 重生成（API 4 / 25 个头 / ltool 1.3.2）之后独立编 19 颗：
+  **16 颗过、3 颗红** —— `capture/captureselftest.cpp` 少 `<QPushButton>`、`grid/gridselftest.cpp` 少 `<QLabel>`
+  （还有一行重复的 `<QApplication>`）、`linuxdo/linuxdoselftest.cpp` 少 `<QThread>` 和 `<QTimer>`。
+- 为什么主仓库从来没红过：`target_precompile_headers(ltoolcore INTERFACE src/pch.h)` 挂在 **INTERFACE** 上，
+  整棵树（含 19 个插件目标）都白拿一份预编译头，里面正好有那些 Qt 类 ⇒ **漏写 include 在被链接的那棵树里看不见**。
+  插件仓库那份是独立构建（链导入库、不吃这棵树的 PCH），于是它才是这道题的考官。
+  这正是 [[feedback-verify-before-concluding]] (40) 那条的 Qt 版本：grep 自造的名单不算测量，**换一种编译形状才算**。
+- 修法在主仓库改源码（补三行 include），不在插件仓库改 —— 那棵树只是镜像。
+  插件版本号跟着走：`capture 1.0.6→1.0.7`、`grid 1.0.1→1.0.2`、`linuxdo 1.0.1→1.0.2`
+  （`plugin_version_gate.sh` 报 `NEEDS_BUMP=3` 时我是先看见红才去 bump 的，闸是对的）。
+- **插件仓库这一轮顺手根治了它的"第二份源码"**：`plugins/` 由脚本从主仓库同步（19 个目录、每目录一份
+  4 行 `CMakeLists.txt` 模板：GLOB 自己目录的 `*.cpp` + `plugin.json`，类名从主仓库 `CMakeLists.txt` 现读，
+  不手抄），`sdk/` 由主仓库 `tools/make_sdk.py` 重生成。它的独立构建 + `abi_check`/`abi_stale` 两道闸都过了
+  （19 颗、缺 0 个符号、布局陈旧 0 颗，dll 里个人路径 0 命中）。

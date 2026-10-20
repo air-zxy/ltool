@@ -36,6 +36,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
+#include <QPushButton>
 #include <QScreen>
 #include <QThread>
 #include <QTimer>
