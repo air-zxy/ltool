@@ -220,6 +220,11 @@ if (Test-Path "$root\build\Release\platforms\qoffscreen.dll") {
   $ptBad = ([regex]::Matches($pt, '(?m)^FAIL')).Count
   Phase 'installed' $sw ('装好的 ltool.exe 跑 --plugintest：' + $ptPass + ' 过 / ' + $ptBad + ' 红')
   if ($ptBad -gt 0) { (($pt -split "`n" | Select-String '^FAIL') -join [Environment]::NewLine) | Write-Host }
+  # **这两个变量必须在这儿收掉**：Start-Process 继承当前进程的 env，带着 offscreen 去起常驻实例
+  # 就是"托盘没了、Alt+Space 按不出来"（他自己看不见任何窗口，程序却活着）。
+  # 第一版就是这么把 relaunch 那一步弄坏的 —— 日志照写、窗口一个不出。
+  $env:QT_QPA_PLATFORM = $null
+  $env:QT_QPA_PLATFORM_PLUGIN_PATH = $null
 } else {
   Phase 'installed' $sw 'SKIP build\Release\platforms\qoffscreen.dll 不在 —— 没跑装好的那份，不是通过'
 }
