@@ -362,15 +362,22 @@ jobs:
           if [ "$n" != "$want" ]; then echo "::error::产物 $n 颗 ≠ plugins/ 目录 $want 个"; exit 1; fi
           python tools/make_plugin_index.py --build build/Release/ltool-plugins \
             --out installer/plugins-index.json
-          # 发出去之前自己先读一遍：商店那边用的就是这份解析，字段少了它会画出一片空卡
+          # 发出去之前自己先读一遍：商店那边用的就是这份解析，字段少了它会画出一片空卡。
+          # 条数不写死 19 —— 从 plugins/ 的目录数算，加一颗插件不用回来改 CI。
           python - <<'PY'
-          import json, io
-          d = json.load(io.open('installer/plugins-index.json', encoding='utf-8'))
+          import glob, json, os
+          want = len(glob.glob('plugins/*/plugin.json'))
+          d = json.load(open('installer/plugins-index.json', encoding='utf-8'))
           assert d['schema'] == 1, 'schema 不是 1'
-          assert len(d['plugins']) == 19, '清单里 %d 条，应当 19 条' % len(d['plugins'])
+          assert len(d['plugins']) == want, '清单里 %d 条，plugins/ 目录有 %d 个' % (len(d['plugins']), want)
           for p in d['plugins']:
               for k in ('id', 'name', 'desc', 'api', 'version', 'file', 'bytes', 'sha256', 'url'):
                   assert p.get(k) not in (None, ''), '%s 缺 %s' % (p['id'], k)
+              # 商店那边 parseIndex 第一条就是"不是 https 就整条拒收"，
+              # 而只断言 endswith('/'+file) 的话连 "/ltool-ads.dll" 这种相对路径都能过
+              # —— 本机实测就这么漏过一次（base 算出来没接进 row），所以这里量前缀也量。
+              assert p['url'].startswith('https://github.com/'), '%s 的 url 不是绝对 https 直链：%s' % (p['id'], p['url'])
+              assert '/releases/download/v' in p['url'], '%s 的 url 不在发版资产那一档：%s' % (p['id'], p['url'])
               assert p['url'].endswith('/' + p['file']), '%s 的 url 和文件名对不上' % p['id']
           print('清单自洽：%d 条，接口 API %s，core=%s'
                 % (len(d['plugins']), d['plugins'][0]['api'], d['core']))

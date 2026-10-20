@@ -87,7 +87,7 @@ def main():
                'actions': meta.get('Actions', []),
                'version': meta['Version'], 'color': meta.get('Color', ''),
                'file': name, 'bytes': os.path.getsize(dll), 'sha256': sha256_of(dll)}
-        row['url'] = a.base_url.rstrip('/') + '/' + name
+        row['url'] = base.rstrip('/') + '/' + name
         rows.append(row)
 
     if problems:
