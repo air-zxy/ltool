@@ -300,8 +300,9 @@ ToolsPage::ToolsPage(QWidget* parent)
     auto* refresh = new QPushButton(QStringLiteral("刷新清单"), this);
     refresh->setObjectName(QStringLiteral("storeRefresh"));
     refresh->setCursor(Qt::PointingHandCursor);
-    refresh->setToolTip(QStringLiteral("拉插件仓库那份 index.json。\n"
-                                      "地址在配置页「插件清单地址」那一行，留空 = 内置那条 raw 地址；代理沿用「下载代理」那一行。"));
+    refresh->setToolTip(QStringLiteral("拉商店那份 plugins-index.json。\n"
+                                      "内置地址是**和这版 ltool 同一次构建发出去的那一份**（GitHub Release 资产），"
+                                      "地址在配置页「插件清单地址」那一行，代理沿用「下载代理」那一行。"));
     auto* repoBtn = new QPushButton(QStringLiteral("插件仓库"), this);
     repoBtn->setObjectName(QStringLiteral("storeRepo"));
     repoBtn->setCursor(Qt::PointingHandCursor);

@@ -64,12 +64,16 @@ cmake --build build --config Release
 ## 打包 + 安装
 
 ```powershell
-powershell -File build\verify\deliver.ps1        # 构建 → **abi（新 core 对商店那批 dll 的导入表）** → 打包 → 停旧实例 → 静默装 → 逐文件比 SHA256 → 重起
+powershell -File build\verify\deliver.ps1        # 构建 → abi（两棵 dll 对这份 core）→ stale（布局陈不陈）→ 接口号闸 → 打包 → 停旧实例 → 静默装 → SHA256 对账 → **把装着的 19 颗对齐到刚编的这份** → 拿装好的 exe 再跑一遍 --plugintest → 重起
 ```
 
 - 约 20~25 秒一圈。档位：默认 normal **22.08MB**（1.0.x 起是「开箱零插件」包：里面一颗插件 dll 都没有，只建一个空 `ltool-plugins\`，插件由商店按需拉）｜ `-Final` 21.8MB 那档是十二个 dll 都在包里时量的，没重测 ｜ `-Quick` 26.9MB ｜ `-NoBuild` 跳过构建。
 - 版本号只有一处：`ltool.iss` 的 `#define MyAppVersion`，读不到就直接 FATAL。
-- 交付判据是**逐个文件比 SHA256**（`ltool.exe` + `ltoolcore.dll` 两颗按哈希硬比；插件目录只报数 —— 零插件包里那颗 dll 都没有，装好的那些是商店拉的 CI 那份，和本机构建天生不同，逐颗比只会天天红一条假故障）；单独跑一遍：`powershell -File build\verify\shaall.ps1`。
+- 交付判据是**逐个文件比 SHA256**（`ltool.exe` + `ltoolcore.dll` 两颗按哈希硬比）；插件目录不再"只报数"——
+  1.3.0 起每一轮装完**逐颗对齐到刚编出来那一份**，报"本来就是这个哈希 / 换成新的 / 原来缺 / 多出 / 被占用没换成"，
+  并且点名目录里那些 `.old.*`（商店卸载排队留下的，`PluginHost::scan` 不认这个后缀，所以不会多画卡片）。
+  为什么必须对齐而不是比个数：core 的公开面一动，老插件要么装载失败、要么按老偏移读新结构体当场崩（10-20 磁盘清理那次）。
+  单独跑一遍哈希对账：`powershell -File build\verify\shaall.ps1`。
 - 装到哪：默认按用户装 `%LOCALAPPDATA%\Programs\ltool`，指定目录加 `/DIR="D:\software\ltool"`。
 - 等价裸命令就三步：`cmake --build build --config Release` → `"D:\software\InnoSetup6\ISCC.exe" ltool.iss`
   → `installer\ltool-<版本>-setup.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES`。
@@ -127,14 +131,23 @@ JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** /
 | `ltoolcore.dll`（1.63MB） | 主程序和插件**共用的一份**实现（`Utils` / `DiskScan` / `InfoRow` / `Archive` / `CaptureHistory` …） |
 | `ltool-plugins\ltool-<id>.dll` | 一个工具一个：本体 + 一层 `LToolPlugin` 壳 + 嵌在 dll 里的 `plugin.json` |
 
-- 契约只有一份：`src/ltool-plugin.h`（现在 API 3）—— `apiVersion / id / name / desc / keywords / createPage / feedText / actions / invoke / save / load`。
-- 三类插件：**卡片型**（插件商店一张卡，可开可递文本）、**动作型**（截图、录屏、右键那几件：入口留在主程序，按下之后 `PluginHost::invoke(动作名)` 转发）、**后台型**（`plugins/linuxdo`：没人按它也自己跑）。后台型靠 plugin.json 里 `"Activate": true` 挂牌 + dll 导出 `ltoolPluginActivate`，启动时由 `PluginHost::startBackground()` 按名字找它 —— **不走接口虚函数**：加虚函数要动 vtable，等于把 API 推到 4，而「API 不等就拒装」会把用户装好的每一颗插件全挡在门外。没挂牌的插件一个 dll 都不多装；挂了牌没导出符号 = 启动时点名报错，`--plugintest` 那 19 条（每个插件一条"牌与导出的符号一致"）也提前拦住。
+- 契约只有一份：`src/ltool-plugin.h`（现在 **API 4**）—— `apiVersion / id / name / desc / keywords / createPage / feedText / actions / invoke / save / load`。
+  API 4（2026-10-20）不是接口加了什么，是**core 那一侧的公开面动了布局**（`DiskScan::Tree` 加两个 QString、
+  `ClipboardStore` 加 keepDays、`CaptureHistory` 的行加 key/pixmap、`Utils::launch/revealInExplorer/trimWorkingSet`
+  搬进 platform 缝）：10-16 编的老插件名字全齐、`LoadLibrary` 成功、按老偏移读新结构体 → 0xc0000005。
+  号一升，这种插件在商店卡片上就写成"清单里的 Api 是 3，这台机器只认 4"，`QPluginLoader` 那道 iid 也自己拒 ——
+  **从"进来崩"变成"拒之门外并说清"**。代价如实说：升到 4 的那一版，装着的旧插件全要重装的（商店里那颗"更新"点一下），
+  所以这条号不能随便动，也不许忘了动 —— `tools/core_abi_gate.py` 盯着（公开头动了布局却没升号 = CI 红）。
+- 三类插件：**卡片型**（插件商店一张卡，可开可递文本）、**动作型**（截图、录屏、右键那几件：入口留在主程序，按下之后 `PluginHost::invoke(动作名)` 转发）、**后台型**（`plugins/linuxdo`：没人按它也自己跑）。后台型靠 plugin.json 里 `"Activate": true` 挂牌 + dll 导出 `ltoolPluginActivate`，启动时由 `PluginHost::startBackground()` 按名字找它 —— **不走接口虚函数**：加虚函数要动 vtable，等于把 API 再推到 5，而「API 不等就拒装」会把用户装好的每一颗插件全挡在门外（10-20 那次推 4 是被 core 逼的，不是自己找的）。没挂牌的插件一个 dll 都不多装；挂了牌没导出符号 = 启动时点名报错，`--plugintest` 那 19 条（每个插件一条"牌与导出的符号一致"）也提前拦住。
 - 能禁用也能**卸载**：卸载就是真删那个 dll（连它改名成的 `.off` 一起）。当场删不掉（这个进程已经加载过它 ——
   Qt 插件 unload 之后里面活着的控件就是悬空指针，所以我们不 unload）就记进待删表，下次启动第一件事删掉。
   两种情况界面上说两句不同的话："已卸载" / "已安排卸载 · 下次启动真删掉"。
 - **右键那几项跟着「右键动作」插件走**：注册表里那几个静态项不会自己判断，所以"该不该在"= 配置里那个勾（`shell/intent`）**×** 提供者在不在了（`plugins/shell` 装着且没禁用）。卸载或禁用它 → 文件/文件夹右键里的 ltool 当场撤掉；装回来 → 自动写上，勾不用重勾。缺 `shell/intent` 这个键的老机器按注册表现状算（不然下次启动会把人家正在用的菜单悄悄撤掉）。
 - **插件商店只有一面列表**，卡片就是条目：没拉清单时列本机 `ltool-plugins\` 里装着的那几个，
-  拉过之后以仓库那份 `dist/index.json` 为准（本机装着而清单没列的排在后面，状态词「清单外」）。
+  拉过之后以**这次发版那份 `plugins-index.json`** 为准（本机装着而清单没列的排在后面，状态词「清单外」）。
+  1.3.0 起这份清单和那 19 颗 dll 是**主仓库发版那一次构建的产物**（`tools/make_plugin_index.py` 现算 sha256/字节数，
+  连同 dll 一起挂成 Release 资产），商店拼的是 `releases/download/v<我自己这版版本号>/…` ——
+  插件和 core 从此同一个提交、同一次编译，"发一次商店"不再是独立的一件事（#91 的根就在这）。
   每张卡按自己的状态给按钮，按钮排在**卡片最底下一行**（不和状态词挤同一行）：没装的「装」；装了但哈希不同的「更新」+「禁用」+「卸载」（装了的东西不能因为版本旧就禁不掉、卸不掉）；
   装了的「禁用」+「卸载」；被改名的「启用」+「卸载」。大小一律说 **MB**（两位小数，卡片上不留裸字节数）。点卡片正文 = 装了的打开那张页、没装的就等于按那颗按钮。
 - **装插件是排队的，一次只飞一颗**：他连点九颗那次崩了（07:43 的事件日志：`ltool.exe` 挂在 `Qt6Widgets.dll`，
@@ -143,18 +156,20 @@ JSON 格式化 / Base64 编解码 / **右键动作** / **录屏** / **截图** /
 - **拉插件走三级顺序**（`PluginStore::fetch`，清单和 dll 两段共用这一条）：先镜像前缀 + 原件**走直连**，
   都不成才走「下载代理」那一行，最后是原件直连；每条候选原地试两次（这条线路上"连上但不吐字节"是常态）。
   内置两条是这台机器量过的（`ghfast.top` 0.86s 可用；`gh-proxy.com` 2026-10-15 对这个文件 403，10-11 还是 8.3MB/s ——
-  它随时可能换脾气，所以顺序和重试比"选对哪一家"重要）。镜像只在清单地址是 `raw.githubusercontent.com` 时才套，
-  指到自己的服务器就不套。配置页「插件镜像前缀」那一行可换；状态行会说出这次**实际走的是哪条、试了几次**。
+  它随时可能换脾气，所以顺序和重试比"选对哪一家"重要）。镜像只在地址是 github 那两路时才套
+  （`raw.githubusercontent.com` 和 `github.com/…/releases/download/…`），指到自己的服务器就不套。配置页「插件镜像前缀」那一行可换；状态行会说出这次**实际走的是哪条、试了几次**。
 - `Api` 和主程序不等就拒装，并在界面上说清是哪一侧旧；元数据不齐也是点名说清楚，不默默少一张卡。
 - 加一个插件：`plugins/<id>/` 放 `plugin.json` + 源码 + 一层壳（照 `plugins/network/networkplugin.cpp` 抄），
   再在 `CMakeLists.txt` 里 `ltool_add_tool(id IdPlugin 源文件…)` 加一行，并把 `ltool-<id>` 补进下面那条
   `add_dependencies(ltool ...)`（不点名挂上去，`--target ltool` 根本不编它，打包照旧装上一版 —— 2026-10-15
   加 grid 时踩的就是这条），以及 `src/main.cpp` 里 `--plugintest` 那张 `kTools` 名单（少了它，dll 在目录里
   也没人验）。卡片墙、搜索直达、商店全自动认它。
-- 第三方仓库：[mateo-ki/ltool_plugin](https://github.com/mateo-ki/ltool_plugin) —— 自带插件的源码 + 独立编 dll 的
-  SDK 快照；SDK 由主仓库 `tools/make_sdk.py` 生成，`dist/index.json` 由它的 `tools/make_index.py` 生成。
-  那边的 CI 定义在本仓库 `plugin-ci/`（`build.yml` + `ci/annotate-fail.sh`），改完拷进插件仓库的
-  `.github/workflows/` 与 `ci/` 再提交 —— 两处都留一份，是为了这条流水线有一处可追溯的来源。
+- 第三方仓库：[mateo-ki/ltool_plugin](https://github.com/mateo-ki/ltool_plugin) —— 独立编 dll 的 SDK 快照
+  （`tools/make_sdk.py` 生成）+ 一份插件源码。**它不再是商店的供货渠道**：那边的 `dist/` 是手工把本机构建产物
+  提交进 git 的，最后一次 10-16，而那边的 `plugins/` 是主仓库源码的分叉（diff 实测 8 颗不同，record 少整个
+  `WindowPreview.cpp`）—— 这两件事合起来就是 #91。商店现在读主仓库 Release 的资产（上面那条）。
+  想留着它当地图可以，要改插件请改主仓库，别改那头的分叉。
+  那边的 CI 定义在本仓库 `plugin-ci/`（`build.yml` + `ci/annotate-fail.sh`，那份镜像连"12 个"都还没更新）。
 
 ## 常用自测旗标
 

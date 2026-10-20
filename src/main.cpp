@@ -3657,6 +3657,22 @@ int main(int argc, char* argv[])
             // 用户把地址指到自己的服务器时套镜像，只会拿回 404 让他以为自己的源坏了
             const auto own = PluginStore::attemptsFor(QStringLiteral("https://example.invalid/index.json"));
             check("不是 github raw 就只剩代理和直连两条", QString::number(own.size()), "2");
+            // 1.3.0 起商店的 dll 和清单都是 Release 资产（github.com/<仓库>/releases/download/…），
+            // 这条线路比 raw 更容易整条挂死，所以它必须也吃到那两条镜像 —— 少排一条就是
+            // "商店在国内装不上插件"，而现场只会看到一句"下载失败"。
+            const QString asset = QStringLiteral(
+                "https://github.com/mateo-ki/ltool/releases/download/v1.3.0/ltool-disk.dll");
+            const auto ad = PluginStore::attemptsFor(asset);
+            check("Release 资产那条也排出四个候选（两镜像 + 代理 + 直连）",
+                  QString::number(ad.size()), "4");
+            check("资产地址套镜像只加前缀，路径一个字不动",
+                  ad.size() == 4 && ad[0].url.endsWith(asset) && ad[1].url.endsWith(asset)
+                      ? "yes" : "no", "yes");
+            // 反过来也得钉住：github.com 上**不是** releases/download 的路径（比如 /releases/latest
+            // 那种网页地址）不该被套上镜像 —— 判据只认 host 就会把网页地址也代理掉。
+            check("github.com 上不是发版资产的路径不套镜像",
+                  QString::number(PluginStore::attemptsFor(
+                      QStringLiteral("https://github.com/mateo-ki/ltool/releases/latest")).size()), "2");
             {
                 QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
                 cfg.setValue(QStringLiteral("store/mirrors"),
@@ -3677,10 +3693,17 @@ int main(int argc, char* argv[])
 
         // ---- 5. 索引地址：留空用内置那条，配了就用配的 ----
         {
-            check("内置地址是插件仓库那份 raw 清单",
-                  PluginStore::defaultIndexUrl().startsWith(
-                      QStringLiteral("https://raw.githubusercontent.com/mateo-ki/ltool_plugin/main/dist/"))
-                      ? "yes" : "no", "yes");
+            // 内置那条从 1.3.0 起是**这次发版配套的商店**（清单和 19 颗 dll 由主仓库同一次
+            // 构建发成 Release 资产），不再是插件仓库 main 上手工提交的那份 dist/ ——
+            // 那个目录最后一次 10-16，而 core 之后一直没停，磁盘清理就是被它对崩的（#91）。
+            const QString want = QStringLiteral("https://github.com/mateo-ki/ltool/releases/download/v%1/")
+                                 .arg(AboutPage::currentVersion());
+            check("内置地址指向我自己这一版配套的清单（标签 = v + 版本号）",
+                  PluginStore::defaultIndexUrl().startsWith(want)
+                      && PluginStore::defaultIndexUrl().endsWith(QStringLiteral("plugins-index.json"))
+                          ? "yes" : "no", "yes");
+            check("这条地址要能吃到那两条镜像（github.com 直连间歇挂死是常态）",
+                  QString::number(PluginStore::attemptsFor(PluginStore::defaultIndexUrl()).size()), "4");
             QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
             check("没配过就用内置那条", PluginStore::indexUrl() == PluginStore::defaultIndexUrl()
                       ? "yes" : "no", "yes");
@@ -4312,6 +4335,11 @@ int main(int argc, char* argv[])
                 if (!ok)
                     ++storeNetBad;
             };
+            // 先把"上哪儿拉"打出来：1.3.0 起这条按版本号点名（releases/download/v<版本>/），
+            // 这一版还没发商店资产就是 404 —— 后面那些"卡片张数"会一起红，
+            // 那**不是商店坏了**，是没发版。不印这行的话下一次没人分得清这两件事。
+            std::printf("storenet: 清单地址 = %s\n",
+                        PluginStore::indexUrl().toUtf8().constData());
             QPushButton* refresh = page.findChild<QPushButton*>(QStringLiteral("storeRefresh"));
             check("标题那一行真有一颗「刷新清单」，而且在布局里", refresh && refresh->isVisible(),
                   QStringLiteral("找得到=%1 可见=%2").arg(refresh ? 1 : 0)

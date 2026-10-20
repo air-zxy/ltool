@@ -29,6 +29,10 @@ public:
 
     // ---- 下面这些都是纯函数：不联网、不起进程，--about 逐条断言 ----
     static QString currentVersion();          // 编译期那个 LTOOL_VERSION
+    // 发版资产那条直链（安装包、商店清单、19 颗 dll 都从这一个式子拼 —— 仓库地址写第二处就会漂）。
+    // tag 和版本号一一对上：CI 有一步专门验 "v" + ltool.iss 的 MyAppVersion == 标签。
+    static QString currentReleaseTag();       // "v" + 版本号（预发就是 v1.3.0-beta.1）
+    static QString releaseAssetUrl(const QString& tag, const QString& file);
     static QString downloadUrlFor(const QString& tag, const QString& version);   // 安装包那条直链
     // 跟完 /releases/latest 的 302 之后，从最终地址里读版本号：.../releases/tag/<tag> → 版本号。
     // 单独抽出来是因为离屏判据要拿真回复跑一遍这条解析，不想抄第二遍。

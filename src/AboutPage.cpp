@@ -167,10 +167,20 @@ QString AboutPage::versionFromReleasesUrl(const QString& finalUrl)
     return versionFromTag(tagFromReleasesUrl(finalUrl));
 }
 
+QString AboutPage::currentReleaseTag()
+{
+    return QStringLiteral("v") + currentVersion();
+}
+
+QString AboutPage::releaseAssetUrl(const QString& tag, const QString& file)
+{
+    return QStringLiteral("https://github.com/%1/%2/releases/download/%3/%4")
+        .arg(QLatin1String(kRepoOwner), QLatin1String(kRepoName), tag, file);
+}
+
 QString AboutPage::downloadUrlFor(const QString& tag, const QString& version)
 {
-    return QStringLiteral("https://github.com/%1/%2/releases/download/%3/ltool-%4-setup.exe")
-        .arg(QLatin1String(kRepoOwner), QLatin1String(kRepoName), tag, version);
+    return releaseAssetUrl(tag, QStringLiteral("ltool-%1-setup.exe").arg(version));
 }
 
 QString AboutPage::releasesPageUrl()

@@ -36,38 +36,37 @@ if (-not $NoBuild) {
   }
 }
 
-# ---- core 的导出面就是已发布插件的 ABI：拿这份新 core 去对商店那批 dll 的导入表 ----
+# ---- core 的导出面就是插件 dll 的 ABI：拿这份新 core 去对**要装上去的那两棵** dll 的导入表 ----
 # 少一个符号 = 换上去当场 LoadLibrary 失败，而现场只报"加载失败"、不报缺哪个符号
 # （2026-10-16 真踩过：删掉 Utils::launch / revealInExplorer 之后装的那份 9 颗起不来）。
-# 商店产物在插件仓库的 dist\ 下；那个目录不在就**点名跳过**，不许当成通过。
-$pub = 'C:\work\ltool_plugin\dist'
-if (Test-Path $pub) {
-  $abi = & python "$root\tools\abi_check.py" "$root\build\Release\ltoolcore.dll" $pub 2>&1
-  $abiCode = $LASTEXITCODE
-  # 数只能从 python 打的那行纯 ASCII 结论里取：按中文行数会数出 0（控制台 GBK 把 UTF-8
-  # 中文搅成乱码，正则一条都不匹配 —— 实测就这么把"缺 7 个"报成了"缺 0 个"）。
-  $missLine = ($abi | Select-String 'MISSING_SYMBOLS=(\d+)')
-  $miss = if ($missLine) { [int]$missLine.Matches[0].Groups[1].Value } else { -1 }
-  $note = if ($miss -lt 0) { ' -> 这一栏没数出来（python 没打 MISSING_SYMBOLS=），别当成通过' } `
-          elseif ($abiCode -ne 0) { ' -> 发版前必须重发这批插件' } else { ' -> 都能加载' }
-  Phase 'abi' $sw ('商店那批对这份 core：缺 ' + $miss + ' 个符号' + $note)
-  if ($abiCode -ne 0) { (($abi | Select-String 'BAD|MISSING_SYMBOLS') -join [Environment]::NewLine) | Write-Host }
-} else {
-  Phase 'abi' $sw ('SKIP 没有 ' + $pub + ' —— 没查，不是通过')
-}
+# 量的是 build\Release\ltool-plugins（这次构建那份）+ D:\software\ltool\ltool-plugins（装着的、
+# 崩的就是它）。**不再量 C:\work\ltool_plugin\dist**：商店从 1.3.0 起读的是主仓库这次发版的资产
+# （releases/download/v<版本>/plugins-index.json，19 颗 dll 和 core 同一次构建），
+# 那批手工提交进 git 的 dist 已经不是交付渠道，继续量它只会每轮喊一次没人能修的狼。
+$inst = 'D:\software\ltool\ltool-plugins'
+$abiTargets = @("$root\build\Release\ltool-plugins")
+if (Test-Path $inst) { $abiTargets += $inst }
+$abi = & python "$root\tools\abi_check.py" "$root\build\Release\ltoolcore.dll" $abiTargets 2>&1
+$abiCode = $LASTEXITCODE
+# 数只能从 python 打的那行纯 ASCII 结论里取：按中文行数会数出 0（控制台 GBK 把 UTF-8
+# 中文搅成乱码，正则一条都不匹配 —— 实测就这么把"缺 7 个"报成了"缺 0 个"）。
+$missLine = ($abi | Select-String 'MISSING_SYMBOLS=(\d+)')
+$miss = if ($missLine) { [int]$missLine.Matches[0].Groups[1].Value } else { -1 }
+$note = if ($miss -lt 0) { ' -> 这一栏没数出来（python 没打 MISSING_SYMBOLS=），别当成通过' } `
+        elseif ($abiCode -ne 0) { ' -> 这批 dll 装上去会加载失败' } else { ' -> 都能加载' }
+Phase 'abi' $sw ('本机构建 + 装着的那两棵对这份 core：缺 ' + $miss + ' 个符号' + $note)
+if ($abiCode -ne 0) { (($abi | Select-String 'BAD|MISSING_SYMBOLS') -join [Environment]::NewLine) | Write-Host }
 
 # ---- 第二道：名字齐不等于能一起跑。比"这颗 dll 是什么时候编的"和"它吃的 core 头
 # 之后有没有动过布局"（2026-10-20 他报"软件在磁盘清理闪退了"查出来的）。----
 # `DiskScan::Tree` 加了两个 QString 之后大小和偏移全变了，而装着的 ltool-disk.dll 是加之前编的
 # —— abi_check 那条只看导出名字，报"缺 0"、LoadLibrary 也真成功，然后运行期 0xc0000005。
 # 所以这里数的是时间：dll 的 PE 编译时刻 vs 它 include 的那些头最后一次"动布局"的提交时刻。
-# 装的那棵（D:\software\ltool\ltool-plugins）也一起查 —— 崩的是它，不是商店 dist。
-$installed = 'D:\software\ltool\ltool-plugins'
 $targets = @()
-if (Test-Path $pub) { $targets += $pub }
-if (Test-Path $installed) { $targets += $installed }
+if (Test-Path "$root\build\Release\ltool-plugins") { $targets += "$root\build\Release\ltool-plugins" }
+if (Test-Path $inst) { $targets += $inst }
 if ($targets.Count -eq 0) {
-  Phase 'stale' $sw 'SKIP 商店 dist 和安装目录都不在 —— 没查，不是通过'
+  Phase 'stale' $sw 'SKIP 本机构建和安装目录都不在 —— 没查，不是通过'
 } else {
   # 不写 PYTHONIOENCODING 的话 python 按控制台 GBK 输出，中文行会成乱码、
   # 下面按"陈"字挑行就挑不到（数字那行是 ASCII，所以判定本身不会错，只是点不了名）。
@@ -82,6 +81,21 @@ if ($targets.Count -eq 0) {
   Phase 'stale' $sw ('布局陈旧的插件 ' + $stN + ' 颗' + $stNote)
   if ($stN -gt 0) { (($stale | Select-String '陈|DiskScan|Clipboard|CaptureHistory|STALE_GATE') -join [Environment]::NewLine) | Write-Host }
 }
+
+# ---- 第三道：接口号该不该升。公开头动了布局却没升 LTOOL_PLUGIN_API_VERSION，
+# 老插件就会通过所有版本闸然后按老偏移读新结构体（上面那道量的是"这颗 dll 陈不陈"，
+# 这一道量的是"宿主有没有资格认出陈的"）。发版由 CI 拦，这里只点名。
+$apiGate = & python "$root\tools\core_abi_gate.py" 2>&1
+$apiHits = ($apiGate | Select-String 'ABI_API_GATE_HITS=(\d+)')
+$apiMeta = ($apiGate | Select-String 'ABI_API_META_BAD=(\d+)')
+$apiNow = ($apiGate | Select-String 'ABI_API_NOW=(\d+)')
+$hitsN = if ($apiHits) { [int]$apiHits.Matches[0].Groups[1].Value } else { -1 }
+$metaN = if ($apiMeta) { [int]$apiMeta.Matches[0].Groups[1].Value } else { -1 }
+$nowS = if ($apiNow) { $apiNow.Matches[0].Groups[1].Value } else { '?' }
+$apiNote = if ($hitsN -lt 0 -or $metaN -lt 0) { ' -> 这一栏没数出来，别当成通过' } `
+           elseif ($hitsN + $metaN -gt 0) { ' -> 发版前必须升号/对齐（CI 那步会红）' } else { ' -> 号配得上公开面' }
+Phase 'apigate' $sw ('API ' + $nowS + '：动了布局的头 ' + $hitsN + ' 个，Api 抄错的 plugin.json ' + $metaN + ' 份' + $apiNote)
+if ($hitsN -gt 0 -or $metaN -gt 0) { (($apiGate | Select-String '动过布局|Api 对不上|ABI_API') -join [Environment]::NewLine) | Write-Host }
 
 $iscc = 'D:\software\InnoSetup6\ISCC.exe'
 # 档位见 ltool.iss 里那张实测表：默认 normal（6.7 秒 / 22.2MB），-Quick 出快包，
@@ -127,22 +141,88 @@ if (-not (Test-Path 'D:\software\ltool\7zip.dll')) { $verdict += '  !!! 7zip.dll
 $coreB = (Get-FileHash "$root\build\Release\ltoolcore.dll" -Algorithm SHA256).Hash
 $coreI = if (Test-Path 'D:\software\ltool\ltoolcore.dll') { (Get-FileHash 'D:\software\ltool\ltoolcore.dll' -Algorithm SHA256).Hash } else { '' }
 if ($coreB -ne $coreI) { $verdict += ('  !!! ltoolcore.dll 不对（build {0} inst {1}）' -f $coreB.Substring(0,8), $coreI.Substring(0,8)) }
-# 插件目录：从 c43b82f「开箱零插件」起，安装包**不再内建任何插件 dll**，只建一个空目录，
-# 运行时由插件商店按需拉。所以这里不能再拿本地构建去逐颗比哈希 —— 装好的那些是 CI 编的那份，
-# 天生和 build\Release 里的不一样，逐颗比只会天天红一条假故障。
-# 真正的不变量是：目录在不在（不在 = 包坏了，装完一个插件都放不进去）。
+# 插件目录：从 c43b82f「开箱零插件」起，安装包**不再内建任何插件 dll**，只建一个空目录。
+# 这里只验目录在不在（不在 = 包坏了，装完一个插件都放不进去）；装着的那 19 颗对不对，
+# 由下面 plugins 那步逐颗对齐 —— 以前它只报个数，而 10-20 崩的就是"装着的那颗是老的"。
 $plugDir = 'D:\software\ltool\ltool-plugins'
 if (-not (Test-Path $plugDir)) { $verdict += '  !!! 装完没有 ltool-plugins 目录（零插件包也要建这个空目录）' }
-$installed = @(Get-ChildItem "$plugDir\*.dll" -ErrorAction SilentlyContinue)
-$built = @(Get-ChildItem "$root\build\Release\ltool-plugins\*.dll" -ErrorAction SilentlyContinue)
-$same = 0
-foreach ($i in $installed) {
-  $b = $built | Where-Object { $_.Name -eq $i.Name } | Select-Object -First 1
-  if ($b -and (Get-FileHash $i.FullName -Algorithm SHA256).Hash -eq (Get-FileHash $b.FullName -Algorithm SHA256).Hash) { $same++ }
-}
-$verdict += ('  plugins dir={0} 装着 {1} 颗（其中 {2} 颗和本机构建同一份，其余是商店拉的 CI 那份，本来就该不同）' -f `
-  (Test-Path $plugDir), $installed.Count, $same)
 Phase 'install' $sw $verdict
+
+# ---- 装完之后，把装着的那 19 颗对齐到**刚编出来的这一份** ----
+# 为什么这一步要进这条闭环（2026-10-20 磁盘清理闪退）：core 的公开面一动（结构体加成员、
+# Utils 搬进 platform 缝），老插件 dll 要么 LoadLibrary 失败，要么更坏 —— 名字全齐、装载成功、
+# 按老偏移读新结构体然后当场 0xc0000005。接口号升到 4 之后宿主会**拒绝**装载对不上号的那颗，
+# 于是"某个功能坏了"变成"F1/F2 和全部卡片一起没声"。所以换 core 的那一轮必须同时换插件，
+# 中间不留窗口 —— 以前这一步是我手工拷的，手工的那次就是漏的那次。
+# 商店那边从此也只发"和 core 同一次构建"的那批（tools/make_plugin_index.py + Release 资产）：
+# 本地这台和商店是同一个来源，不是两套规矩。
+$builtDir = "$root\build\Release\ltool-plugins"
+$plugs = @(Get-ChildItem "$builtDir\ltool-*.dll" -ErrorAction SilentlyContinue)
+if ($plugs.Count -eq 0) {
+  Phase 'plugins' $sw 'SKIP 本机构建里没有插件 dll（build 那步没产出来？）—— 没查，不是通过'
+} elseif (-not (Test-Path $plugDir)) {
+  Phase 'plugins' $sw ('SKIP 没有 ' + $plugDir + ' —— 没查，不是通过')
+} else {
+  $sameN = 0; $repN = 0; $missN = 0; $lockN = 0
+  $locked = @()
+  foreach ($b in $plugs) {
+    $dst = Join-Path $plugDir $b.Name
+    if (-not (Test-Path $dst)) { $missN++ }
+    elseif ((Get-FileHash $dst -Algorithm SHA256).Hash -eq (Get-FileHash $b.FullName -Algorithm SHA256).Hash) {
+      $sameN++; continue
+    } else { $repN++ }
+    try { Copy-Item $b.FullName $dst -Force -ErrorAction Stop }
+    catch { $lockN++; $locked += $b.Name }
+  }
+  $builtIds = @($plugs | ForEach-Object { $_.Name -replace '^ltool-', '' -replace '\.dll$', '' })
+  $installed = @(Get-ChildItem "$plugDir\ltool-*.dll" -ErrorAction SilentlyContinue)
+  $extraIds = @($installed | Where-Object { $builtIds -notcontains ($_.Name -replace '^ltool-', '' -replace '\.dll$', '') })
+  # 商店卸载排队留下的 <file>.old.<毫秒> 不是 .dll 后缀，PluginHost::scan 不认它，
+  # 但它会一直躺在目录里 —— 数出来点名，别让它变成"这目录怎么文件比卡片多"。
+  $oldLeft = @(Get-ChildItem "$plugDir\*.old.*" -ErrorAction SilentlyContinue).Count
+  # **对齐之后再量一遍**：上面 abi / stale 那两栏量的是"装之前"那批（那才是崩的原因），
+  # 这一栏要说的是"现在这台机器上跑的那 19 颗对不对"。不复查就得把"缺 6 个符号"那句
+  # 留在最后一屏上当成结论 —— 而那已经是 40 秒前的状态了（界面和脚本都不许说这种话）。
+  $stillOff = @()
+  foreach ($b in $plugs) {
+    $dst = Join-Path $plugDir $b.Name
+    if (-not (Test-Path $dst)) { $stillOff += ($b.Name + '（没有）'); continue }
+    if ((Get-FileHash $dst -Algorithm SHA256).Hash -ne (Get-FileHash $b.FullName -Algorithm SHA256).Hash) {
+      $stillOff += $b.Name
+    }
+  }
+  $reabi = & python "$root\tools\abi_check.py" "$root\build\Release\ltoolcore.dll" $plugDir 2>&1
+  $reMissLine = ($reabi | Select-String 'MISSING_SYMBOLS=(\d+)')
+  $reMiss = if ($reMissLine) { [int]$reMissLine.Matches[0].Groups[1].Value } else { -1 }
+  $rest = & python "$root\tools\abi_stale.py" $plugDir 2>&1
+  $reStaleLine = ($rest | Select-String 'STALE_GATE_BAD=(\d+)')
+  $reStale = if ($reStaleLine) { [int]$reStaleLine.Matches[0].Groups[1].Value } else { -1 }
+  $note = ('装着 {0} 颗：{1} 颗本来就是这份哈希、换成新的 {2} 颗、原来缺 {3} 颗；' -f `
+            $installed.Count, $sameN, ($repN - $lockN), $missN)
+  $note += ('对齐后再量：缺 ' + $reMiss + ' 个符号 / 布局陈旧 ' + $reStale + ' 颗' `
+            + $(if ($stillOff.Count) { ' —— 还有 ' + $stillOff.Count + ' 颗没对上：' + ($stillOff -join ' ') } `
+                 else { '（19 颗哈希都就是刚编的那份）' }))
+  if ($extraIds.Count) { $note += ('；装机目录里多出、本机构建没有的：' + (($extraIds | ForEach-Object { $_.Name }) -join ' ')) }
+  if ($lockN) { $note += ('；被占用没换成 ' + $lockN + ' 颗：' + ($locked -join ' ') + ' —— 这几颗还是老的，会崩不是加载失败') }
+  if ($oldLeft) { $note += ('；另有 ' + $oldLeft + ' 个 .old.* 排队等下次启动删') }
+  Phase 'plugins' $sw $note
+}
+
+# ---- 装好的那份 exe 再跑一遍插件判据（2026-10-19 立的不变量）----
+# build 树里全绿不等于装上去那套能跑：10-19 就是靠这条抓到 6 颗商店 dll 对新 core 装载失败、
+# F1/F2 当场死，而 build 树那 240 条一条没红。安装包 Excludes 掉 qoffscreen，
+# 所以平台插件要从 build 树借 —— 这两个变量必须一起给，只给一个就是"没有可用平台插件"。
+if (Test-Path "$root\build\Release\platforms\qoffscreen.dll") {
+  $env:QT_QPA_PLATFORM = 'offscreen'
+  $env:QT_QPA_PLATFORM_PLUGIN_PATH = "$root\build\Release\platforms"
+  $pt = & 'D:\software\ltool\ltool.exe' --plugintest 2>&1 | Out-String
+  $ptPass = ([regex]::Matches($pt, '(?m)^PASS')).Count
+  $ptBad = ([regex]::Matches($pt, '(?m)^FAIL')).Count
+  Phase 'installed' $sw ('装好的 ltool.exe 跑 --plugintest：' + $ptPass + ' 过 / ' + $ptBad + ' 红')
+  if ($ptBad -gt 0) { (($pt -split "`n" | Select-String '^FAIL') -join [Environment]::NewLine) | Write-Host }
+} else {
+  Phase 'installed' $sw 'SKIP build\Release\platforms\qoffscreen.dll 不在 —— 没跑装好的那份，不是通过'
+}
 
 Start-Process -FilePath 'D:\software\ltool\ltool.exe'
 $pid2 = 0

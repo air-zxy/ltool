@@ -130,4 +130,7 @@ def main():
         print('打包：%s（%.1f KB）' % (zp, os.path.getsize(zp) / 1024))
 
 
-main()
+# 调用包在 __main__ 里：core_abi_gate.py 要 import 这个闭包算法，不能第二处再抄一份
+# 头清单逻辑（抄了就两份答案，迟早漂）。
+if __name__ == '__main__':
+    main()

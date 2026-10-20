@@ -24,6 +24,7 @@
 #include "DevEnv.h"
 #include "PluginHost.h"
 #include "Utils.h"
+#include "AboutPage.h"   // 版本号唯一来源在那儿：商店地址要按"我这版 core"去配
 
 namespace {
 
@@ -98,8 +99,19 @@ void markFetched()
 
 QString defaultIndexUrl()
 {
-    // 那份 dist/ 是直接提交在插件仓库 main 上的，raw 地址免登录就能下 —— 商店不需要 api 配额。
-    return QStringLiteral("https://raw.githubusercontent.com/mateo-ki/ltool_plugin/main/dist/index.json");
+    // 商店读的是**我自己这一版 core 配套发出去的那份清单**：标签就是 "v" + ltool.iss 里那个
+    // 版本号（CI 有一步专门验它对得上），发版那次构建同时产出 ltoolcore.dll 和这 19 颗 dll，
+    // 所以清单里每一条 sha256 都是"和跑着的那个 core 同一次编出来"的。
+    //
+    // 为什么不是插件仓库 main 上的 dist/index.json（原来那条），也不用 releases/latest：
+    // dist 那批 dll 是人手工把本机构建产物提交进 git 的，最后一次 10-16，而 core 之后一直没停 ——
+    // 于是"发一次商店"和"发一次 core"物理上就是两件事，10-20 那次磁盘清理闪退就是这么来的
+    // （老 dll 按老偏移读 DiskScan::Tree，名字全齐、LoadLibrary 也成功，一用就崩）。
+    // latest 另外两个坑：带 -beta.N 的预发版它不回，而且老 core 会拿到新 dll。
+    // 这一版没发过商店资产就是 404，界面照实说"清单拉不到"，不会退回那批可能对不上的产物。
+    // 直链的式子住在 AboutPage（安装包那条和这里必须是同一个式子，仓库地址不写第二处）。
+    return AboutPage::releaseAssetUrl(AboutPage::currentReleaseTag(),
+                                      QStringLiteral("plugins-index.json"));
 }
 
 QString indexUrl()
@@ -228,9 +240,14 @@ QVector<Attempt> attemptsFor(const QString& originUrl)
 {
     QVector<Attempt> out;
     const QUrl u(originUrl);
-    // 镜像只代理 github raw 那一路。用户把索引地址指到自己的服务器时还套镜像，
+    const bool isRaw = u.host() == QLatin1String("raw.githubusercontent.com");
+    // 发版资产那一路（github.com/<仓库>/releases/download/<标签>/<文件>）镜像站同样代理，
+    // 而且这条线路 github.com 直连间歇挂死是常态，比 raw 更需要那两条腿。
+    const bool isAsset = u.host() == QLatin1String("github.com")
+                       && u.path().contains(QLatin1String("/releases/download/"));
+    // 镜像只代理 github 那两路。用户把索引地址指到自己的服务器时还套镜像，
     // 拿回来的是 404，他会以为自己的源坏了 —— 那种情况只留代理和直连两条腿。
-    if (u.host() == QLatin1String("raw.githubusercontent.com")) {
+    if (isRaw || isAsset) {
         const QStringList mirrors = mirrorList().split(QLatin1Char(','), Qt::SkipEmptyParts);
         for (const QString& raw : mirrors) {
             QString m = raw.trimmed();

@@ -94,14 +94,11 @@ MEMBER_RE = re.compile(r'^[+-]\s*[^;()]*\b\w+\s*(=[^;]*)?;\s*$')
 VIRTUAL_RE = re.compile(r'^[+-].*\bvirtual\b')
 
 
-def layout_touched(header, built_ts):
-    """这颗头在 built_ts 之后有没有"动布局"的改动。返回命中的那几行（空 = 没动）。"""
-    base = git('rev-list', '-1', '--before=' + str(int(built_ts)), 'HEAD', '--', header).strip()
-    if not base:
-        return []
-    diff = git('diff', base, 'HEAD', '--unified=0', '--', header)
+def layout_lines(diff_text):
+    """一段 unified diff 里"动了布局"的行。判据只有这一份（core_abi_gate.py 也 import 它，
+    不在第二个文件里抄一遍 —— 抄了就两份答案，迟早漂）。"""
     hits = []
-    for line in diff.splitlines():
+    for line in diff_text.splitlines():
         if not line.startswith(('+', '-')) or line.startswith(('+++', '---')):
             continue
         body = line[1:]
@@ -115,10 +112,23 @@ def layout_touched(header, built_ts):
         if plain.startswith(('static ', 'constexpr ', 'inline ', 'static constexpr',
                              'inline constexpr')):
             continue
+        # `class QProcess;` 这种是**前向声明**，一个字节都不进对象；
+        # 真的数据成员一定写成 `类型 名字;`，不会以 class/struct 开头（2026-10-20 平台那几刀
+        # 把 Launch.h 建出来时，这道闸被它误报过一行）。
+        if re.match(r'^(class|struct|union|enum)\s+\w+\s*(final\s*)?;$', plain):
+            continue
         if VIRTUAL_RE.match(line) or ('(' not in line and ')' not in line
                                       and MEMBER_RE.match(line)):
             hits.append(body.strip())
     return hits
+
+
+def layout_touched(header, built_ts):
+    """这颗头在 built_ts 之后有没有"动布局"的改动。返回命中的那几行（空 = 没动）。"""
+    base = git('rev-list', '-1', '--before=' + str(int(built_ts)), 'HEAD', '--', header).strip()
+    if not base:
+        return []
+    return layout_lines(git('diff', base, 'HEAD', '--unified=0', '--', header))
 
 
 def main():

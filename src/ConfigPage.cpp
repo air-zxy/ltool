@@ -187,7 +187,8 @@ ConfigPage::ConfigPage(QWidget* parent)
     generalLay->addRow("下载代理：", m_proxy);
     m_storeUrl = new QLineEdit(general);
     m_storeUrl->setPlaceholderText(PluginStore::defaultIndexUrl());
-    m_storeUrl->setToolTip("插件商店要拉的那份 index.json。留空 = 用内置那条（ltool_plugin 仓库 main 上的 dist/index.json）。\n"
+    m_storeUrl->setToolTip("插件商店要拉的那份 plugins-index.json。留空 = 用内置那条"
+                            "（和这台机器上这版 ltool 同一次构建发出去的那份，在 GitHub Release 上）。\n"
                             "要指到自己的测试源就填那里的地址；代理沿用上面那一行，清单和 dll 都走它。");
     m_storeUrl->setClearButtonEnabled(true);
     generalLay->addRow("插件清单地址：", m_storeUrl);
@@ -196,7 +197,8 @@ ConfigPage::ConfigPage(QWidget* parent)
     m_storeMirrors->setToolTip("拉插件（清单和 dll）时**先**按这里每条前缀试一遍，走直连；"
                                "都不成才轮到我们自己的下载代理，最后才是直连原始地址。\n"
                                "多个用逗号分隔，留空 = 内置那两条（这台机器实测过还活着：gh-proxy.com、ghfast.top）。\n"
-                               "只有清单地址是 raw.githubusercontent.com 时才会用到镜像 —— 指到自己的服务器就不套镜像。");
+                               "只有地址在 github 上才用到镜像（raw 那条和发版资产 releases/download 那条）"
+                               "—— 指到自己的服务器就不套镜像。");
     m_storeMirrors->setClearButtonEnabled(true);
     generalLay->addRow("插件镜像前缀：", m_storeMirrors);
     m_engine = new QComboBox(general);

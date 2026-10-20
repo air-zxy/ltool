@@ -73,6 +73,18 @@ jobs:
         shell: bash
         run: bash tools/theme_gate.sh
 
+      # 接口号闸：core 公开的头动了布局（加/删数据成员或虚函数）却没升 LTOOL_PLUGIN_API_VERSION
+      # 就是红。10-20 那次磁盘清理闪退走的就是这条路 —— 老插件名字全齐、LoadLibrary 成功、
+      # 按老偏移读 DiskScan::Tree 然后 0xc0000005；这一道保证下次再动布局必须升号，
+      # 而升了号，商店那批对不上 core 的产物会被认出来并拒绝，不是放进来崩。
+      # 顺带盯 19 份 plugin.json 里手抄的那个 Api 和头里的数一致。
+      - name: 插件接口号闸（动了公开面就得升号）
+        shell: bash
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: python tools/core_abi_gate.py
+
       - name: 给 vcpkg 的 x-gha 二进制缓存导出凭据
         uses: actions/github-script@v7
         with:
@@ -332,6 +344,52 @@ jobs:
             installer/ltool-sdk-*.zip
           if-no-files-found: error
 
+      # 商店的那份清单和这 19 颗 dll **就是这次构建的产物**：和上面刚编出来的 ltoolcore.dll
+      # 同一个提交、同一次编译，所以商店给出去的插件和这个版本的主程序天生对得上。
+      # （以前读的是插件仓库 main 上手工提交的 dist/：最后一次 10-16，core 之后一直没停，
+      #  10-20 磁盘清理闪退 + 注册表/开机分析点不开都是从那来的。#91 治的就是这个。）
+      - name: 打插件商店清单（19 颗 dll + index，和 core 同一次构建）
+        shell: bash
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: |
+          set -e
+          n=$(ls build/Release/ltool-plugins/ltool-*.dll 2>/dev/null | wc -l)
+          # 编出来的颗数对不上 plugins/ 目录数 = 有目标没构建（CMakeLists 那条 add_dependencies
+          # 是数从名单算的，写死过的两次都腐烂了），这种清单发出去就是"商店里少几颗"。
+          want=$(ls -d plugins/*/ | wc -l)
+          if [ "$n" != "$want" ]; then echo "::error::产物 $n 颗 ≠ plugins/ 目录 $want 个"; exit 1; fi
+          python tools/make_plugin_index.py --build build/Release/ltool-plugins \
+            --out installer/plugins-index.json
+          # 发出去之前自己先读一遍：商店那边用的就是这份解析，字段少了它会画出一片空卡
+          python - <<'PY'
+          import json, io
+          d = json.load(io.open('installer/plugins-index.json', encoding='utf-8'))
+          assert d['schema'] == 1, 'schema 不是 1'
+          assert len(d['plugins']) == 19, '清单里 %d 条，应当 19 条' % len(d['plugins'])
+          for p in d['plugins']:
+              for k in ('id', 'name', 'desc', 'api', 'version', 'file', 'bytes', 'sha256', 'url'):
+                  assert p.get(k) not in (None, ''), '%s 缺 %s' % (p['id'], k)
+              assert p['url'].endswith('/' + p['file']), '%s 的 url 和文件名对不上' % p['id']
+          print('清单自洽：%d 条，接口 API %s，core=%s'
+                % (len(d['plugins']), d['plugins'][0]['api'], d['core']))
+          PY
+
+      # 两道 ABI 闸在**要发出去的这批产物**上再跑一遍：这一步红 = 这次发版本身有问题，
+      # 不许把对不上 core 的 dll 挂上 Release（名字齐但布局陈了也一样拦）。
+      - name: 发版前两道 ABI 闸
+        shell: bash
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: |
+          set -e
+          python tools/abi_check.py build/Release/ltoolcore.dll build/Release/ltool-plugins | tail -3
+          test "${PIPESTATUS[0]}" = "0"
+          python tools/abi_stale.py build/Release/ltool-plugins | tail -3
+          test "${PIPESTATUS[0]}" = "0"
+
       - name: 发 GitHub Release（只有标签推的 run 才发）
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -342,9 +400,15 @@ jobs:
           case "$GITHUB_REF_NAME" in
             *-*) extra="--prerelease"; echo "INFO 标签带预发后缀，Release 标成 pre-release（/releases/latest 不会回它）" ;;
           esac
+          # 资产 = 安装包 + SDK + **这次发版配套的商店**（清单 + 19 颗 dll）。
+          # 商店那边拼的就是 releases/download/<这个标签>/<文件名>，标签必须等于 "v"+版本号，
+          # 上面那步「标签必须和安装包里的版本号对上」验的就是这件事。
           gh release create "$GITHUB_REF_NAME" installer/ltool-*-setup.exe \
-            installer/ltool-sdk-*.zip \
+            installer/ltool-sdk-*.zip installer/plugins-index.json \
+            build/Release/ltool-plugins/ltool-*.dll \
             --verify-tag --title "ltool $GITHUB_REF_NAME" --generate-notes $extra
+          got=$(gh release view "$GITHUB_REF_NAME" --json assets -q '.assets | length')
+          echo "INFO 这次 Release 的资产 $got 个（安装包 + SDK + 清单 + 19 颗 dll）"
 
       - name: 失败时把各段日志留成 artifact
         if: failure()

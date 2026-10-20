@@ -969,3 +969,36 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - **这 3 条第一次插错了地方**：我插进 `--storenet` 那一支 —— 它要联网、不进 CI，等于没人跑。跑 `--storetest` 数出来还是 73 条才发现。教训：新判据必须看它落在哪个旗标下，"写了"不等于"会被跑到"。
 - 和挂着的 #101 是同一类（"提权脚本失败原因现在只写退出码"）：**失败要能在界面上读出来**，日志只算半条。
 - 版本：**1.3.0 不升**（未发布号吸收；这批改的是 core 的界面文案 + 判据）。
+
+## 「根治」#91：商店改由发版那次构建供货 + 接口号推到 4 + 一道"该升号就升号"的闸（2026-10-20 12:3x 起）
+- 他一个字「根治」，拍的是我摆的那条：19 颗对这份 core 重编重发。动手前先把**为什么会漂**量清楚，不然只是再拷一次 dll：
+  - 商店读的是 `mateo-ki/ltool_plugin` 仓库 main 上**手工提交进 git 的 `dist/`**：最后一次 10-16 19:32，core 之后一直没停。
+  - 那个仓库的 `plugins/` 是主仓库源码的**分叉**：`diff -rq` 实测 14 颗里 **8 颗不同**，`record` 少了整个 `WindowPreview.cpp/.h`。
+  - 于是"发一次商店"和"发一次 core"物理上就是两件事 —— **漂是结构性的，不漂是运气**。补转接壳治不了（上一节说过：壳补名字，补不了大小和偏移）。
+- **第一刀（渠道）**：商店那份清单和 19 颗 dll 改由**主仓库发版那一次构建**发出去。
+  - 新增 `tools/make_plugin_index.py`：sha256/字节数从 `build/Release/ltool-plugins` 现算，名字/描述/关键词/Api/Version 从各 `plugins/<id>/plugin.json` 读，一条都不手抄；产 `plugins-index.json`。
+  - 本机构建那份实测：**19 条全进、INDEX_BAD=0**，`core` 字段自动写成 `来自 ltool 1.3.0（插件接口 API 4）`。
+  - CI 加两步：「打插件商店清单」（先数产物颗数 == `plugins/` 目录数，再用商店自己的解析读一遍这份 JSON，缺字段就红）+「发版前两道 ABI 闸」（`abi_check` 和 `abi_stale` 对**要发出去的这批产物**跑，红就不许挂 Release）；`gh release create` 的资产从 2 个变成 21 个（安装包 + SDK + 清单 + 19 颗 dll）。
+  - `PluginStore::defaultIndexUrl()` 不再指插件仓库，改成 `releases/download/v<我自己这版版本号>/plugins-index.json` —— **按版本号点名，不用 `latest`**：latest 有两个坑（带 `-beta.N` 的预发它不回，而且老 core 会拿到新 dll，那正是这次要根治的事）。标签 = `v` + `ltool.iss` 那个号，CI 本来就有一步硬验这件事。
+  - 直链的式子搬进 `AboutPage::releaseAssetUrl(tag, file)`：安装包那条和商店这条必须是同一个式子，仓库地址不写第二处。
+  - `attemptsFor()` 原来只给 `raw.githubusercontent.com` 套镜像；`github.com/…/releases/download/…` 现在也套（这条线路 github.com 直连间歇挂死比 raw 更常遇到，少排那两条腿就是"商店在国内装不上插件"）。
+  - **老用户不受这次改动影响**：商店地址是**编译进 core 的**，≤1.1.1 那几版读的还是插件仓库那条 raw 地址、那批 API 3 的 dll —— 那套自己是对得上的。
+- **第二刀（号）**：`LTOOL_PLUGIN_API_VERSION` 3 → **4**，iid 跟着 `/3.0` → `/4.0`。
+  - 接口一个字没加。升号的是 **core 那一侧**：`DiskScan::Tree` 多了两个 QString、`ClipboardStore` 多了 keepDays、`CaptureHistory` 的行多了 key/pixmap、`Utils::launch/revealInExplorer/trimWorkingSet` 搬进 platform 缝。
+  - 效果：`PluginStore::compare()` 里**本来就有的** `State::ApiMismatch` 那条从此真能命中 —— 商店卡片写"清单里的 Api 是 3，这台机器上的宿主只认 4"，`QPluginLoader` 的 iid 再自己拒一遍。**从"进来崩"变成"拒之门外并说清"。**
+  - 19 份 `plugins/*/plugin.json` 里手抄的 `"Api": 3` 全部跟着改 4（那个数是插件自报家门的来源，写错了宿主就按错的放行）。
+  - 每颗自己的 `Version` 都 +1（18 颗 patch，`clipboard` 那颗本来就在 1.1.0 → 1.1.1）：**不动号的话商店那张卡显示"已装 · 太旧"却没有「更新」可点** —— 商店判"可更新"比的是版本号，不是哈希。`plugin_version_gate.sh` 绿（GATE_PLUGINS=19 NEEDS_BUMP=0 WENT_BACK=0）。
+- **第三刀（闸）**：新增 `tools/core_abi_gate.py` —— **公开头动了布局却没升号 = 红**。
+  - 判据不重写：`last = git log -1 -S'#define LTOOL_PLUGIN_API_VERSION <当前值>'`（**必须连着值一起搜**，`-S` 找的是"这串出现次数变了"的提交，只搜前缀就永远找不到、闸静默假绿），从那一笔比到**工作树**，用 `abi_stale.py` 那条"什么才算动布局"的判据扫 `make_sdk.py` 那份头闭包（25 个）。
+  - 顺带盯 19 份 plugin.json 的 `Api` 和头里的数一致。
+  - **先红后绿**：升号之前跑 = `ABI_API_GATE_HITS=3`（`CaptureHistory.h` / `ClipboardStore.h` / `DiskScan.h`），正是这次的三个真凶；升到 4 之后再跑 = 0。
+  - 第一版误报一行 `platform/Launch.h: class QProcess;` —— **前向声明一个字节都不进对象**。修的时候顺手把判据抽成 `abi_stale.layout_lines(diff)` 一份，两道闸共用（原来我在 core_abi_gate 里抄了一份，注释还写着"同一份判据"，那就是下一-次漂）。
+- `deliver.ps1` 补两栏（**把以前手工做的事变成闭环里的事**）：
+  - `plugins` 栏：装完之后**逐颗对齐**到刚编出来那 19 颗，报"本来就是这个哈希 / 换成新的 / 原来缺 / 多出 / 被占用没换成"，并点名目录里的 `.old.*`。以前这步是我手工拷的 —— 手工的那次就是漏的那次（10-19 那 6 颗、10-20 这颗 disk）。
+  - `installed` 栏：拿**装好的** `ltool.exe` 再跑一遍 `--plugintest`（`QT_QPA_PLATFORM` + `QT_QPA_PLATFORM_PLUGIN_PATH` 两个变量一起给，安装包 Excludes 掉 qoffscreen，只给一个就"没有可用平台插件"）—— 10-19 立的那条不变量进脚本了。
+  - `abi`/`stale` 两栏量的目录改了：从"商店 dist"改成"本机构建 + 装着的那两棵"。**量错对象会得出反向结论**（第 48 条），dist 已经不是渠道，继续量它等于每轮喊一次没人能修的狼。
+- 代价，如实说：**号一升，装着的旧插件全都不再被装载**（F1/F2 和所有卡片一起没声，不是某个功能坏）。所以"换 core 那一轮必须同时换插件"是硬要求，这就是上面那栏存在的原因；别的老用户则按卡片上那颗「更新」一颗颗换（商店版本号和清单都跟着 core 发，点了就配上）。
+- 判据：`--storetest` 76 → **80**（内置地址按版本号点名、这条地址要能吃到两条镜像、`releases/download/...dll` 也排四个候选、套镜像不改路径、`github.com` 上**不是**发版资产的路径不套镜像 —— 最后那条是反向钉住"只认 host"的实现）。`--storenet` 加了第一行打印**实际用的清单地址**：这一版还没发商店资产就是 404，后面"卡片张数"会跟着一起红，那不印这行下次没人分得清"商店坏了"和"还没发版"。
+- 全量离线 17 个旗标 **0 红**（口径：`grep -c ^PASS + ^ok`，比文档里手工点的口径宽）：`--plugintest 242`、`--storetest 80`、`--cfgcheck 28`、`--cliptest 73`、`--gridtest 64`、`--pinyin 71`、`--username 36`、`--about 27`、`--appdirs 12`、`--linuxdotest 44`、`--storeexit 14`、`--seamtest 38`、`--rowmenu 9`、`--diskui 8`、`--mfttest 10`、`--diskbranch 4`、`--smoke` 只报文件数。
+- 还挂着三件：**① `v1.3.0` 的 tag 没推** —— 商店那条地址要等这次发版才有资产，他点头我才动公开 Release；**② 插件仓库那头**的 `dist/` 和它 CI 里那句 `api != 3`（现在该是 4）—— 那是别人的仓库，要不要清/要不要顺手把渠道关掉，等他；**③** 商店从此没有"清单外"那 5 张卡了（19 颗全在同一份清单里），`#95` 里"缺哪几颗"这半已被 `plugins` 栏做掉。
+- 版本：**1.3.0 不升**（未发布的号吸收同批功能；这轮里没有新的用户可感知功能，是把 #91 那条根拆掉）。但**必须发**：这一版的商店要等它进 Release 才有东西可拉 —— 这是"发版"而不是"改代码"的一半，等他拍。
