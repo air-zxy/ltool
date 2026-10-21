@@ -6,6 +6,8 @@
 #include "platform/ProcInfo.h"
 
 #include <QClipboard>
+#include <QCryptographicHash>
+#include <functional>
 #include <QColor>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -33,16 +35,165 @@
 
 namespace Utils {
 
+namespace {
+
+// `%APPDATA%`（没有就用 Qt 那个等价位置）。老的数据目录就是 `<这里>\ltool`。
+QString legacyBase()
+{
+    QString base = qEnvironmentVariable("APPDATA");
+    if (base.isEmpty())
+        base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    return base;
+}
+
+// exe 旁边写不写得进去：和 mediaRoot() 同一套问法（写一个临时文件再删掉）。
+// 探的时候不预先建子目录 —— 否则"问一句目录在哪"就会在构建目录里留下一个空文件夹，跟着安装包出去。
+bool dirIsWritable(const QString& dir)
+{
+    const QFileInfo fi(dir);
+    if (dir.isEmpty() || !fi.isDir() || !fi.isWritable())
+        return false;
+    const QString probe = dir + "/.ltool-write-test";
+    QFile f(probe);
+    if (!f.open(QIODevice::WriteOnly) || f.write("x") != 1)
+        return false;
+    f.close();
+    QFile::remove(probe);
+    return true;
+}
+
+} // namespace
+
+QString resolveDataDir(const QString& appDir, const QString& envOverride, const QString& appData,
+                       bool appDirWritable)
+{
+    // ①环境变量：自测沙箱和"便携模式"都走这一档，它最大
+    if (!envOverride.isEmpty())
+        return QDir::fromNativeSeparators(envOverride);
+    // ②默认：软件目录（exe 旁边）下的 data\ —— 他 2026-10-21 点名"所有的日志和数据都放软件目录下，
+    //   不要放在 C 盘"。以前这里只有 %APPDATA%\ltool 一档，378 MB（深索引 320 + OCR 模型 33 +
+    //   剪贴板图 16）全压在系统盘上。
+    if (appDirWritable)
+        return QDir::fromNativeSeparators(appDir) + "/data";
+    // ③装到只读位置（比如塞进 Program Files）：退回老地方，并留一条日志（下面 dataDir() 里）
+    return appData + "/ltool";
+}
+
 QString dataDir()
 {
-    static QString cached;
-    if (cached.isEmpty()) {
-        QString base = qEnvironmentVariable("APPDATA");
-        if (base.isEmpty())
-            base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        cached = base + "/ltool";
-    }
+    static const QString cached = [] {
+        const QString app = QDir::fromNativeSeparators(QCoreApplication::applicationDirPath());
+        const QString env = qEnvironmentVariable("LTOOL_DATA_DIR");
+        const QString appData = legacyBase();
+        const bool writable = dirIsWritable(app);
+        const QString d = resolveDataDir(app, env, appData, writable);
+        if (env.isEmpty() && !writable)
+            log(QStringLiteral("数据目录：%1 写不了，退回 %2（这就是以前那个 %APPDATA%\\ltool 的位置）")
+                    .arg(app.isEmpty() ? QStringLiteral("(拿不到 exe 目录)") : app, d));
+        QDir().mkpath(d);
+        return d;
+    }();
     return cached;
+}
+
+int copyVerifiedTree(const QString& from, const QString& to, QStringList* problems, int* skipped)
+{
+    const auto sha = [](const QString& path) {
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly))
+            return QByteArray();
+        QCryptographicHash h(QCryptographicHash::Sha256);
+        return h.addData(&f) ? h.result().toHex() : QByteArray();   // 设备那一版内部就是分块读，320MB 不整块进内存
+    };
+    int copied = 0;
+    std::function<void(const QString&, const QString&)> walk = [&](const QString& src, const QString& dst) {
+        QDir dir(src);
+        for (const QFileInfo& e : dir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden)) {
+            const QString dstPath = dst + '/' + e.fileName();
+            if (e.isDir()) {
+                QDir().mkpath(dstPath);
+                walk(e.absoluteFilePath(), dstPath);
+                continue;
+            }
+            if (QFileInfo::exists(dstPath)) {
+                // 目标里已经有同名文件 = 这一趟自己先写出来的（最典型就是 `log.txt`：
+                // dataDir() 一被问到就会 mkpath 并写日志）。**不覆盖**，跳过并记一笔。
+                if (skipped)
+                    ++(*skipped);
+                continue;
+            }
+            if (!QFile::copy(e.absoluteFilePath(), dstPath)) {
+                if (problems)
+                    *problems << QStringLiteral("%1 没复制过去").arg(e.fileName());
+                continue;
+            }
+            // 对内容，不对"名字大小时间" —— 名字和大小都对也可能是没复制完的半成品
+            const QByteArray a = sha(e.absoluteFilePath()), b = sha(dstPath);
+            if (a.isEmpty() || a != b) {
+                QFile::remove(dstPath);
+                if (problems)
+                    *problems << QStringLiteral("%1 复制完对不上哈希，那份已删").arg(e.fileName());
+                continue;
+            }
+            ++copied;
+        }
+    };
+    QDir().mkpath(to);
+    walk(from, to);
+    return copied;
+}
+
+// 一次性搬家：老 `%APPDATA%\ltool` 还在、新目录是空的 → 逐个复制，每个都按 sha256 对过才算搬成。
+// **旧目录原样留着不删** —— 那是 378 MB 真实数据（配置、使用频率、深索引、剪贴板历史），
+// 删错了没法复；对完账之后由人自己决定什么时候清，note 里把旧路径原样写出来。
+int migrateLegacyDataDir(QString* note)
+{
+    // 沙箱 / 便携模式（`LTOOL_DATA_DIR` 设着）永远不搬：那 378 MB 是真实数据，
+    // 而自测沙箱每次都是空的 —— 少这一道守卫，任何一条旗标判据都会把它整份复制进 %TEMP%。
+    if (!qEnvironmentVariable("LTOOL_DATA_DIR").isEmpty()) {
+        if (note)
+            *note = QStringLiteral("没搬：数据目录被 LTOOL_DATA_DIR 指走了（沙箱/便携模式）");
+        return 0;
+    }
+    const QString legacy = QDir::fromNativeSeparators(legacyBase()) + "/ltool";
+    const QString now = dataDir();
+    if (QDir::cleanPath(now).compare(QDir::cleanPath(legacy), Qt::CaseInsensitive) == 0) {
+        if (note)
+            *note = QStringLiteral("没搬：数据目录还在老位置 %1（说明这一版没落到软件目录下）").arg(now);
+        return 0;
+    }
+    if (!QFileInfo::exists(legacy))
+        return 0;                                   // 新装的机器，本来就没有（这条不值得写一行日志）
+    // 守卫不能是"目录非空"：`dataDir()` 一被问到就 mkpath，而 `Utils::log()` 立刻在里面写下
+    // `log.txt` —— 本机第一次实测就是这么没搬成的（deliver 的 installed 那一栏先跑了
+    // `--plugintest`，新目录里已经有一条日志，relaunch 那次就判定"搬过了"）。
+    // 只认两种真信号：搬过留下的那颗标记，或新目录里已经有一份真配置。
+    if (QFileInfo::exists(now + "/.migrated-from-appdata") || QFileInfo::exists(now + "/config.ini")) {
+        if (note)
+            *note = QStringLiteral("没搬：%1 里已经有配置或搬过的标记").arg(now);
+        return 0;
+    }
+
+    QStringList problems;
+    int skipped = 0;
+    const int copied = copyVerifiedTree(legacy, now, &problems, &skipped);
+    if (copied > 0) {
+        QFile mark(now + "/.migrated-from-appdata");
+        if (mark.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            mark.write(QStringLiteral("从 %1 搬来 %2 个文件（跳过同名 %3 个）").arg(legacy).arg(copied).arg(skipped)
+                           .toUtf8());
+            mark.close();
+        }
+    }
+    if (note)
+        *note = QStringLiteral("数据目录搬到软件目录下了：%1 个文件 · 旧目录 %2 "
+                               "原样留着没删，确认新位置没问题之后自己删")
+                    .arg(copied).arg(legacy);
+    if (!problems.isEmpty() && note)
+        *note += QStringLiteral(" · %1 个没搬成：%2").arg(problems.size()).arg(problems.join(QStringLiteral("；")));
+    if (skipped > 0 && note)
+        *note += QStringLiteral(" · 另有 %1 个同名文件没覆盖（比如这一趟自己的 log.txt）").arg(skipped);
+    return copied;
 }
 
 QString iconsDir()   { return dataDir() + "/icons"; }

@@ -357,7 +357,7 @@ ConfigPage::ConfigPage(QWidget* parent)
     auto* clipLay = new QFormLayout(clip);
     m_clip = new QCheckBox("记录我复制过的文本和图片（默认关闭）", clip);
     m_clip->setToolTip("开启后 ltool 会在后台读剪贴板，把内容存到\n"
-                       "%APPDATA%\\ltool\\clipboard.json 和 clipimg\\ 下（最多 200 条）。\n"
+                       "软件目录下的 data\\clipboard.json 和 data\\clipimg\\ 里（最多 200 条）。\n"
                        "启动器里输 clip 就能翻历史。关掉只是停止收集，已有历史保留。");
     clipLay->addRow(m_clip);
     m_clipDays = new QSpinBox(clip);

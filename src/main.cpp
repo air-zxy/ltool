@@ -597,7 +597,9 @@ int main(int argc, char* argv[])
     // --storetest 会写 store/indexUrl 这一项（它就是验"配置里改了地址就跟着走"），
     // --storeexit 会写 store/pendingRemove（那一条判据走的就是"卸载排进待删表"那段），
     // --linuxdotest 会写 linuxdo/* 这一节（间隔、关键词、中转前缀、上次看到哪条）：
-    // 这几种都把数据目录整个挪到临时目录再跑，碰不到用户真实的 %APPDATA%\ltool。
+    // 这几种都把数据目录整个挪到临时目录再跑，碰不到真实的用户数据。
+    // 挪的是 `LTOOL_DATA_DIR`（dataDir() 的第一优先档）—— 以前挪的是 APPDATA，
+    // 而 1.4.0 之后数据默认落在**软件目录下的 data\**，挪 APPDATA 就管不着它了。
     // 必须在第一次 dataDir() 之前设好。
     for (int i = 1; i < argc; ++i) {
         const QString a = QString::fromLocal8Bit(argv[i]);
@@ -610,12 +612,12 @@ int main(int argc, char* argv[])
             const QString sandbox = QDir::tempPath() + "/" + a.mid(2);
             QDir(sandbox).removeRecursively();
             QDir().mkpath(sandbox);
-            qputenv("APPDATA", sandbox.toUtf8());
+            qputenv("LTOOL_DATA_DIR", sandbox.toUtf8());
             // 截图/录像的默认落点现在是 exe 旁边（软件目录），挪 APPDATA 管不到它。
             // 会往往期里写东西的那两个自测改用配置项把两个目录也指进沙箱 ——
             // 不然它们会在 build\Release 里留下 captures\，而那会被安装包收走。
             if (a == QLatin1String("--pindel") || a == QLatin1String("--pintool")) {
-                QSettings cfg(sandbox + "/ltool/config.ini", QSettings::IniFormat);
+                QSettings cfg(sandbox + "/config.ini", QSettings::IniFormat);
                 cfg.setValue(QStringLiteral("paths/captures"),
                              QDir::toNativeSeparators(sandbox + "/captures"));
                 cfg.setValue(QStringLiteral("paths/recordings"),
@@ -634,6 +636,16 @@ int main(int argc, char* argv[])
         return EXCEPTION_CONTINUE_SEARCH;
     });
     QApplication app(argc, argv);
+    // 数据目录搬家：老 %APPDATA%\ltool → 软件目录下的 data\（他 2026-10-21 点名"不要放在 C 盘"）。
+    // **只在"正常启动"那一次做**（命令行里没有任何 `--` 旗标）：否则我拿构建目录那份 exe 跑一条
+    // 自测，就会先把 378 MB 真实数据复制进 build\Release\data。旧目录一律原样留着不删。
+    if (std::none_of(app.arguments().cbegin() + 1, app.arguments().cend(),
+                     [](const QString& a) { return a.startsWith(QLatin1String("--")); })) {
+        QString moved;
+        const int movedN = Utils::migrateLegacyDataDir(&moved);
+        if (!moved.isEmpty())
+            Utils::log(QStringLiteral("data: %1（搬了 %2 个文件）").arg(moved).arg(movedN));
+    }
     QApplication::setOrganizationName("ltool");
     QApplication::setApplicationName("ltool");
     QApplication::setApplicationDisplayName("ltool");
@@ -3289,6 +3301,75 @@ int main(int argc, char* argv[])
         QFile::remove(rf.fileName());
         check("录像目录能建能写", canWrite ? "yes" : "no", "yes");
 
+        // ---- 数据目录本身落在哪（2026-10-21 他点名"所有的日志和数据都放软件目录下，不要放 C 盘"）----
+        // 前三条问的是纯函数（三档优先各自给死输入）；第四条问的是**这条旗标进程真读到的那个值**，
+        // 免得解析器绿了而 dataDir() 里那行 `qEnvironmentVariable` 写错名字。
+        check("第一优先：LTOOL_DATA_DIR 设了就用它（哪怕软件目录写得进去）",
+              Utils::resolveDataDir("D:/software/ltool", "C:/Temp/沙箱", "C:/Users/x/AppData/Roaming", true)
+                  == "C:/Temp/沙箱" ? "yes" : "no", "yes");
+        check("默认：软件目录写得进去就落 `<exe>/data`（不往 C 盘堆）",
+              Utils::resolveDataDir("D:/software/ltool", QString(), "C:/Users/x/AppData/Roaming", true)
+                  == "D:/software/ltool/data" ? "yes" : "no", "yes");
+        check("退路：软件目录写不了（比如塞进 Program Files）才退回 %APPDATA%\\ltool",
+              Utils::resolveDataDir("C:/Program Files/ltool", QString(), "C:/Users/x/AppData/Roaming", false)
+                  == "C:/Users/x/AppData/Roaming/ltool" ? "yes" : "no", "yes");
+        // 沙箱目录名是那串循环里 `tempPath + "/" + 旗标去掉两个杠` 算出来的，也就是 `pathcfg`。
+        // 我第一版在这里写死成 "ltool-pathcfg"（那是别处见过的另一个名字），当场红 —— 红的是判据自己。
+        check("这一趟真跑起来时 dataDir() 就是沙箱那个目录（环境变量真被读到了，不是只有解析器对）",
+              QDir::cleanPath(Utils::dataDir()) == QDir::cleanPath(QDir::tempPath() + "/pathcfg")
+                  ? "yes" : "no", "yes");
+        std::printf("INFO 沙箱里 dataDir()=%s\n", Utils::dataDir().toUtf8().constData());
+        {
+            // 搬家那一段拿两个临时目录真跑一遍：源目录一个字都不许动，目标里每个文件都要对得上哈希。
+            const QString from = QDir::tempPath() + "/ltool-migsrc";
+            const QString to = QDir::tempPath() + "/ltool-migdst";
+            QDir(from).removeRecursively();
+            QDir(to).removeRecursively();
+            QDir().mkpath(from + "/icons");
+            const auto readBack = [](const QString& path) {
+                QFile f(path);
+                return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+            };
+            const auto put = [](const QString& path, const QByteArray& body) {
+                QFile f(path);
+                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+                f.write(body);
+                f.close();
+            };
+            put(from + "/config.ini", "[ui]\ntheme=day\n");
+            put(from + "/usage.json", "{\"a\":1}");
+            put(from + "/icons/x.png", QByteArray(4096, 'z'));
+            put(from + "/log.txt", "旧目录里那份运行日志\n");
+            QStringList problems;
+            int skipped = 0;
+            // 目标里先放一颗同名不同内容的文件（真机上就是这一趟自己先写出来的 `log.txt`）：
+            // 搬家**不许覆盖它**。本机第一次实测就是栽在这儿 —— 守卫写成"目录非空就别搬"，
+            // 于是 deliver 的 installed 那一栏先跑了一次 `--plugintest`（留下一条日志），
+            // relaunch 那次就判定"搬过了"，378 MB 一个字节都没动。
+            QDir().mkpath(to);   // 目标目录得先存在，否则下面那颗"已有文件"根本写不出来（第一版就白绿在这儿）
+            put(to + "/log.txt", "这一趟自己的日志，比旧目录里那份新\n");
+            const int n = Utils::copyVerifiedTree(from, to, &problems, &skipped);
+            check("搬家：三个文件（含一个子目录里的）全部复制并逐个按 sha256 对过",
+                  n == 3 && problems.isEmpty() ? "yes" : "no", "yes");
+            check("搬家：目标里已有的同名文件不覆盖（那条是这一趟自己写的 log.txt）",
+                  skipped == 1 && readBack(to + "/log.txt") == QStringLiteral("这一趟自己的日志，比旧目录里那份新\n")
+                      ? "yes" : "no", "yes");
+            check("搬家：目标里那个子目录真的建出来了、文件也在",
+                  QFile::exists(to + "/icons/x.png") ? "yes" : "no", "yes");
+            check("搬家：源目录一个字都不动（旧的那份是回退用的，不是复制完就删）",
+                  QFile::exists(from + "/config.ini") && QFile::exists(from + "/icons/x.png")
+                      ? "yes" : "no", "yes");
+            {
+                // 第一版这里连着 new 了两个 QFile：第二个没 open 就 readAll，拿到空串 ⇒ 判据自己红。
+                QFile dst(to + "/config.ini");
+                const bool opened = dst.open(QIODevice::ReadOnly);
+                const QByteArray body = opened ? dst.readAll() : QByteArray();
+                check("搬家：内容对得上（拿最要紧那个 config.ini 比字节）",
+                      body == QByteArrayLiteral("[ui]\ntheme=day\n") ? "yes" : "no", "yes");
+            }
+            QDir(from).removeRecursively();
+            QDir(to).removeRecursively();
+        }
         QFile::remove(newCap + "/" + key);
         QDir(QDir::tempPath() + "/ltool-pathcfg").removeRecursively();
         std::printf("pathcfg: 失败 %d 项\n", bad);

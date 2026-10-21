@@ -10,8 +10,20 @@ inline constexpr const wchar_t kInstanceKey[] = L"ltool.instance";
 
 namespace Utils {
 
-// %APPDATA%/ltool 及其子目录
+// 数据目录：配置、日志、应用/文件索引、剪贴板历史与图、OCR 模型、图标缓存全在这儿。
+// **默认落在软件目录下 —— `<exe 目录>\data`，不往 C 盘的 %APPDATA% 堆**（他 2026-10-21 点名）。
+// 三档优先：`LTOOL_DATA_DIR` 环境变量（自测沙箱 / 便携模式）→ 软件目录（写得进去的话）
+// → `%APPDATA%\ltool`（装到只读位置的退路，会留一条日志）。
 QString dataDir();
+// 上面那三档的算法，抽成纯函数是为了判据能**不碰真文件系统**就问它（三个输入都给死）。
+QString resolveDataDir(const QString& appDir, const QString& envOverride, const QString& appData,
+                       bool appDirWritable);
+// 一次性搬家：老 `%APPDATA%\ltool` 还在、新目录是空的 → 逐个复制并按 sha256 对过。
+// **旧目录原样留着不删**（那是真实数据，删错了没法复），返回搬了几个文件。
+int migrateLegacyDataDir(QString* note);
+// 搬家那一段真正干活的部分：整棵树复制过去，**每个文件都按 sha256 对过**才算搬成，
+// 对不上的删掉半成品并记进 problems。源目录一个字都不动。抽出来是为了判据能拿两个临时目录真跑一遍。
+int copyVerifiedTree(const QString& from, const QString& to, QStringList* problems, int* skipped = nullptr);
 QString iconsDir();
 QString pluginsDir();
 QString backupsDir();

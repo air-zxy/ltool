@@ -80,7 +80,7 @@ Source: "build\Release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; captures / recordings：截图/录像的默认落点就是 exe 旁边这两个文件夹，本机自测要是
 ; 手滑在 build\Release 里跑过一次 F1，别让那几张图跟着安装包出去
 Source: "build\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "=,genicon.exe,*.lib,*.exp,captures,recordings,D3Dcompiler_47.dll,dxcompiler.dll,dxil.dll,Qt6Svg.dll,qsvg.dll,qsvgicon.dll,qtuiotouchplugin.dll,qjp2.dll,qwebp.dll,qtiff.dll,qoffscreen.dll,ltool-plugins,ltool-plugins\*"
+    Excludes: "=,genicon.exe,*.lib,*.exp,captures,recordings,data,D3Dcompiler_47.dll,dxcompiler.dll,dxil.dll,Qt6Svg.dll,qsvg.dll,qsvgicon.dll,qtuiotouchplugin.dll,qjp2.dll,qwebp.dll,qtiff.dll,qoffscreen.dll,ltool-plugins,ltool-plugins\*"
 
 ; VC++ 运行库（vcruntime140/msvcp140*）故意不打包：Qt6Core 等确实硬导入它们，但
 ; 缺了是"进程根本起不来"，而能弹出设置页的机器一定有；ISCC 是 32 位进程，
