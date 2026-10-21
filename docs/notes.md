@@ -1623,3 +1623,26 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
   类名是从主仓库 `CMakeLists.txt` 里现问的（`ltool_add_tool(<id> <Class> …)`，不第二处抄）；
   `sdk/` 用主仓库重新铺：**26 个头 + 4 个 onnxruntime 头 + ltoolcore.lib（API 4，1.4.0）**。
   推之前要先在本地把 19 颗独立编一遍 —— 那边没有 PCH，历史上正是这条路才暴露"少 include"。
+
+## 插件仓库同步完了（`461a394` + `b4ba2e1`，那边 CI 终态 success）
+
+- 本地那份 clone **落后 `origin/main` 三笔**，而 `191fb80` 早就把 19 颗源码同步过（SDK 到 API 4 / ltool 1.3.3）。
+  我第一遍在旧 base 上做，报的是「新放 36 / 改动 36」；真实增量只有「新放 1 / 改动 10」。
+  做法：旧 base 那版先留在一条本地分支（内容全可复现，所以留不留都不影响）→ `reset --hard origin/main` → 重跑 `tools/sync_plugins.py --apply`。
+  教训：动另一台仓库之前先 `git fetch` + 看 `status -sb` 的 behind，别拿本地旧状态当现状。
+- 增量三颗：`clipboard` 1.1.2→1.1.3、`startup` 1.0.2→1.1.0、`json` 1.0.1→1.0.2（源码 + `plugin.json` 一起）。
+- `sdk/` 重铺：**26 个头** + 4 个 onnxruntime 头 + `ltoolcore.lib`（863,986 B，API 4 / ltool 1.4.0）。
+  比 1.3.3 那份多的那颗是 **`Theme.h`** —— 我先顺手写成 `ClipboardStore.h`，拿 `git show 191fb80:sdk/INFO.txt`
+  和现在这份一比才发现不对（只有 `plugins/clipboard/` 那两棵 include `Theme.h`，上一版任何插件都没 include）。
+  **别按"应该是哪颗"往文档里写**，一比就知道。
+- 独立编这一遍才是凭据（那边没有主仓库那层 PCH）：新建 `build-sync` 这个 binaryDir（没碰 `build-ci` 那份缓存），
+  `cmake --build build-sync --config Release` → **19 颗 dll、0 error**。`dist/` 的 dll 和 `index.json` 一起重算，
+  按他们 CI 的量法自洽：19 条、api 全 4、sha256 与字节数逐个对上。
+- 那边 CI 的终态（run `39645316369` = success，逐步点名）：验 SDK 快照 ✓、`dist/ 自洽：19 个插件的 sha256 与字节数逐个对上` ✓、
+  `一个 dll 都不许缺` ✓（日志里列出的产物正好 19 行）、验 Qt 就是宿主那一份版本 ✓。
+- 顺手把他们两处**写死的数字**改了（`b4ba2e1`）：CI 步骤名「配置并编出 12 个 dll」和 README 里「全部 12 个」——
+  这一栏现在编 19 颗，数字写死第二次同步就过期（这次就是）。改成按 `plugins/*/` 现枚举的说法。
+- 网络那条老毛病复现：`git push` 到插件仓库连着两次 `Recv failure / Failed to connect ... port 443`，
+  第三次（直连重试）就过了 ⇒ 推完一定要 `git ls-remote` 对上 sha 再算成功（这次 `b4ba2e1` 已对上）。
+- 版本：插件仓库只是主仓库的镜像，**不升任何号**（三颗的版本号就是主仓库发出去的那三个号）；
+  core 侧这轮只有文档和工具（`tools/sync_plugins.py`、`tools/postrelease_check.py`）⇒ 不升号。
