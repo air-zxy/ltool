@@ -402,20 +402,35 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
         run: |
+          set -e
           extra=""
           case "$GITHUB_REF_NAME" in
             *-*) extra="--prerelease"; echo "INFO 标签带预发后缀，Release 标成 pre-release（/releases/latest 不会回它）" ;;
           esac
-          # 资产 = 安装包 + SDK + **这次发版配套的商店**（清单 + 19 颗 dll）。
+          # 发布说明**自己生成**，不用 `--generate-notes`：GitHub 那份拼出来的是裸提交标题列表，
+          # 而这个仓库的提交信息本来就写着原因和实测数字（一笔动辄几十行），全被它丢了。
+          # 形状照 mateo-ki/vpn-parser 那种：概述 → 一笔提交一节 → 资产表（含 sha256）→ Full Changelog。
+          # 顺带产出 installer/sha256.txt（说明里承诺了"下 sha256.txt 对整批"，那它必须真存在）。
+          python tools/make_release_notes.py "$GITHUB_REF_NAME" release-notes.md
+          test -s release-notes.md
+          echo "---- 说明开头 12 行 ----"; head -12 release-notes.md
+          # 资产 = 安装包 + SDK + **这次发版配套的商店**（清单 + 19 颗 dll）+ 一张校验表。
           # 商店那边拼的就是 releases/download/<这个标签>/<文件名>，标签必须等于 "v"+版本号，
           # 上面那步「标签必须和安装包里的版本号对上」验的就是这件事。
           gh release create "$GITHUB_REF_NAME" installer/ltool-*-setup.exe \
-            installer/ltool-sdk-*.zip installer/plugins-index.json \
+            installer/ltool-sdk-*.zip installer/plugins-index.json installer/sha256.txt \
             build/Release/ltool-plugins/ltool-*.dll \
-            --verify-tag --title "ltool $GITHUB_REF_NAME" --generate-notes $extra
+            --verify-tag --title "ltool $GITHUB_REF_NAME" --notes-file release-notes.md $extra
           got=$(gh release view "$GITHUB_REF_NAME" --json assets -q '.assets | length')
-          echo "INFO 这次 Release 的资产 $got 个（安装包 + SDK + 清单 + 19 颗 dll）"
+          echo "INFO 这次 Release 的资产 $got 个（安装包 + SDK + 清单 + 19 颗 dll + sha256.txt）"
+          # 说明里那张表点名的文件必须真的都在资产里 —— 写"看 sha256.txt"而资产里没有，就是假话。
+          names=$(gh release view "$GITHUB_REF_NAME" --json assets -q '.assets[].name' | tr '\n' ' ')
+          for n in sha256.txt plugins-index.json; do
+            case " $names " in *" $n "*) ;; *) echo "::error::说明里点名了 $n，可它不在资产里"; exit 1 ;; esac
+          done
 
       - name: 失败时把各段日志留成 artifact
         if: failure()

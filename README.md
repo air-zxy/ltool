@@ -87,6 +87,13 @@ powershell -File build\verify\deliver.ps1        # 构建 → abi（两棵 dll �
 
 发一版三步：改 `MyAppVersion` → 推 `main` → `git tag v<一模一样的号> && git push origin v<那个号>`（第三步是对外的，人来按）。
 
+**Release 那份说明由 `tools/make_release_notes.py` 生成**（不用 `gh --generate-notes`，那份拼出来是裸提交标题列表，
+而这个仓库的提交信息本来就写着原因和实测数字）。形状：概述 → **一笔提交一节**（图标按标题里的关键词挑：
+🐛 修 / 🧩 插件商店 / 🎨 界面 / ⚡ 性能 / ✅ 判据 / 📝 文档 / ✨ 新增）→ 资产表（每个文件是什么、多大、sha256 前 8 位）→
+`Full Changelog` 的 compare 链接。它顺带生成 `installer/sha256.txt`（整批校验表，说明里点名了它就必须真在资产里，
+CI 有一步专门核对这两颗文件名在不在资产列表里）。"上一个标签"是 `git describe <标签>^` 问出来的，
+不是"最新的那个标签"—— 前者才是历史上在这之前的那一个。
+
 ## 网站关键字
 
 首次运行生成 `%APPDATA%\ltool\webs.json`，可自行增删：
