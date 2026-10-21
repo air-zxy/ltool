@@ -3407,6 +3407,68 @@ int main(int argc, char* argv[])
                 check("搬家：内容对得上（拿最要紧那个 config.ini 比字节）",
                       body == QByteArrayLiteral("[ui]\ntheme=day\n") ? "yes" : "no", "yes");
             }
+            {
+                // 程序自带的默认表必须给用户数据让路。2026-10-21 真丢过一次：deliver 的 `installed`
+                // 那一栏先拿装好的 exe 跑了一次 `--plugintest`，那一趟在**还没搬**的数据目录里写下了
+                // 默认 webs.json（2 条），于是"目标已有同名就不覆盖"把你那份 24 条永远挡在了老目录里。
+                const QString stockBox = QDir::tempPath() + "/ltool-stockway";
+                QDir(stockBox).removeRecursively();
+                QDir().mkpath(stockBox);
+                put(stockBox + "/webs.json", WebShortcuts::stockWebsJson());
+                check("目标里那份逐字节等于内置默认的 webs.json 会让路",
+                      QString::number(Utils::clearStockDefaultsForMigration(stockBox)), "1");
+                check("让路是真删掉（留个空文件的话，复制那一段仍然当它存在）",
+                      QFile::exists(stockBox + "/webs.json") ? QStringLiteral("no") : QStringLiteral("yes"),
+                      "yes");
+                put(stockBox + "/webs.json", QStringLiteral("这是用户自己改过的一份").toUtf8());
+                check("内容不是默认表的目标文件一个字节都不许动",
+                      QString::number(Utils::clearStockDefaultsForMigration(stockBox))
+                          + QStringLiteral("/")
+                          + (QFile::exists(stockBox + "/webs.json") ? QStringLiteral("kept")
+                                                                    : QStringLiteral("gone")),
+                      "0/kept");
+                QDir(stockBox).removeRecursively();
+            }
+            {
+                // 上面那三条量的是 helper。**漏掉调用处**才是这次的真实事故（搬家跑了、helper 也对，
+                // 只是那条链没叫它），所以这里把整条链再跑一遍：两个临时目录给死，
+                // 老目录放你那份 24 条，新目录先放程序自己写的默认表（2 条）+ 一颗这一趟的 log.txt。
+                // 判的是"界面最后看到几条"，不是"某颗函数返回值是几"。
+                const QString box = QDir::tempPath() + "/ltool-chain";
+                const QString oldDir = box + "/legacy";
+                const QString newDir = box + "/now";
+                QDir(box).removeRecursively();
+                QDir().mkpath(oldDir);
+                QDir().mkpath(newDir);
+                QByteArray yours = "{\"webs\":[{\"k\":\"ZZZ你那份\",\"n\":\"24 条里的那一条\","
+                                   "\"u\":\"https://example.invalid\"}]}";
+                put(oldDir + "/webs.json", yours);
+                put(oldDir + "/usage.json", "{\"freq\":24}");
+                put(newDir + "/webs.json", WebShortcuts::stockWebsJson());   // 上一趟自测自己写下的默认表
+                put(newDir + "/log.txt", "这一趟自己的日志\n");
+                QString note;
+                const int moved = Utils::migrateBetween(oldDir, newDir, &note);
+                const QByteArray after = readBack(newDir + "/webs.json").toUtf8();
+                check("搬家整条链：新目录里那份默认表没挡住老目录的真数据，界面上看到的是你那份",
+                      after == yours ? QStringLiteral("yes")
+                                      : QStringLiteral("%1 字节 vs %2 字节").arg(after.size()).arg(yours.size()),
+                      QStringLiteral("yes"));
+                check("搬家整条链：搬成的个数（默认表让路 + 这一趟的 log.txt 仍不覆盖）",
+                      QString::number(moved), QStringLiteral("2"));
+                check("搬家整条链：默认表那份确实是让路删掉的（不是复制时覆盖了目标）",
+                      note.contains(QStringLiteral("1 份程序自带的默认表给用户数据让了路"))
+                          ? QStringLiteral("yes") : QStringLiteral("note=[%1]").arg(note),
+                      QStringLiteral("yes"));
+                check("搬家整条链：源目录一个字都不动，回退用的旧数据还在",
+                      QFile::exists(oldDir + "/webs.json") && QFile::exists(oldDir + "/usage.json")
+                          ? QStringLiteral("yes") : QStringLiteral("no"),
+                      QStringLiteral("yes"));
+                QString note2;
+                const int again = Utils::migrateBetween(oldDir, newDir, &note2);
+                check("搬家整条链：跑第二遍不再搬（新目录里已经有真配置了）",
+                    QStringLiteral("%1").arg(again), QStringLiteral("0"));
+                QDir(box).removeRecursively();
+            }
             QDir(from).removeRecursively();
             QDir(to).removeRecursively();
         }

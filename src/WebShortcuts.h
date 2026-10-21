@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -19,6 +20,9 @@ namespace WebShortcuts {
 
 // webs.json 不存在就写默认那份（只在启动时调一次）
 void ensureDefaultWebs();
+// 默认那份的**字节**（和 ensureDefaultWebs 写出去的完全同一份，判据与搬家都拿它比对，
+// 免得"什么算默认值"这件事有两份答案）。
+QByteArray stockWebsJson();
 
 QVector<WebEntry> loadWebs();
 bool saveWebs(const QVector<WebEntry>& webs);

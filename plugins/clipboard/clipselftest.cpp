@@ -423,6 +423,35 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     check("两个不同的文件不许被归一成同一个（那等于永不删）",
           ClipboardStore::keepKey(QStringLiteral("C:/a/b/x.png"))
               == ClipboardStore::keepKey(QStringLiteral("C:/a/b/y.png")) ? "yes" : "no", "no");
+    // ---- 搬家前那种绝对路径写法（2026-10-21 他那份真数据的第二半）----
+    // clipboard.json 里存的是**绝对路径**：数据目录从 %APPDATA% 搬进软件目录之后，
+    // 老条目记的还是老位置。他照着搬家那句说明"确认没问题之后自己删旧目录"的第二天，
+    // load() 那句"图不在了就不留空条目"就会把这几十条连条目一起丢掉。
+    const QString movedAway = data + "/clipimg_before_the_move/selftest.png";
+    {
+        QImage twin(64, 40, QImage::Format_RGB32);
+        twin.fill(QColor(10, 200, 30));
+        QDir().mkpath(QFileInfo(movedAway).absolutePath());
+        twin.save(movedAway, "PNG");      // 老位置那份"还在"也要改道：下次 save 就把路径带回新目录
+    }
+    check("两边都有同名那张 → 认现在这个 clipimg（老串就此被带回新位置，孤儿清理不再盯着副本）",
+          ClipboardStore::resolveImagePath(movedAway), data + "/clipimg/selftest.png");
+    check("认回来的那个文件真能打开（不是拼出来一条看着像的路径）",
+          QFileInfo::exists(ClipboardStore::resolveImagePath(movedAway)) ? QStringLiteral("yes")
+                                                                        : QStringLiteral("no"),
+          QStringLiteral("yes"));
+    const QString oldStillLive = data + "/other_place/live.png";
+    {
+        QImage one(8, 8, QImage::Format_RGB32);
+        one.fill(QColor(0, 0, 255));
+        QDir().mkpath(QFileInfo(oldStillLive).absolutePath());
+        one.save(oldStillLive, "PNG");
+    }
+    check("新目录里没有同名、老路径还打得开 → 一个字都不改（搬家之后那几张不能被改道成不存在的文件）",
+          ClipboardStore::resolveImagePath(oldStillLive), oldStillLive);
+    const QString nowhere = data + "/clipimg_before_the_move/nobody_sees_this.png";
+    check("哪儿都没有就老实原样返回（不许凭空造一条看着像的路径）",
+          ClipboardStore::resolveImagePath(nowhere), nowhere);
     const QString strayPath = QDir::toNativeSeparators(data + "/clipimg/stray.png");
     {
         QImage s(8, 8, QImage::Format_RGB32);
@@ -604,6 +633,36 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
         }
         cs.setEnabled(false);
         QApplication::clipboard()->setText(clipBackup);   // 这条路上动过真剪贴板，尽量原样还回去
+    }
+
+    // ---- 整条**读入**那条路（上面三条量的是 helper，漏掉调用处它们照样绿）----
+    // 把夹具改写成"搬家前那个目录里的绝对路径"，图本身留在新 clipimg 里不动，再让 store 真读一遍。
+    {
+        const QString keepName = QStringLiteral("selftest.png");
+        QImage img(64, 40, QImage::Format_RGB32);
+        img.fill(QColor(10, 200, 30));
+        img.save(data + "/clipimg/" + keepName, "PNG");
+        QJsonObject o;
+        o.insert("when", freshStamp);
+        o.insert("hash", QStringLiteral("hMoved"));
+        o.insert("image", true);
+        o.insert("path", data + "/clipimg_before_the_move/" + keepName);
+        o.insert("w", 64);
+        o.insert("h", 40);
+        o.insert("bytes", 1024.0);
+        QJsonArray arr;
+        arr.append(o);
+        QFile f(data + "/clipboard.json");
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+            f.close();
+        }
+        cs.load();
+        check("真读一遍：记着搬家前那串路径的图条目没被连条目一起丢掉",
+              QString::number(cs.items().size()), "1");
+        check("真读一遍：load() 里那一格指的是现在这个 clipimg（不是原样抄那串老路径）",
+              cs.items().isEmpty() ? QStringLiteral("(历史是空的)") : cs.items().at(0).imagePath,
+              data + "/clipimg/" + keepName);
     }
 
     std::printf("clipboard: 失败 %d 项\n", bad);

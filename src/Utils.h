@@ -21,6 +21,17 @@ QString resolveDataDir(const QString& appDir, const QString& envOverride, const 
 // 一次性搬家：老 `%APPDATA%\ltool` 还在、新目录是空的 → 逐个复制并按 sha256 对过。
 // **旧目录原样留着不删**（那是真实数据，删错了没法复），返回搬了几个文件。
 int migrateLegacyDataDir(QString* note);
+// 搬家前先给"程序自己写的默认值"让路：目标目录里那份**内容逐字节等于内置默认**的文件先删掉，
+// 好让老目录里那份真数据进来（其余同名文件照旧不覆盖）。
+// 为什么单独抽出来：2026-10-21 真丢过一次 —— deliver 的 `installed` 那一栏会先拿装好的 exe 跑
+// `--plugintest`，那一趟在还没搬的数据目录里写下了默认 `webs.json`（2 条），于是"已有同名不覆盖"
+// 把你那份 24 条网站关键字挡在老目录里，界面上就只剩默认那 2 条。
+int clearStockDefaultsForMigration(const QString& dir);
+// 搬家整条链"两个目录都给死"的那一版：查标记 → 默认表让路 → 逐文件按 sha256 复制 → 落标记，
+// 全在这一颗里；`migrateLegacyDataDir` 只负责算出这两个目录再交给它（`LTOOL_DATA_DIR` 设着时根本不叫它）。
+// 为什么要单独有一版：判据得能拿两个临时目录跑**这条真链**，而不是只量其中一颗 helper ——
+// 上面那次事故的形状恰恰是"helper 都在、也测绿了，只是搬家那一步漏了调用它"。
+int migrateBetween(const QString& legacy, const QString& now, QString* note);
 // 搬家那一段真正干活的部分：整棵树复制过去，**每个文件都按 sha256 对过**才算搬成，
 // 对不上的删掉半成品并记进 problems。源目录一个字都不动。抽出来是为了判据能拿两个临时目录真跑一遍。
 int copyVerifiedTree(const QString& from, const QString& to, QStringList* problems, int* skipped = nullptr);

@@ -114,7 +114,7 @@ void ClipboardStore::load()
         it.hash = o.value("hash").toString();
         it.isImage = o.value("image").toBool();
         it.text = o.value("text").toString();
-        it.imagePath = o.value("path").toString();
+        it.imagePath = resolveImagePath(o.value("path").toString());
         it.w = o.value("w").toInt();
         it.h = o.value("h").toInt();
         it.bytes = qint64(o.value("bytes").toDouble());
@@ -278,6 +278,18 @@ bool ClipboardStore::sweepAllowed(int itemCount)
     // 一条历史都没 load 到 ≠ 盘上那些图都不需要了。真要全删走的是 clear() 自己那一段，
     // 不该由"读不到条目"这件事顺带触发。
     return itemCount > 0;
+}
+
+QString ClipboardStore::resolveImagePath(const QString& recorded)
+{
+    if (recorded.isEmpty())
+        return recorded;
+    // 文件名就是那张图内容的 sha1（capture() 里这么起的），所以"同名"就等于"同内容"，
+    // 这一格可以放心地优先落在**现在这个**数据目录里 —— 顺带让下面那句 save() 把老路径带回来。
+    const QString here = imageDir() + '/' + QFileInfo(recorded).fileName();
+    if (QFileInfo::exists(here))
+        return here;
+    return recorded;              // 新目录里还没有（搬家之后新复制的那几张本来就在新的）：原样返回
 }
 
 QString ClipboardStore::keepKey(const QString& path)

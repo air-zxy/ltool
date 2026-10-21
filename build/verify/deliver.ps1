@@ -236,11 +236,19 @@ for ($i = 0; $i -lt 40; $i++) {
   if ($q) { $pid2 = $q.Id; break }
   Start-Sleep -Milliseconds 100
 }
+# 这一栏以前一直读 `%APPDATA%\ltool\log.txt`：1.4.0 把数据目录搬进软件目录之后那份就再也不写了，
+# 于是 relaunch 报的是**上一版留下的老日志**（本机实测：新目录的日志里已经是 00:07 那几行，
+# 它还在打 15:56 那条 hide）。改读现在这个，读哪份要打出来 —— 拿错文件当证据比没证据更坏。
 $log = ''
-if (Test-Path "$env:APPDATA\ltool\log.txt") {
-  $log = (Get-Content "$env:APPDATA\ltool\log.txt" -Tail 1 -Encoding UTF8) -join ''
+$logFrom = '没有日志文件'
+foreach ($cand in @('D:\software\ltool\data\log.txt', "$env:APPDATA\ltool\log.txt")) {
+  if (Test-Path $cand) {
+    $log = (Get-Content $cand -Tail 1 -Encoding UTF8) -join ''
+    $logFrom = $cand
+    break
+  }
 }
-Phase 'relaunch' $sw ('pid=' + $pid2 + '  last log: ' + $log)
+Phase 'relaunch' $sw ('pid=' + $pid2 + '  last log (' + $logFrom + '): ' + $log)
 
 foreach ($r in $report) { $r }
 if ($report.Count -eq 0) {

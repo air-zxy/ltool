@@ -1432,3 +1432,66 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 交付：`install MATCH 40BF9A313CB1`、19 颗里只换 `clipboard` 这一颗、装的那份 `--cliptest` 0 红（那条单击判据在装好的那份上也是绿的）。
 - 版本：`clipboard` 插件 **1.1.2 → 1.1.3**（`plugin_version_gate` `BUMPED clipboard v1.1.1 → v1.1.3` —— 基线 v1.3.3 上还是 1.1.1，
   中间那次日间配色改的 1.1.2 也还没发出去）；core 不升号 —— 还是跟着未发布的 1.4.0 那一批。
+
+## 「网站关键字直达只有这么点数据了」：搬家那条"同名不覆盖"被程序自己写的默认值满足了（2026-10-22 他报的）
+
+- 现象与量出来的因：界面里只剩默认那 2 条。`D:\software\ltool\data\webs.json` = **345 B / 2 条**，
+  `%APPDATA%\ltool\webs.json` = **4286 B / 24 条**。老目录那份才是他的。
+- 根因不是"没搬"，是**搬的时候那一条"目标已有同名就不覆盖"被程序自己刚写下的默认表满足了**：
+  deliver 的 `installed` 那一栏会先拿装好的 exe 跑 `--plugintest`，那一趟在**还没搬**的数据目录里
+  写下了默认 `webs.json`（2 条）→ 下一次正常启动真搬家时，目标里已经有同名文件 → 跳过 →
+  你那 24 条永远留在老目录。`.migrated-from-appdata` 那颗标记照样写了（它只看"复制到的个数 > 0"），
+  所以第二次启动也不会再搬 —— 修不好就是永久性的。
+- 先救数据再动代码：手工把老目录那份 24 条放回新目录（默认那 2 条另存到
+  `%TEMP%\webs.json.default-20261021-234244`），重启后界面 24 条。
+- 代码改法：搬家**复制之前**先让路 —— `Utils::clearStockDefaultsForMigration(dir)` 删掉目标里那些
+  「内容逐字节等于内置默认」的文件（只认这一种；判"什么算默认"只有一份答案：拿写出默认值的
+  `WebShortcuts::stockWebsJson()` 再算一遍字节，不第二处抄）。
+  `note` 里跟着报「%1 份程序自带的默认表给用户数据让了路」。
+- 判据：`--pathcfg` 加 8 条搬家判据 —— 3 条问 helper（默认表会让路 / 是真删掉不是留个空文件 /
+  内容不是默认表的一份一个字节都不许动），5 条拿两个临时目录跑**整条链**
+  （默认表没挡住真数据 / 搬成的个数 / note 说了让路几份 / 源目录一个字不动 / 跑第二遍不再搬）。
+- **第一版那 8 条之外我还写过一条"按源码顺序闸住调用处"的判据，写的是 `SRC_ROOT "/src/Utils.cpp"`，
+  而这个宏整个仓库根本不存在** —— 没编译过就先写了，属于"脑内减掉"那一类。
+  换成真的那条：`Utils::migrateBetween(legacy, now, note)`（`migrateLegacyDataDir` 只负责算出这两个目录
+  再交给它），判据驱动的就是这一颗，量的是被测代码真造的对象。
+- 反向验过（把这一步删掉重编）：整条链那 3 条当场红，报的是
+  `got=[345 字节 vs 89 字节]`、`got=[1] want=[2]`、note 里没有"让了路"那半句 ——
+  而**问 helper 那 3 条全绿**。这正是这次事故的形状：helper 都在、也测得绿，只是那条链没叫它。
+- 复测他这份真数据时又挖出**同一家的第二半**（不修就等于把他历史里几十条图条目判了死刑）：
+  `clipboard.json` 里记的是**绝对路径**，搬家之后老条目仍然指向 `%APPDATA%\ltool\clipimg`。
+  本机实测：新目录 200 条历史里 39 条是图，其中 **37 条**的 `path` 前缀还是老位置；
+  而 load() 那句「图不在了就不留空条目」会把它们**连条目一起**丢掉，随后一次 save 就再也找不回。
+  更糟的是老目录里那 78 个 clipimg 副本已经被这一版的孤儿清理删过两轮
+  （日志里两条 `clipboard: swept 78 orphan image file(s), items=200`，16:12:59 和 23:43:03 ——
+  后一轮删的就是我 23:42:44 手工补回去的那一份，19 秒之后）：历史记的是老路径，
+  新目录里那些副本在 keep 表里算"没人引用"。
+- 改法：`ClipboardStore::resolveImagePath(recorded)` —— 每一格先按**文件名**在当前 `clipimg\` 认一次，
+  认得到就用它（那颗文件名本来就是图内容的 sha1，同名即同内容），认不到才原样返回。
+  这样下一次 `save()` 顺手把路径带回新目录，孤儿清理也不会再把副本当没用的删。
+  `ClipboardStore::load()` 为了能重跑一遍改成 public（判据要量的就是"读"那一步）。
+- 判据：`--cliptest` 加 6 条 —— 4 条问纯函数（两边都有同名 → 认现在这个 / 认回来的那个真能打开 /
+  新目录没有同名而老路径还打得开 → 一个字都不改 / 哪儿都没有 → 老实原样返回），
+  2 条**真改写 `clipboard.json` 再 `load()` 一遍**（条目不许被连条目一起丢掉 / 那一格指向现在这个 clipimg）。
+  反向验过：把 load() 里那一格换回原样抄路径 → 红的正是那 2 条（`got=[0] want=[1]`、`got=[(历史是空的)]`），
+  4 条纯函数全绿。
+- 他这份数据的修复：`build/verify/fix_clipimg.py` 把老目录那 78 个文件按 sha256 对过复制进新目录
+  （`copied=78 / 同名且同内容=0 / 同名但不同字节=0`，一个都没覆盖），
+  装上新版重启后 `D:\software\ltool\data\clipboard.json` 里 **39 条图条目的 path 全变成了
+  `D:/software/ltool/data/clipimg`**（`build/verify/clip_check.py` 量的），
+  老目录那 78 个文件也再没被孤儿清理收走。现在他删 `%APPDATA%\ltool` 不会丢历史。
+- **顺手发现自己那条交付链也没说实话**：deliver 的 `relaunch` 那一栏一直读
+  `%APPDATA%\ltool\log.txt` —— 1.4.0 之后日志写在 `<exe>\data\log.txt`，那份老文件早就不更新了，
+  所以它打出来的是"上一版留下的那条 hide（15:56）"，而真日志那时已经是 00:07 那几行。
+  改成先读现在这个、读不到才退回老位置，并把**读的是哪一份**打进那一栏（拿错文件当证据比没证据更坏）。
+- 全套判据（本机、离屏）：`--smoke` 有输出且退出码 0、`--plugintest 250`、`--rowmenu 9`、`--username 36`、
+  `--about 27`、`--cfgcheck 28`、`--appdirs 12`、`--pinyin 68`、`--seamtest 38`、`--diskbranch 4`、
+  `--storeexit 14`、`--storetest 104`、`--cliptest 88 + 1 跳`、`--startuptest 55`、`--pathcfg 26 + 1 跳`，
+  全部 0 红。四道闸：theme 34 处/漏 0、proxy 8 处/漏 0、plugin_version `NEEDS_BUMP=0`、
+  core_abi `GATE_HITS=0 / META_BAD=0`（新加的都是自由函数和静态纯函数，不动布局 ⇒ 接口号 4 不用升）。
+- 交付：`build 884 KB errors=0`、`abi 缺 0`、`stale 0`、`apigate 号配得上`、
+  `install MATCH 8EBFF90E8EBD`、`plugins 19 颗全对齐（缺 0 / 陈 0）`、`installed --plugintest 250 过 / 0 红`、
+  `relaunch pid=18016`、TOTAL 35.1 秒。
+- 版本：**core 不升号** —— 这是未发布的 1.4.0 那一批里的一处数据丢失修复，1.4.0 还没打 tag、
+  没发出去，按"未发布的号可以吸收同批功能"跟着这批走；`clipboard` 插件号不动 —— 这轮只改了它的
+  判据文件（`clipselftest.cpp`），插件自身源码没动，`plugin_version_gate` 也报 `NEEDS_BUMP=0`。

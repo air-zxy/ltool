@@ -30,9 +30,34 @@ QVector<WebEntry> defaults()
     return v;
 }
 
+// webs.json 的那份 JSON 数组：saveWebs 和"默认那份的字节"都从这儿出，
+// 免得「什么算默认值」有第二份答案（搬家那条判据就靠这两个字节相等来判断能否让路）。
+QJsonArray websJsonArray(const QVector<WebEntry>& webs)
+{
+    QJsonArray arr;
+    for (const WebEntry& e : webs) {
+        QJsonObject o;
+        QJsonArray keys;
+        for (const QString& k : e.keys)
+            keys.append(k.toLower());
+        o.insert("keys", keys);
+        o.insert("name", e.name);
+        o.insert("url", e.url);
+        if (!e.searchUrl.isEmpty())
+            o.insert("searchUrl", e.searchUrl);
+        arr.append(o);
+    }
+    return arr;
+}
+
 } // namespace
 
 namespace WebShortcuts {
+
+QByteArray stockWebsJson()
+{
+    return QJsonDocument(websJsonArray(defaults())).toJson(QJsonDocument::Indented);
+}
 
 void ensureDefaultWebs()
 {
@@ -68,23 +93,10 @@ QVector<WebEntry> loadWebs()
 
 bool saveWebs(const QVector<WebEntry>& webs)
 {
-    QJsonArray arr;
-    for (const WebEntry& e : webs) {
-        QJsonObject o;
-        QJsonArray keys;
-        for (const QString& k : e.keys)
-            keys.append(k.toLower());
-        o.insert("keys", keys);
-        o.insert("name", e.name);
-        o.insert("url", e.url);
-        if (!e.searchUrl.isEmpty())
-            o.insert("searchUrl", e.searchUrl);
-        arr.append(o);
-    }
     QSaveFile f(websFile());
     if (!f.open(QIODevice::WriteOnly))
         return false;
-    f.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
+    f.write(QJsonDocument(websJsonArray(webs)).toJson(QJsonDocument::Indented));
     return f.commit();
 }
 

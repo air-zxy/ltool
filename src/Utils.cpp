@@ -1,6 +1,7 @@
 #include "Utils.h"
 
 #include "Theme.h"
+#include "WebShortcuts.h"   // 默认 webs.json 的那份字节只有它算得出（"什么算默认值"不许有第二份答案）
 
 #include "platform/Paths.h"
 #include "platform/ProcInfo.h"
@@ -146,6 +147,27 @@ int copyVerifiedTree(const QString& from, const QString& to, QStringList* proble
 // 一次性搬家：老 `%APPDATA%\ltool` 还在、新目录是空的 → 逐个复制，每个都按 sha256 对过才算搬成。
 // **旧目录原样留着不删** —— 那是 378 MB 真实数据（配置、使用频率、深索引、剪贴板历史），
 // 删错了没法复；对完账之后由人自己决定什么时候清，note 里把旧路径原样写出来。
+int clearStockDefaultsForMigration(const QString& dir)
+{
+    // 「什么算内置默认」只有一份答案：拿写出默认值的那颗函数再算一遍字节。
+    const QVector<QPair<QString, QByteArray>> stock = {
+        { QStringLiteral("webs.json"), WebShortcuts::stockWebsJson() },
+    };
+    int removed = 0;
+    for (const auto& s : stock) {
+        if (s.second.isEmpty())
+            continue;                       // 拿不到默认表就什么都不删（宁可少删不可多删）
+        QFile t(dir + "/" + s.first);
+        if (!t.open(QIODevice::ReadOnly))
+            continue;
+        const QByteArray have = t.readAll();
+        t.close();
+        if (have == s.second && t.remove())
+            ++removed;
+    }
+    return removed;
+}
+
 int migrateLegacyDataDir(QString* note)
 {
     // 沙箱 / 便携模式（`LTOOL_DATA_DIR` 设着）永远不搬：那 378 MB 是真实数据，
@@ -164,6 +186,11 @@ int migrateLegacyDataDir(QString* note)
     }
     if (!QFileInfo::exists(legacy))
         return 0;                                   // 新装的机器，本来就没有（这条不值得写一行日志）
+    return migrateBetween(legacy, now, note);
+}
+
+int migrateBetween(const QString& legacy, const QString& now, QString* note)
+{
     // 守卫不能是"目录非空"：`dataDir()` 一被问到就 mkpath，而 `Utils::log()` 立刻在里面写下
     // `log.txt` —— 本机第一次实测就是这么没搬成的（deliver 的 installed 那一栏先跑了
     // `--plugintest`，新目录里已经有一条日志，relaunch 那次就判定"搬过了"）。
@@ -176,6 +203,9 @@ int migrateLegacyDataDir(QString* note)
 
     QStringList problems;
     int skipped = 0;
+    // 先把目标里那些"程序自己刚写的默认表"清掉，否则下面那条"同名不覆盖"会让默认值挡住真数据
+    //（2026-10-21 就是这么把 24 条网站关键字留在老目录里、界面上只剩默认 2 条的）。
+    const int gaveWay = clearStockDefaultsForMigration(now);
     const int copied = copyVerifiedTree(legacy, now, &problems, &skipped);
     if (copied > 0) {
         QFile mark(now + "/.migrated-from-appdata");
@@ -189,6 +219,8 @@ int migrateLegacyDataDir(QString* note)
         *note = QStringLiteral("数据目录搬到软件目录下了：%1 个文件 · 旧目录 %2 "
                                "原样留着没删，确认新位置没问题之后自己删")
                     .arg(copied).arg(legacy);
+    if (gaveWay > 0 && note)
+        *note += QStringLiteral(" · %1 份程序自带的默认表给用户数据让了路").arg(gaveWay);
     if (!problems.isEmpty() && note)
         *note += QStringLiteral(" · %1 个没搬成：%2").arg(problems.size()).arg(problems.join(QStringLiteral("；")));
     if (skipped > 0 && note)
