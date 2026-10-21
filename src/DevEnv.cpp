@@ -139,6 +139,12 @@ static void repairDeadWingetIds(const QString& path)
 
 void ensureDefaultPlugins()
 {
+    // 同 `WebShortcuts::ensureDefaultWebs()` 那条守卫：还没接住你真数据的目录不许被播上默认表，
+    // 不然搬家那一步会把它当成"目标里已有的同名文件"跳过来，你那几份改过的 `plugins\*.json`
+    // 就永远留在老目录里（本机 `plugins\java.json` 两份就是不同字节 —— 只是这一版的默认文字
+    // 自己也在变，所以那一条不算被挡住的真实数据）。
+    if (Utils::legacyMigrationPending())
+        return;
     const QString dir = Utils::pluginsDir();
     QDir().mkpath(dir);
     struct P { const char* file; const char* content; };

@@ -1495,3 +1495,49 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 版本：**core 不升号** —— 这是未发布的 1.4.0 那一批里的一处数据丢失修复，1.4.0 还没打 tag、
   没发出去，按"未发布的号可以吸收同批功能"跟着这批走；`clipboard` 插件号不动 —— 这轮只改了它的
   判据文件（`clipselftest.cpp`），插件自身源码没动，`plugin_version_gate` 也报 `NEEDS_BUMP=0`。
+
+## 「新版本不能让用户少数据」：把播默认值那一手连根拔掉 + 一次性迁移脚本（2026-10-22 他点名）
+
+- 上一条只是**接住了后果**，这一条找的是"谁会往还没搬的目录里写默认值"。答案在代码里，不是推测：
+  沙箱名单 [src/main.cpp:609](../src/main.cpp) 里**没有 `--plugintest`**，而 [src/main.cpp:672](../src/main.cpp)
+  的 `WebShortcuts::ensureDefaultWebs()` 对**所有**路径都要跑 —— deliver 的 `installed` 那一栏跑的正是
+  `D:\software\ltool\ltool.exe --plugintest` ⇒ 那趟把 2 条的默认 `webs.json` 播进还没搬的数据目录。
+- 两道守卫：① `--plugintest` 加进沙箱名单（先实测：`LTOOL_DATA_DIR` 指到临时目录时它仍然 250 过 / 0 红，
+  插件那 19 颗是从 `exe 目录\ltool-plugins` 装的，和数据目录不是一条线）；
+  ② `ensureDefaultWebs()` / `DevEnv::ensureDefaultPlugins()` 先问 `Utils::legacyMigrationPending()`，
+  **还没接住真数据的目录一个字节默认值都不写**。判断只有一份：拆成纯函数 `migrationPendingFor(legacy, now)`
+  （`--pathcfg` 用两个临时目录直接问它，5 条）。
+- 一次性脚本 `build/verify/migrate_ltool_data.ps1`：只按两条规矩 —— 老目录有而新目录**缺**的按 sha256 补进去
+  （对不上就回滚那一份），两边都有但字节不同的**一个字都不碰**、只列出来。默认是 dry run，`-Apply` 才写盘；
+  落点从 Inno 卸载键的 `InstallLocation` 推（推不到才用 `D:\software\ltool\data`）。
+  写的是纯 ASCII：`.ps1` 里放中文又没 BOM 在这仓库里炸过五种样子。
+  本机实跑（dry）：扫 992 个、缺 4 个（0.2 MB，全是 `clipimg\`）、两边都有 988（字节相同 981 / 不同 7）。
+  第一版踩了两个 PS 的坑：`Split-Path -LiteralPath … -Parent` 在这台机的版本上是 ambiguous parameter set（换
+  `[IO.Path]::GetDirectoryName`）、`Write-Output 'a' + $n + 'b'` 会被当三个参数各打一行（整个式子先括起来）。
+- `-Apply` 之后本机补齐了那 4 个（`copied=4 / 失败 0`）；剩下的 7 条"字节不同"看一眼就知道都不该动：
+  新目录那一份全是今天的 mtime（程序现在写的就是这里），老目录全是昨天及更早的冻结快照。
+- **有一条我本来要加、最后决定不加**：把"目标里那份等于内置默认就拿老目录那份换掉"也放进*搬过之后*那趟。
+  不加的依据就是上面那 7 条里的 `plugins\java.json`（老 538 / 新 379 字节）：逐字节 diff 之后两边差的
+  **只有程序自带默认文字本身的改版措辞**（key 顺序 + 一条 note 的写法），没有一行是你写的。
+  "等于**这一版**的默认"推不出"老目录那份是用户数据"——它可能是**上一版**的默认，换过去就是把新版文字退回旧的。
+  加上 1.4.0 还没打 tag、没发出去 ⇒ 没有任何用户装过带这个 bug 的版本 ⇒ 没有需要救的现场，要救的现场已经在
+  **搬家之前**那一步堵住了。所以 `backfillFromLegacy` 只做一件有把握的事：把**现在这份 `clipboard.json`
+  引用着、而本地缺**的剪贴板图从老目录补回来（按文件名认，不按记着的那串路径 —— 记的那串可能还打得开，
+  可你一删旧目录就断了）；没引用的一张都不补，不然你删掉的往期图每次启动都复活。
+- 判据：`--pathcfg` 26 → **37 过 + 1 跳**（新增 5 条问 `migrationPendingFor` + 1 条钉"沙箱设着
+  `LTOOL_DATA_DIR` 时 pending 必须是 false"（少这一条，任何离屏夹具都会被自己的守卫挡住、默认表播不进去）
+  + 2 条盯补图 + 2 条盯它不许复活东西/幂等）。反向验过：摘掉 `migrateBetween` 里那颗调用，
+  红的正是 4 条（`got=[0] want=[2]`、`got=[n,n]`、note 那半句、幂等那条变 `changed`），前面 33 条全绿。
+- **如实点名一处量不到**：`ensureDefaultWebs()` / `ensureDefaultPlugins()` 里那句守卫**本身**没有判据 ——
+  每一条离屏判据都设着 `LTOOL_DATA_DIR`，而那正是 pending 必须为 false 的档位，所以"pending=true 时真的不写"
+  在这套沙箱里永远量不到；要量就得跑一个不带 `LTOOL_DATA_DIR` 而把 `APPDATA` 指到临时目录的进程，
+  那种进程会往 `build\Release\data` 里落文件、被安装包收走。兜住它的是另外三层：
+  判断本身 5 条 + `--plugintest` 进沙箱 + 搬家前的"让路"那 3 条。
+- 全套（本机、离屏）0 红：`--plugintest 250`、`--cfgcheck 28`、`--cliptest 88+1 跳`、`--startuptest 55`、
+  `--pathcfg 37+1 跳`、其余同上一轮；四道闸绿（`core_abi_gate` 动了布局的头 0 个 ⇒ 新加的仍是自由/静态纯函数、
+  接口号 4 不升）。
+- 交付：`build 903 KB errors=0`、`install MATCH 9F2B7ACB7854`、19 颗插件全对齐、
+  装好的那份 `--plugintest` 250 过 / 0 红（**这一栏现在跑在沙箱里了**）、`relaunch pid=25060`，
+  而且 `relaunch` 那一栏读的是 `D:\software\ltool\data\log.txt`（上一条修的那处，这次是它第一次报对文件）。
+- 版本：**core 不升号** —— 还是未发布的 1.4.0 那一批（这批的定性是"把搬家这件事做对"，不是新功能）；
+  插件号不动（这轮没碰任何 `plugins/*` 源码），`plugin_version_gate` `NEEDS_BUMP=0`。

@@ -32,6 +32,21 @@ int clearStockDefaultsForMigration(const QString& dir);
 // 为什么要单独有一版：判据得能拿两个临时目录跑**这条真链**，而不是只量其中一颗 helper ——
 // 上面那次事故的形状恰恰是"helper 都在、也测绿了，只是搬家那一步漏了调用它"。
 int migrateBetween(const QString& legacy, const QString& now, QString* note);
+// 「这个数据目录还没接住你的真数据」：老目录还在、而新目录里既没有搬过的标记也没有 config.ini
+//（和搬家那三条守卫同一套判断，同一个来源）。设着 `LTOOL_DATA_DIR` 时永远返回 false ——
+// 沙箱/便携模式那个目录就是它自己的，往里写默认值是对的。
+// 为什么要有这颗：**任何**往还没搬的目录里写"程序自带的默认表"的路径，都会让
+// 搬家那条"同名不覆盖"把真数据挡下来（2026-10-21 那次事故的一般形状，不止 webs.json 一处）。
+bool legacyMigrationPending();
+// 上面那颗拆开问的那一版：两个目录给死，判据不碰真文件系统就能问（同 `resolveDataDir` 的规矩）。
+bool migrationPendingFor(const QString& legacy, const QString& now);
+// 已经"搬过"的那些安装里补一次（一次性脚本 `build/verify/migrate_ltool_data.ps1` 的程序版）：
+// 只按两条明确的规矩，其余一概不动 ——
+//   ① 目标里那份**内容逐字节等于内置默认**的表，而老目录里有一份不同的（= 用户的真那份）→ 用老的；
+//   ② 目标里 `clipboard.json` 现在**正引用着**、而本地缺失的图片 → 从老目录补进来。
+// 不做"整棵树补缺"：那样会把用户后来自己删掉的东西（往期截图、清理过的剪贴板图）每次启动都复活。
+// 返回补了几个文件，`actions` 里逐条写清补了什么（进日志）。
+int backfillFromLegacy(const QString& legacy, const QString& now, QStringList* actions);
 // 搬家那一段真正干活的部分：整棵树复制过去，**每个文件都按 sha256 对过**才算搬成，
 // 对不上的删掉半成品并记进 problems。源目录一个字都不动。抽出来是为了判据能拿两个临时目录真跑一遍。
 int copyVerifiedTree(const QString& from, const QString& to, QStringList* problems, int* skipped = nullptr);

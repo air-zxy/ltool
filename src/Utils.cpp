@@ -20,6 +20,9 @@
 #include <QHash>
 #include <QImage>
 #include <QImageReader>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QPainter>
@@ -27,6 +30,7 @@
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QLocalSocket>
+#include <QSet>
 #include <QStandardPaths>
 #include <QSystemTrayIcon>
 #include <QThread>
@@ -97,15 +101,65 @@ QString dataDir()
     return cached;
 }
 
+namespace {
+
+// 老目录 / 现在这个目录，再加上"这趟到底有没有搬家可谈"。
+// 三处共用同一套判断（搬家、"别往还没搬的目录里写程序自带的默认值"、补搬），判断不许有第二份 ——
+// 2026-10-21 那次丢数据丢的正是"这几处对同一件事各有说法"。
+bool legacyPair(QString* legacy, QString* now, QString* refusal)
+{
+    if (!qEnvironmentVariable("LTOOL_DATA_DIR").isEmpty()) {
+        if (refusal)
+            *refusal = QStringLiteral("没搬：数据目录被 LTOOL_DATA_DIR 指走了（沙箱/便携模式）");
+        return false;
+    }
+    const QString l = QDir::fromNativeSeparators(legacyBase()) + "/ltool";
+    const QString n = dataDir();
+    if (QDir::cleanPath(n).compare(QDir::cleanPath(l), Qt::CaseInsensitive) == 0) {
+        if (refusal)
+            *refusal = QStringLiteral("没搬：数据目录还在老位置 %1（说明这一版没落到软件目录下）").arg(n);
+        return false;
+    }
+    if (!QFileInfo::exists(l))
+        return false;              // 新装的机器，本来就没有（这条不值得写一行日志）
+    *legacy = l;
+    *now = n;
+    return true;
+}
+
+// 这个目录已经接住过你的真数据了吗：搬过留下的标记，或已经有一份真配置。
+bool alreadySettled(const QString& now)
+{
+    return QFileInfo::exists(now + "/.migrated-from-appdata") || QFileInfo::exists(now + "/config.ini");
+}
+
+QByteArray sha256Of(const QString& path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return QByteArray();
+    QCryptographicHash h(QCryptographicHash::Sha256);
+    return h.addData(&f) ? h.result().toHex() : QByteArray();   // 设备那一版内部就是分块读，320MB 不整块进内存
+}
+
+// 补搬那一步：复制 + 对字节，对不上就删掉半成品（老目录那份一个字都不动）。
+bool copyOneVerified(const QString& from, const QString& to)
+{
+    QDir().mkpath(QFileInfo(to).absolutePath());
+    if (!QFile::copy(from, to))
+        return false;
+    const QByteArray a = sha256Of(from), b = sha256Of(to);
+    if (a.isEmpty() || a != b) {
+        QFile::remove(to);
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
 int copyVerifiedTree(const QString& from, const QString& to, QStringList* problems, int* skipped)
 {
-    const auto sha = [](const QString& path) {
-        QFile f(path);
-        if (!f.open(QIODevice::ReadOnly))
-            return QByteArray();
-        QCryptographicHash h(QCryptographicHash::Sha256);
-        return h.addData(&f) ? h.result().toHex() : QByteArray();   // 设备那一版内部就是分块读，320MB 不整块进内存
-    };
     int copied = 0;
     std::function<void(const QString&, const QString&)> walk = [&](const QString& src, const QString& dst) {
         QDir dir(src);
@@ -129,7 +183,7 @@ int copyVerifiedTree(const QString& from, const QString& to, QStringList* proble
                 continue;
             }
             // 对内容，不对"名字大小时间" —— 名字和大小都对也可能是没复制完的半成品
-            const QByteArray a = sha(e.absoluteFilePath()), b = sha(dstPath);
+            const QByteArray a = sha256Of(e.absoluteFilePath()), b = sha256Of(dstPath);
             if (a.isEmpty() || a != b) {
                 QFile::remove(dstPath);
                 if (problems)
@@ -172,21 +226,31 @@ int migrateLegacyDataDir(QString* note)
 {
     // 沙箱 / 便携模式（`LTOOL_DATA_DIR` 设着）永远不搬：那 378 MB 是真实数据，
     // 而自测沙箱每次都是空的 —— 少这一道守卫，任何一条旗标判据都会把它整份复制进 %TEMP%。
-    if (!qEnvironmentVariable("LTOOL_DATA_DIR").isEmpty()) {
-        if (note)
-            *note = QStringLiteral("没搬：数据目录被 LTOOL_DATA_DIR 指走了（沙箱/便携模式）");
+    // 这条和下面两条都收在 `legacyPair()` 里（同一个判断不许有第二份）。
+    QString legacy, now, refusal;
+    if (!legacyPair(&legacy, &now, &refusal)) {
+        if (note && !refusal.isEmpty())
+            *note = refusal;
         return 0;
     }
-    const QString legacy = QDir::fromNativeSeparators(legacyBase()) + "/ltool";
-    const QString now = dataDir();
-    if (QDir::cleanPath(now).compare(QDir::cleanPath(legacy), Qt::CaseInsensitive) == 0) {
-        if (note)
-            *note = QStringLiteral("没搬：数据目录还在老位置 %1（说明这一版没落到软件目录下）").arg(now);
-        return 0;
-    }
-    if (!QFileInfo::exists(legacy))
-        return 0;                                   // 新装的机器，本来就没有（这条不值得写一行日志）
     return migrateBetween(legacy, now, note);
+}
+
+bool migrationPendingFor(const QString& legacy, const QString& now)
+{
+    if (!QFileInfo::exists(legacy))
+        return false;                                       // 这台机器本来就没有老目录
+    if (QDir::cleanPath(now).compare(QDir::cleanPath(legacy), Qt::CaseInsensitive) == 0)
+        return false;                                       // 还住在老位置：没什么可搬的
+    return !alreadySettled(now);
+}
+
+bool legacyMigrationPending()
+{
+    QString legacy, now;
+    // `legacyPair` 里那两条（设着 LTOOL_DATA_DIR 的沙箱/便携模式、老位置没变）先问掉，
+    // 剩下的那两个目录再交给同一套判断的纯函数那一版 —— 判断只有一份。
+    return legacyPair(&legacy, &now, nullptr) && migrationPendingFor(legacy, now);
 }
 
 int migrateBetween(const QString& legacy, const QString& now, QString* note)
@@ -195,10 +259,23 @@ int migrateBetween(const QString& legacy, const QString& now, QString* note)
     // `log.txt` —— 本机第一次实测就是这么没搬成的（deliver 的 installed 那一栏先跑了
     // `--plugintest`，新目录里已经有一条日志，relaunch 那次就判定"搬过了"）。
     // 只认两种真信号：搬过留下的那颗标记，或新目录里已经有一份真配置。
-    if (QFileInfo::exists(now + "/.migrated-from-appdata") || QFileInfo::exists(now + "/config.ini")) {
+    // 守卫不能是"目录非空"：`dataDir()` 一被问到就 mkpath，而 `Utils::log()` 立刻在里面写下
+    // `log.txt` —— 本机第一次实测就是这么没搬成的（deliver 的 installed 那一栏先跑了
+    // `--plugintest`，新目录里已经有一条日志，relaunch 那次就判定"搬过了"）。
+    // 只认两种真信号：搬过留下的那颗标记，或新目录里已经有一份真配置。
+    // 到这颗函数里老目录一定存在、也一定和 now 不是同一个位置，所以"还没搬"就等价于"没这两种信号"。
+    if (!migrationPendingFor(legacy, now)) {
+        // 已经搬过了 ≠ 搬干净了：那一趟可能被"目标里已有同名文件"挡住过真数据
+        //（2026-10-21 本机就是这么把 24 条网站关键字留在老目录里的，而标记照写、第二次启动不再搬）。
+        // 所以这一趟按两条明确的规矩补一次，其余一概不动。
+        QStringList actions;
+        const int fixed = backfillFromLegacy(legacy, now, &actions);
         if (note)
-            *note = QStringLiteral("没搬：%1 里已经有配置或搬过的标记").arg(now);
-        return 0;
+            *note = fixed > 0
+                ? QStringLiteral("已经搬过了，这一趟又补回 %1 个文件（历史里引用着、本地却缺的剪贴板图）：%2")
+                      .arg(fixed).arg(actions.join(QStringLiteral("；")))
+                : QStringLiteral("没搬：%1 里已经有配置或搬过的标记（也没什么可补的）").arg(now);
+        return fixed;
     }
 
     QStringList problems;
@@ -226,6 +303,57 @@ int migrateBetween(const QString& legacy, const QString& now, QString* note)
     if (skipped > 0 && note)
         *note += QStringLiteral(" · 另有 %1 个同名文件没覆盖（比如这一趟自己的 log.txt）").arg(skipped);
     return copied;
+}
+
+int backfillFromLegacy(const QString& legacy, const QString& now, QStringList* actions)
+{
+    int done = 0;
+    // 只补这一件事：**现在这份 clipboard.json 正引用着、而本地缺失的图**，从老目录补回来。
+    //
+    // 为什么不做"目标里那份是默认表就拿老目录那份换掉"（搬家**之前**那一步做的是它的另一半）：
+    // ① 1.4.0 还没打 tag、没发出去，所以没有任何用户装过带这个 bug 的版本 = 没有需要救的现场
+    //    （要救的现场在搬家**之前**那条路上已经被 `clearStockDefaultsForMigration` +
+    //     "别往还没搬的目录里写默认值"那两道堵住了）；
+    // ② 这条判据拿"逐字节等于**这一版**自带的默认"当"里面没有你的东西"，而默认表的文字本身是
+    //    会跟着版本改的（本机 `plugins\java.json` 两份就这么差着一条 note 的措辞）——
+    //    拿老目录那份换掉，可能是把新版的默认文字退回上一版。宁可不做，也不静默做一件说不清的事。
+    //
+    // 也不做"整棵 clipimg 缺什么补什么"：那样你后来自己删掉的往期图会被每次启动复活
+    //（"删不掉"比"少一张"更让人难受），所以只认历史里真的引用着的那些。
+    QFile cj(now + "/clipboard.json");
+    if (cj.open(QIODevice::ReadOnly)) {
+        const QJsonArray arr = QJsonDocument::fromJson(cj.readAll()).array();
+        QSet<QString> stems;
+        for (const QJsonValue& v : arr) {
+            const QJsonObject o = v.toObject();
+            if (!o.value("image").toBool())
+                continue;
+            const QString p = o.value("path").toString();
+            if (p.isEmpty())
+                continue;
+            // 按**文件名**（那颗本来就是图内容的 sha1）问，不按记着的那串绝对路径问：
+            // 记的可能是搬家前的老位置，那条路径现在还打得开，可你一删旧目录它就断了 ——
+            // 所以"本地这个 clipimg 里有没有"才是这里要的那个条件。
+            stems.insert(QFileInfo(p).baseName());
+        }
+        if (!stems.isEmpty()) {
+            const QDir oldImg(legacy + "/clipimg");
+            const auto entries = oldImg.entryInfoList(QDir::Files);
+            for (const QFileInfo& fi : entries) {
+                if (!stems.contains(fi.baseName()))
+                    continue;
+                const QString to = now + "/clipimg/" + fi.fileName();
+                if (QFileInfo::exists(to))
+                    continue;
+                if (copyOneVerified(fi.absoluteFilePath(), to)) {
+                    ++done;
+                    if (actions)
+                        *actions << QStringLiteral("clipimg/%1").arg(fi.fileName());
+                }
+            }
+        }
+    }
+    return done;
 }
 
 QString iconsDir()   { return dataDir() + "/icons"; }

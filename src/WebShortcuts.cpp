@@ -61,6 +61,10 @@ QByteArray stockWebsJson()
 
 void ensureDefaultWebs()
 {
+    // 还没接住你真数据的目录里别播默认表：搬家那条"目标已有同名不覆盖"会把它当真文件对待，
+    // 于是你老目录里那份 24 条永远进不来（2026-10-21 本机实测丢的就是这个，见 Utils.h 那颗守卫）。
+    if (Utils::legacyMigrationPending())
+        return;
     if (QFile::exists(websFile()))
         return;
     saveWebs(defaults());

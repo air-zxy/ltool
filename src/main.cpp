@@ -610,6 +610,9 @@ int main(int argc, char* argv[])
             || a == QLatin1String("--pathcfg") || a == QLatin1String("--pintool")
             || a == QLatin1String("--appdirs") || a == QLatin1String("--cfgcheck")
             || a == QLatin1String("--storetest") || a == QLatin1String("--storeexit")
+            || a == QLatin1String("--plugintest")        // ← 2026-10-21 丢的那 24 条网站关键字就是它漏的：
+                                                         //    deliver 的 installed 那一栏跑的就是这一面旗，
+                                                         //    没沙箱 ⇒ 它往**还没搬**的数据目录播了默认 webs.json
             || a == QLatin1String("--linuxdotest")
             || a == QLatin1String("--linuxdonet") || a == QLatin1String("--cliptest")
             || a == QLatin1String("--startuptest")) {
@@ -3428,6 +3431,71 @@ int main(int argc, char* argv[])
                                                                     : QStringLiteral("gone")),
                       "0/kept");
                 QDir(stockBox).removeRecursively();
+            }
+            {
+                // 「还没接住真数据的目录不许播默认表」那两道守卫的判断（WebShortcuts / DevEnv 问的就是它）。
+                // 拆开问：两个目录给死，不碰真文件系统（同 resolveDataDir 那两条规矩）。
+                const QString b = QDir::tempPath() + "/ltool-pending";
+                QDir(b).removeRecursively();
+                QDir().mkpath(b + "/old");
+                QDir().mkpath(b + "/fresh");
+                check("pending：老目录不存在 = 不欠任何东西（新装的机器）",
+                      Utils::migrationPendingFor(b + "/gone", b + "/fresh") ? "yes" : "no", "no");
+                check("pending：新目录还没搬过、老目录还在 = 是（这时候写默认表就会挡住真数据）",
+                      Utils::migrationPendingFor(b + "/old", b + "/fresh") ? "yes" : "no", "yes");
+                put(b + "/fresh/config.ini", "[ui]\ntheme=day\n");
+                check("pending：新目录里已经有一份真配置 = 它已经是你的家了",
+                      Utils::migrationPendingFor(b + "/old", b + "/fresh") ? "yes" : "no", "no");
+                QFile(b + "/fresh/config.ini").remove();
+                put(b + "/fresh/.migrated-from-appdata", "搬过\n");
+                check("pending：搬过的标记也在（两种真信号认一个就算）",
+                      Utils::migrationPendingFor(b + "/old", b + "/fresh") ? "yes" : "no", "no");
+                check("pending：新目录就是老目录（还没落到软件目录下）= 没什么可搬的",
+                      Utils::migrationPendingFor(b + "/old", b + "/old") ? "yes" : "no", "no");
+                // 这一条盯的是"沙箱那一档"：设着 LTOOL_DATA_DIR 时这颗必须说 false，
+                // 不然每一条离屏判据都会被自己的守卫挡住（默认表播不进去，夹具就建不起来）。
+                check("这一趟真跑起来时 pending 是 false（沙箱设着 LTOOL_DATA_DIR，该写默认表就写）",
+                      Utils::legacyMigrationPending() ? "yes" : "no", "no");
+                QDir(b).removeRecursively();
+            }
+            {
+                // 已经搬过的那一趟补一次：只认"现在这份历史引用着、而本地缺"的图。
+                // 走的是 migrateBetween 那条真路（漏调用处 = helper 绿了也白绿，上面刚栽过一次）。
+                const QString b = QDir::tempPath() + "/ltool-backfill";
+                QDir(b).removeRecursively();
+                QDir().mkpath(b + "/old/clipimg");
+                QDir().mkpath(b + "/fresh");
+                put(b + "/old/clipimg/abc.png", QByteArray(64, 'A'));
+                put(b + "/old/clipimg/abc.t120.png", QByteArray(8, 'a'));
+                put(b + "/old/clipimg/unreferenced.png", QByteArray(32, 'U'));   // 他后来删掉的那一张
+                put(b + "/fresh/.migrated-from-appdata", "搬过\n");
+                put(b + "/fresh/clipboard.json",
+                    QStringLiteral("[{\"image\":true,\"path\":\"%1/clipimg/abc.png\"}]").arg(b + "/old")
+                        .toUtf8());
+                QString note;
+                const int fixed = Utils::migrateBetween(b + "/old", b + "/fresh", &note);
+                check("已经搬过的那一趟会补图：补了几个（原图 + 它的缩略图）", QString::number(fixed), "2");
+                check("补进来的就是历史引用着的那两张",
+                      QStringLiteral("%1,%2")
+                          .arg(QFile::exists(b + "/fresh/clipimg/abc.png") ? "y" : "n")
+                          .arg(QFile::exists(b + "/fresh/clipimg/abc.t120.png") ? "y" : "n"),
+                      "y,y");
+                check("历史里没引用的一张都不许复活（不然你删掉的往期图每次启动都回来）",
+                      QFile::exists(b + "/fresh/clipimg/unreferenced.png") ? "yes" : "no", "no");
+                check("note 说了补回几个、补的是哪些",
+                      note.contains(QStringLiteral("补回 2 个")) && note.contains(QStringLiteral("clipimg/abc.png"))
+                          ? "yes" : QStringLiteral("note=[%1]").arg(note),
+                      "yes");
+                put(b + "/fresh/clipimg/abc.png", QStringLiteral("%1").arg(QChar('Z')).repeated(99).toUtf8());
+                QString note2;
+                const int again = Utils::migrateBetween(b + "/old", b + "/fresh", &note2);
+                const QByteArray kept = readBack(b + "/fresh/clipimg/abc.png").toUtf8();
+                check("跑第二遍什么都不补，也不动本地已有的那一份",
+                      QStringLiteral("%1/%2").arg(again)
+                          .arg(kept == QByteArray(99, 'Z') ? QStringLiteral("kept")
+                                                           : QStringLiteral("changed")),
+                      QStringLiteral("0/kept"));
+                QDir(b).removeRecursively();
             }
             {
                 // 上面那三条量的是 helper。**漏掉调用处**才是这次的真实事故（搬家跑了、helper 也对，
