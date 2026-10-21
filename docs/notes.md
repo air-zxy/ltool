@@ -1167,3 +1167,37 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 版本：`1.3.4 → 1.4.0`（可感知的新功能 = minor）。**1.3.4 没发布过，被这一版吸收**（号跟着发布走，不跟着 commit 走）；
   这轮只动 `src/`，19 颗插件一行没动 ⇒ 没有插件要 bump，`core_abi_gate` 在改完的工作树上 `GATE_HITS=0`（公开头加了
   几颗非虚函数，没动布局）。
+
+## 这轮补测：内存和 Win10（2026-10-21 他问「测试了吗 → 测内存泄露和 win10 兼容性」）
+### 内存：量出来一个真 bug，但不是泄漏
+- 给搬出来的那颗 `PluginStore::installEntry` 加了一节离屏判据（`--storetest` 99 → **104 条**）：
+  ① 起一趟、当场看"在飞"标记挂上了（判据量的是被测代码真造的那趟，不是我自己 new 的）；
+  ② 把 parent 删掉（= 商店页在下载中途被拆）之后标记必须跟着放掉；
+  ③ 连跑 200 趟真下载（空地址，一次网都不上）：每趟都要回话、跑完不许有残留标记、工作集涨幅有上限。
+- **② 第一次跑是红的**（`got=[yes] want=[no]`）：标记只在 `done` 里放，而 `fetch` 的所有连接都挂在
+  `parent` 上 —— 页没了 `done` 永远不会回。搬进 core 之前那个计数是页面成员（跟着页一起没，不出事），
+  搬出来之后它是**进程级**的，于是那颗 dll 从此永远卡在「已经有一趟在飞」，他每次点都是同一句话。
+  这就是 [[feedback-gui-delivery-visible-and-hands-off]] 那条"点了没反应被固化成永久失灵"的形状。
+- 修法：标记的生命周期挂到下载本身 —— `new QObject(parent)` + `destroyed` 里放标记，
+  正常收尾也走同一颗（`deleteLater`）。放的时候**对号**（`QHash<文件, 趟号>`）：
+  不对号的话"上一趟的收尾"能把"下一趟刚挂上的标记"错放掉，那道闸就白装了。
+- ③ 的量法顺带被 ② 救了：修之前那 200 趟全在闸口被"已经有一趟在飞"挡回去（`回话 200 次` 是 200 次**拒绝**），
+  数字看着漂亮其实什么都没跑 —— 修完之后才是 200 趟真走完 `fetch`+`QFile`+chain。
+  实测 **工作集 25 → 26 MB**（200 趟，约 5 KB/趟，是分配器留页不是线性涨），整面 `--storetest` 9.8 秒。
+- 没测到的：真下成一趟（成功分支）的内存 —— 现在没有可用的更新产物，那条要等 v1.4.0 发出去之后拿真数据跑。
+### Win10：这轮新代码一行 Win32 都没碰，但整套东西的下限就是 Win10，而且安装包以前没写
+- `git diff` 扫过：新增的 81 行里 `windows.h`/`HWND`/`DwmGet*`/winrt **0 命中** —— 只有 QSettings/QFile/QNetwork/QObject。
+- 拿 node 解了一遍 PE 导入表（`%TEMP%\peimports.js`，54 个依赖去重）：
+  `api-ms-win-crt-*`（UCRT）、`api-ms-win-core-winrt-*`、`mfplat.dll`+`mfreadwrite.dll`（Media Foundation）、
+  `d3d11.dll`、`dwmapi.dll`。**没有 Win11 独有的导入** —— 所以不是"只能在 Win11 跑"。
+- 但依赖面里三处是 Win10 内部有档次的：
+  ① `plugins/record` 用的是 `Windows.Graphics.Capture`（WGC）——**Win10 1809 及以上**才有，老 Win10 上 F2 录屏起不来（有 `winrt::hresult_error` 兜着，不会崩，但那件功能没）；
+  ② `mfplat` 在 **Windows 10 N / KN** 版里默认没有（要装 Media Feature Pack），同一个形状；
+  ③ `SettingsDialog.cpp:341` 那颗 `DWMWA_USE_IMMERSIVE_DARK_MODE` 也是 1809+，早的版本只是标题栏不跟着变暗，返回值没当判据。
+- **安装包以前没写 `MinVersion`**：Qt 6.10 本身只支持 Win10+，而 UCRT 在 Win7/8.1 上还得单独装 ——
+  那两种系统上的表现是"装是装上了，双击没反应"（Qt6Core 起不来），最难查的一种坏。
+  `ltool.iss` 现在补了 `MinVersion=10.0`，ISCC 收了、包照打（22.22 MB）。
+  **没证的**：Win7/8.1 上真会弹那句拒装 —— 这台是 Win11（10.0.26300），没法本机证，别当已验。
+- 一档旁证（不算 Win10 实测）：CI 那台 runner 是 `windows-2022` = 内核 10.0.20348，和 Win10 同一内核系列，
+  离线判据 + 打包在那上面一直绿 ⇒ 这套东西不是"只在 Win11 内核上才起得来"。
+  真要判 Win10 桌面行为（DWM 暗色、WGC 录屏、置顶窗缩放），得有一台 Win10 机器 —— 没有的话这条就是空的。

@@ -3874,6 +3874,58 @@ int main(int argc, char* argv[])
             cfg.sync();
         }
 
+        // ---- 9. 搬出来的那颗 installEntry：一趟装完/装挂之后，"在飞"那颗标记有没有放掉 ----
+        // 为什么在这儿测：`fetch` 的所有连接都挂在 parent 上（页拆了下载就该停），
+        // 于是 **done 永远不会回**。标记要是只在 done 里放，那颗 dll 就从此永远卡在
+        // "已经有一趟在飞"，界面每次点它都是这句 —— 2026-10-21 把它从 ToolsPage 搬进 core 时
+        // 正是这个形状：以前那个计数是页面成员（跟着页一起没了），现在是进程级的，不放就是永久。
+        // 空 url 那一条不会碰网络：地址是空的，Qt 当场给一条错误 reply。
+        {
+            const QString leakFile = Platform::pluginFileName(QStringLiteral("leak"));
+            PluginStore::Entry bogus;
+            bogus.id = QStringLiteral("leak");
+            bogus.name = QStringLiteral("泄漏夹具");
+            bogus.file = leakFile;
+            bogus.sha256 = QStringLiteral("00");
+            int doneCalls = 0;
+            const auto wait = [leakFile] {
+                for (int i = 0; i < 300; ++i) {
+                    QCoreApplication::processEvents();
+                    if (!PluginStore::installInFlight(leakFile))
+                        return;
+                    QThread::msleep(10);
+                }
+            };
+            {   // ① 先证明"在飞"这件事真的被量到了：起一趟，立刻看标记
+                auto* page = new QObject;
+                PluginStore::installEntry(bogus, page, {}, [&doneCalls](const PluginStore::InstallResult&) { ++doneCalls; });
+                check("起了一趟之后这颗确实挂在「在飞」上（判据量的是被测代码真造的那趟）",
+                      PluginStore::installInFlight(leakFile) ? "yes" : "no", "yes");
+                delete page;   // 商店页在下载中途被拆掉：回调永远不会回
+                check("页没了 ⇒ 标记必须跟着放掉（不放=这颗 dll 从此永远「已经有一趟在飞」）",
+                      PluginStore::installInFlight(leakFile) ? "yes" : "no", "no");
+            }
+            {   // ② 50 趟正常失败：每趟都要回话、标记都要放掉、私有字节不许线性涨
+                const int wsBefore = Platform::workingSetMB();
+                auto* owner = new QObject;
+                for (int i = 0; i < 200; ++i) {
+                    PluginStore::installEntry(bogus, owner, {}, [&doneCalls](const PluginStore::InstallResult&) { ++doneCalls; });
+                    wait();
+                }
+                const int wsAfter = Platform::workingSetMB();
+                delete owner;
+                std::printf("INFO installEntry 连跑 200 趟：回话 %d 次 · 工作集 %d → %d MB（涨 %d）\n",
+                            doneCalls, wsBefore, wsAfter, wsAfter - wsBefore);
+                // ① 那一趟**不该**回话（页被拆了，连接跟着没了），所以这里数的就是 ② 那 50 趟
+                check("200 趟每趟都回了话（一次都不许静默：静默=标记和队列一起卡死）",
+                      QString::number(doneCalls), "200");
+                check("跑完 200 趟之后没有残留的「在飞」标记",
+                      PluginStore::installInFlight(leakFile) ? "yes" : "no", "no");
+                check("200 趟之后工作集涨得不多（≤8 MB：涨的是分配器留页，线性涨才是泄漏）",
+                      wsAfter - wsBefore <= 8 ? "yes" : "no", "yes");
+            }
+        }
+
         // 全程没碰真目录：商店判的是传进去的那个 dir
         check("没把假 dll 写进真正的插件目录",
               QFile::exists(PluginHost::pluginsDir() + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("new"))) ? "yes" : "no", "no");

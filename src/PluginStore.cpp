@@ -17,6 +17,8 @@
 #include <QNetworkProxy>
 #include <QSettings>
 #include <QSet>
+#include <QHash>
+#include <QPointer>
 #include <QUrl>
 #include <algorithm>
 #include <memory>
@@ -703,10 +705,19 @@ QString setEnabled(const QString& file, bool on, const QString& dir)
 // ---- 装一颗（从商店页里搬出来的那半条下载路）----
 namespace {
 
-QSet<QString>& inFlight()
+// 值 = 这一趟的号。放标记的时候必须对号：不然"上一趟的收尾"能把"下一趟刚挂上的标记"错放掉，
+// 那道闸就白装了（两趟照样能同时写同一个 .part）。
+QHash<QString, quint64>& inFlight()
 {
-    static QSet<QString> s;
-    return s;
+    static QHash<QString, quint64> m;
+    return m;
+}
+
+void releaseFlight(const QString& file, quint64 token)
+{
+    auto it = inFlight().find(file);
+    if (it != inFlight().end() && it.value() == token)
+        inFlight().erase(it);
 }
 
 } // namespace
@@ -729,15 +740,27 @@ void installEntry(const Entry& e, QObject* parent,
     const QString dir = PluginHost::pluginsDir();
     QDir().mkpath(dir);
     const QString part = dir + QLatin1Char('/') + e.file + QStringLiteral(".part");
-    inFlight().insert(e.file);
+    static quint64 tokenSeed = 0;
+    const quint64 token = ++tokenSeed;
+    inFlight().insert(e.file, token);
+    // 标记的生命周期 = **这趟下载的生命周期**，不是"回调有没有跑"：`fetch` 的连接全挂在 parent 上，
+    // 商店页被拆掉就是 done 永远不回。以前那个计数是页面成员（跟着页一起没，不出事），搬进 core
+    // 之后它是进程级的 —— 不跟着 parent 一起放掉，这颗 dll 就从此永远卡在「已经有一趟在飞」，
+    // 而他每次点都是同一句话（2026-10-21 --storetest 那条红的就是这个）。
+    QObject* flight = new QObject(parent);
+    QObject::connect(flight, &QObject::destroyed,
+                     [file = e.file, token](QObject*) { releaseFlight(file, token); });
 
     auto out = std::make_shared<QFile>(part);
     auto writeFailed = std::make_shared<bool>(false);
     // 每一颗只有一个收口：关掉 .part、销掉飞行标记、回话。少销一次 = 这颗以后永远"在飞"。
-    auto settle = [out, part, e, done](const InstallResult& r) {
+    QPointer<QObject> flightRef = flight;
+    auto settle = [out, part, e, done, flightRef, token](const InstallResult& r) {
         if (out->isOpen())
             out->close();
-        inFlight().remove(e.file);
+        releaseFlight(e.file, token);
+        if (flightRef)
+            flightRef->deleteLater();
         done(r);
     };
 

@@ -15,6 +15,11 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+; 2026-10-21：Qt 6.10 自己就只支持 Windows 10 及以上，而这套东西还硬依赖 UCRT
+; （`api-ms-win-crt-*`，Win7/8.1 得单独装 KB2999226）—— 以前没写这一行，Win7/8.1 上
+; **装是装得上的，双击却没反应**（Qt6Core 起不来），那是最难查的一种坏。
+; 写下来之后安装器当场拒装并说清"需要 Windows 10 或以上"。Win10 用户不受任何影响。
+MinVersion=10.0
 OutputDir=installer
 OutputBaseFilename=ltool-{#MyAppVersion}-setup
 SetupIconFile=resources\ltool.ico
