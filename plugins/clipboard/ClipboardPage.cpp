@@ -246,16 +246,18 @@ ClipboardPage::ClipboardPage(QWidget* parent)
     m_list->installEventFilter(new DeleteKeyFilter(this, m_list));
     lay->addWidget(m_list, 1);
 
-    auto* hint = new QLabel(QStringLiteral("双击一张卡 = 放回剪贴板 · 选中按 Delete = 从记录里去掉那一条"), this);
+    auto* hint = new QLabel(QStringLiteral("点一张卡 = 放回剪贴板 · 选中按 Delete = 从记录里去掉那一条"), this);
     hint->setObjectName(QStringLiteral("clipHint"));
     hint->setWordWrap(true);
     lay->addWidget(hint);
 
     connect(m_filter, &QLineEdit::textChanged, this, [this] { buildRows(); });
 
-    // 双击 = 把那条放回剪贴板。走 core 那侧同一个 restore（搜索框那一节也是它），
-    // 这里不抄第二份"写剪贴板"的逻辑。
-    connect(m_list, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* row) {
+    // **点一下 = 把那条放回剪贴板**（他 2026-10-21 点名「点击剪贴板卡片就是复制」；以前要双击）。
+    // 走 core 那侧同一个 restore（搜索框那一节也是它），这里不抄第二份"写剪贴板"的逻辑。
+    // 双击不再单独接：第一下已经复制过了，再挂一条就是两条通道干同一件事
+    //（而且连点两下会写两次剪贴板、多两行日志）。
+    connect(m_list, &QListWidget::itemClicked, this, [this](QListWidgetItem* row) {
         if (!row)
             return;
         ClipboardStore::instance().restore(row->data(Qt::UserRole).toInt());

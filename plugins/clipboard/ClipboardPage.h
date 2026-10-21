@@ -30,7 +30,7 @@ public:
     explicit ClipboardPage(QWidget* parent = nullptr);
 
     // 卡片上那三样的数据来源（除 UserRole 以外都是这页自己加的， UserRole 一直是
-    // "存储下标"，判据和双击/删除都读它，不能挪）
+    // "存储下标"，判据和点击复制/删除都读它，不能挪）
     static constexpr int TimeRole = Qt::UserRole + 1;    // 复制时间，已经格式化好的
     static constexpr int BodyRole = Qt::UserRole + 2;    // 文案（图片那条就是它的摘要）
     static constexpr int ImageRole = Qt::UserRole + 3;   // 这张卡有没有图（bool）
