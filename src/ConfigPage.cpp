@@ -201,6 +201,14 @@ ConfigPage::ConfigPage(QWidget* parent)
                                "—— 指到自己的服务器就不套镜像。");
     m_storeMirrors->setClearButtonEnabled(true);
     generalLay->addRow("插件镜像前缀：", m_storeMirrors);
+    // 默认**开**：他这句是"自动做 X"（2026-10-21「插件商店增加一个自动更新功能，一天自动更新一次」），
+    // 不是"给我个按钮我按了才做"。范围是他拍的：只换已装的，清单里新出现的插件仍要点「安装」。
+    m_autoUpdate = new QCheckBox("每天自动更新一次已装的插件（启动之后后台跑，不弹框）", general);
+    m_autoUpdate->setToolTip("程序启动十几秒后拉一次插件清单，把**已经装着**的那几颗换成清单里更新的版本，一天只跑一次。\n"
+                             "清单里新出现的插件不会自动装 —— 那仍然要你在商店里自己点。\n"
+                             "商店那一页会常驻一行说上次跑的结果（换了几颗、哪几颗没成）。换下来的那颗如果这个进程还加载着，"
+                             "文件当场已经换好，界面要下次启动才用新的。");
+    generalLay->addRow(m_autoUpdate);
     m_engine = new QComboBox(general);
     m_engine->addItem("百度", "baidu");
     m_engine->addItem("Google", "google");
@@ -444,6 +452,7 @@ void ConfigPage::load()
     m_proxy->setText(cfg.value("net/proxy").toString());
     m_storeUrl->setText(cfg.value("store/indexUrl").toString());
     m_storeMirrors->setText(cfg.value("store/mirrors").toString());
+    m_autoUpdate->setChecked(cfg.value("store/autoUpdate", true).toBool());
     const QString engine = cfg.value("web/engine", "baidu").toString();
     const int idx = m_engine->findData(engine);
     m_engine->setCurrentIndex(idx < 0 ? 0 : idx);
@@ -498,6 +507,7 @@ void ConfigPage::onSave()
     cfg.setValue("net/proxy", m_proxy->text().trimmed());
     cfg.setValue("store/indexUrl", m_storeUrl->text().trimmed());
     cfg.setValue("store/mirrors", m_storeMirrors->text().trimmed());
+    cfg.setValue("store/autoUpdate", m_autoUpdate->isChecked());
     if (newHk != oldHk)
         emit hotkeyChanged(newHk);
 

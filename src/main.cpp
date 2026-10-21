@@ -3769,6 +3769,111 @@ int main(int argc, char* argv[])
                   none == head + QStringLiteral("目录里认不出这个文件") ? "yes" : "no", "yes");
         }
 
+        // ---- 8. 每天一次的插件自动更新（2026-10-21 他点名：「一天自动更新一次，如果有新插件」）----
+        // 联网那一段在这儿测不了（这面旗标一次网都不上），所以钉的是**决策**：
+        // 谁进这一趟、今天该不该跑、跑完那句话长什么样、界面那一行说不出假话。
+        // 「新插件不许自动装」这条边界必须由判据守着 —— 它一旦只写在 fetch 的回调里就没人测得到。
+        {
+            QSettings cfg(Utils::dataDir() + QStringLiteral("/config.ini"), QSettings::IniFormat);
+            for (const QString& k : {QStringLiteral("store/autoUpdate"), QStringLiteral("store/autoUpdateDate"),
+                                     QStringLiteral("store/autoUpdateNote"), QStringLiteral("store/autoUpdateAt")})
+                cfg.remove(k);
+            cfg.sync();
+
+            check("自动更新默认是开的（他这句是「自动做 X」，不是给我个按钮我按了才做）",
+                  PluginStore::autoUpdateEnabled() ? "yes" : "no", "yes");
+            cfg.setValue(QStringLiteral("store/autoUpdate"), false);
+            cfg.sync();
+            check("配置页关掉之后谓词跟着关（不是只多写了一行没人读的配置）",
+                  PluginStore::autoUpdateEnabled() ? "yes" : "no", "no");
+            cfg.setValue(QStringLiteral("store/autoUpdate"), true);
+            cfg.sync();
+
+            const QString today = QDate::currentDate().toString(Qt::ISODate);
+            cfg.setValue(QStringLiteral("store/autoUpdateDate"), today);
+            cfg.sync();
+            check("今天已经跑过 => 这一趟不再跑第二次", PluginStore::autoUpdateDue() ? "yes" : "no", "no");
+            cfg.setValue(QStringLiteral("store/autoUpdateDate"), QStringLiteral("2020-01-01"));
+            cfg.sync();
+            check("日期是过去 => 今天这一趟该跑", PluginStore::autoUpdateDue() ? "yes" : "no", "yes");
+            cfg.remove(QStringLiteral("store/autoUpdateDate"));
+            cfg.sync();
+            check("从来没跑过也算该跑（刚装好的机器第一次启动就该补一趟）",
+                  PluginStore::autoUpdateDue() ? "yes" : "no", "yes");
+
+            auto rowOf = [](const QString& id, PluginStore::State st, bool usable = true) {
+                PluginStore::Row r;
+                r.remote.id = id;
+                r.remote.name = id;
+                r.remote.file = Platform::pluginFileName(id);
+                r.state = st;
+                r.entryUsable = usable;
+                return r;
+            };
+            const QVector<PluginStore::Row> all {
+                rowOf(QStringLiteral("upd1"), PluginStore::State::Update),
+                rowOf(QStringLiteral("brandnew"), PluginStore::State::Missing),  // 清单里有、本机没装 = 新插件
+                rowOf(QStringLiteral("same"), PluginStore::State::Installed),
+                rowOf(QStringLiteral("off"), PluginStore::State::Disabled),      // 他亲手禁用的，不许顺手启用回来
+                rowOf(QStringLiteral("ours"), PluginStore::State::Different),    // 哈希不同但版本不比本机旧
+                rowOf(QStringLiteral("upd2"), PluginStore::State::Update, false) // 有新版但 Api 对不上 = 装不了
+            };
+            QStringList picked;
+            for (const PluginStore::Entry& e : PluginStore::autoUpdateTargets(all))
+                picked << e.id;
+            check("这一趟只换「已装、而清单那条更新、而且这台机器装得了」的那一档",
+                  picked.join(QLatin1Char(',')), QStringLiteral("upd1"));
+            {
+                QStringList onlyNew;
+                for (const PluginStore::Entry& e : PluginStore::autoUpdateTargets(
+                         { rowOf(QStringLiteral("brandnew"), PluginStore::State::Missing),
+                           rowOf(QStringLiteral("api4"), PluginStore::State::ApiMismatch) }))
+                    onlyNew << e.id;
+                check("满墙的新插件也不会被自动装（他拍的是「只更新已装的」）",
+                      onlyNew.isEmpty() ? "yes" : "no", "yes");
+            }
+
+            const QStringList two { QStringLiteral("甲"), QStringLiteral("乙") };
+            const QString okNote = PluginStore::autoUpdateSummary(two, {}, QStringLiteral("清单 19 条"));
+            check("成了两颗：那句话点名几颗、是哪几颗",
+                  okNote.contains(QStringLiteral("自动更新了 2 颗")) && okNote.contains(QStringLiteral("甲、乙"))
+                      ? "yes" : "no", "yes");
+            const QString mix = PluginStore::autoUpdateSummary(
+                { QStringLiteral("甲") }, { QStringLiteral("乙 没下完：超时") }, QStringLiteral("清单 19 条"));
+            check("有没成的：点名是哪一颗、为什么没成（不许只报「更新完成」）",
+                  mix.contains(QStringLiteral("1 颗没成")) && mix.contains(QStringLiteral("乙 没下完：超时"))
+                      ? "yes" : "no", "yes");
+            const QString idle = PluginStore::autoUpdateSummary({}, {}, QStringLiteral("清单 19 条"));
+            check("一颗都没动：说「没有要换的」，不许写成「更新完成」（那是说他动过文件）",
+                  idle.contains(QStringLiteral("没有要换的")) ? "yes" : "no", "yes");
+            check("真换了东西的那句才说「已落盘」；一颗都没动的那句不许说（那是假话）",
+                  okNote.contains(QStringLiteral("已落盘")) && mix.contains(QStringLiteral("已落盘"))
+                      && !idle.contains(QStringLiteral("已落盘")) ? "yes" : "no", "yes");
+            check("三种说法都把「清单是从哪条拿到的」带出来（走的是镜像还是直连，他要能查）",
+                  okNote.contains(QStringLiteral("清单 19 条")) && mix.contains(QStringLiteral("清单 19 条"))
+                      && idle.contains(QStringLiteral("清单 19 条")) ? "yes" : "no", "yes");
+
+            check("没跑过时商店那一行说「今天这一趟还没跑」，不许留一行空白",
+                  ToolsPage::autoUpdateLine().contains(QStringLiteral("还没跑")) ? "yes" : "no", "yes");
+            cfg.setValue(QStringLiteral("store/autoUpdateNote"),
+                         QStringLiteral("自动更新了 1 颗：剪贴板（清单 19 条 · 已落盘，下次启动用新的）"));
+            cfg.setValue(QStringLiteral("store/autoUpdateAt"),
+                         QDateTime::currentDateTime().toString(Qt::ISODate));
+            cfg.sync();
+            check("写过结果之后那一行把结果带出来（而且带时间，不是只说「更新过」）",
+                  ToolsPage::autoUpdateLine().contains(QStringLiteral("自动更新了 1 颗"))
+                      && PluginStore::autoUpdateNote().contains(QStringLiteral("-")) ? "yes" : "no", "yes");
+            cfg.setValue(QStringLiteral("store/autoUpdate"), false);
+            cfg.sync();
+            check("关掉开关：那一行要说「没开」并指路配置页（关着的样子不能像坏了）",
+                  ToolsPage::autoUpdateLine().contains(QStringLiteral("没开")) ? "yes" : "no", "yes");
+            // 收尾：清掉这一节留下的状态。留着的话，下次有人在这后面加判据会读到"上一查询留下的值"。
+            for (const QString& k : {QStringLiteral("store/autoUpdate"), QStringLiteral("store/autoUpdateDate"),
+                                     QStringLiteral("store/autoUpdateNote"), QStringLiteral("store/autoUpdateAt")})
+                cfg.remove(k);
+            cfg.sync();
+        }
+
         // 全程没碰真目录：商店判的是传进去的那个 dir
         check("没把假 dll 写进真正的插件目录",
               QFile::exists(PluginHost::pluginsDir() + QLatin1Char('/') + Platform::pluginFileName(QStringLiteral("new"))) ? "yes" : "no", "no");
@@ -4195,6 +4300,46 @@ int main(int argc, char* argv[])
     // 要把整个 Qt + 索引的页换回来，实测就是"唤出很卡"。只在截图那种一次性大块内存后回收。
     // 启动 1.2 秒后把启动器窗口预热一次（见 SearchWindow::warmUp）
     QTimer::singleShot(1200, &win, &SearchWindow::warmUp);
+    // 每天一次的插件自动更新（他 2026-10-21 点名：「插件商店增加一个自动更新功能，一天自动更新一次」）。
+    // 延迟十几秒才跑：冷启动那阵子在扫应用 + 预热窗口，别让一条慢网络把"呼出很卡"带上；
+    // 带 '--' 旗标的自测进程一律不跑（那会变成边测边往插件目录写 dll）。
+    if (!inLoopSelftest) {
+        QTimer::singleShot(15000, &app, [] {
+            auto sw = std::make_shared<QElapsedTimer>();
+            sw->start();
+            PluginStore::runDailyUpdate(nullptr, [sw](const QString& note) {
+                if (!note.isEmpty())   // 空串 = 今天没到点 / 没开：那种"心跳"不配占一行日志
+                    Utils::log(QStringLiteral("store: 自动更新这一趟 %1 ms：%2").arg(sw->elapsed()).arg(note));
+            });
+        });
+    }
+    // --autoupdatenow：立刻跑那一趟（不等 15 秒）。要联网、会**真往插件目录写 dll**，
+    // 所以不进 CI，也不该在别的自测里顺带跑。它存在的理由：那条链（拉清单 → 挑 → 一颗一颗装 →
+    // 写那句 note）离屏判据一段都测不到，只有真跑一遍才知道通不通。
+    // 先把"今天跑过没跑过"那颗闸推开（删掉日期），其余走的是同一颗 runDailyUpdate —— 不另写一条路。
+    if (args.contains("--autoupdatenow")) {
+        QSettings cfg(Utils::dataDir() + QStringLiteral("/config.ini"), QSettings::IniFormat);
+        cfg.remove(QStringLiteral("store/autoUpdateDate"));
+        cfg.sync();
+        QTimer::singleShot(120, &app, [&app] {
+            auto sw = std::make_shared<QElapsedTimer>();
+            sw->start();
+            PluginStore::runDailyUpdate(nullptr, [&app, sw](const QString& note) {
+                std::printf("autoupdatenow: %s · 这一趟 %lld ms\n",
+                            note.isEmpty() ? QStringLiteral("(没跑：开关关着)").toUtf8().constData()
+                                           : note.toUtf8().constData(),
+                            static_cast<long long>(sw->elapsed()));
+                std::fflush(stdout);
+                app.quit();
+            });
+        });
+        QTimer::singleShot(180000, &app, [&app] {
+            std::printf("autoupdatenow: TIMEOUT（网络那条一直没回话）\n");
+            std::fflush(stdout);
+            app.quit();
+        });
+    }
+
     if (showOnStart)
         QTimer::singleShot(200, &win, &SearchWindow::showLauncher);
     if (openSettingsOnStart)
@@ -4669,6 +4814,27 @@ int main(int argc, char* argv[])
                       QStringLiteral("HTTP %1 · 最终 %2 · 读到 %3")
                           .arg(code).arg(fin.left(64),
                                          gotVer.isEmpty() ? QStringLiteral("(没认出)") : gotVer));
+            }
+
+            // 自动更新那一趟「会挑谁」，拿真清单 + 真目录量一遍（**只挑不装**，一颗都不写盘）。
+            // 沙箱那条钉的是谓词逻辑，这一条钉的是它对真实数据也成立：挑出来的每一颗，
+            // 本机目录里必须已经有那颗 dll —— 没有就说明"新插件被自动装上了"，那正是他否掉的那一档。
+            {
+                QStringList aProblems;
+                const QVector<PluginStore::Entry> listed =
+                    PluginStore::parseIndex(PluginStore::loadCachedIndex(), &aProblems);
+                const QString dir = PluginHost::pluginsDir();
+                const QVector<PluginStore::Entry> targets = PluginStore::autoUpdateTargets(PluginStore::rows(listed));
+                QStringList strays;
+                for (const PluginStore::Entry& e : targets)
+                    if (!QFileInfo::exists(dir + QLatin1Char('/') + e.file))
+                        strays << e.id;
+                check("拿真清单量：自动更新挑出来的每一颗本机都已经有 dll（没被顺手装新插件）",
+                      strays.isEmpty(),
+                      strays.isEmpty()
+                          ? QStringLiteral("清单 %1 条 · 挑了 %2 颗（%2=0 时这条在 0 个对象上，不算量到）")
+                                .arg(listed.size()).arg(targets.size())
+                          : QStringLiteral("越界：%1").arg(strays.join(QStringLiteral(","))));
             }
 
             page.hide();

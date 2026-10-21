@@ -700,4 +700,236 @@ QString setEnabled(const QString& file, bool on, const QString& dir)
     return Utils::renameStaged(live, off, &err) ? QString() : err;
 }
 
+// ---- 装一颗（从商店页里搬出来的那半条下载路）----
+namespace {
+
+QSet<QString>& inFlight()
+{
+    static QSet<QString> s;
+    return s;
+}
+
+} // namespace
+
+bool installInFlight(const QString& file)
+{
+    return inFlight().contains(file);
+}
+
+void installEntry(const Entry& e, QObject* parent,
+                  const std::function<void(qint64, qint64)>& onProgress,
+                  const std::function<void(const InstallResult&)>& done)
+{
+    // 两趟写同一个 .part 必坏（而且第二趟的哈希一定对不上，看起来像"仓库被人动过"）。
+    // 手动那路和自动那路确实可能同时点中同一颗，所以这道闸在这儿，不在调用方。
+    if (inFlight().contains(e.file)) {
+        done({false, QStringLiteral("这一颗已经有一趟在飞了，这趟不重复起"), QString()});
+        return;
+    }
+    const QString dir = PluginHost::pluginsDir();
+    QDir().mkpath(dir);
+    const QString part = dir + QLatin1Char('/') + e.file + QStringLiteral(".part");
+    inFlight().insert(e.file);
+
+    auto out = std::make_shared<QFile>(part);
+    auto writeFailed = std::make_shared<bool>(false);
+    // 每一颗只有一个收口：关掉 .part、销掉飞行标记、回话。少销一次 = 这颗以后永远"在飞"。
+    auto settle = [out, part, e, done](const InstallResult& r) {
+        if (out->isOpen())
+            out->close();
+        inFlight().remove(e.file);
+        done(r);
+    };
+
+    fetch(e.url, parent,
+          [out, writeFailed] {
+              // 每次尝试之前重开一遍 .part：上一条可能只写下了一半，续着写必坏
+              if (out->isOpen())
+                  out->close();
+              *writeFailed = false;
+              if (!out->open(QIODevice::WriteOnly | QIODevice::Truncate))
+                  *writeFailed = true;
+          },
+          [out, writeFailed](const QByteArray& chunk) {
+              if (*writeFailed)
+                  return false;
+              if (out->write(chunk) != chunk.size()) {
+                  *writeFailed = true;
+                  return false;
+              }
+              return true;
+          },
+          onProgress,
+          [settle, out, part, writeFailed, e](const Fetched& got) {
+              if (out->isOpen())
+                  out->close();          // finishDownload 要读这个文件，句柄必须先放掉
+              if (!got.ok || *writeFailed) {
+                  QFile::remove(part);
+                  settle({false,
+                          got.err.isEmpty() ? QStringLiteral("没下完：本地写不进 .part")
+                                            : QStringLiteral("没下完：%1").arg(got.err),
+                          QString()});
+                  return;
+              }
+              const QString err = finishDownload(part, e);
+              if (!err.isEmpty()) {
+                  settle({false, err, got.via});
+                  return;
+              }
+              settle({true, QString(), got.via});
+          });
+}
+
+// ---- 每天一次的自动更新（2026-10-21 他点名：「一天自动更新一次，如果有新插件」）----
+namespace {
+
+QSettings& autoCfg()
+{
+    static QSettings cfg(Utils::dataDir() + QStringLiteral("/config.ini"), QSettings::IniFormat);
+    return cfg;
+}
+
+// 这一趟自己的状态：一次只跑一趟（启动那一下排的）。**不**和商店页那批共用队列 ——
+// 那一批挂在 ToolsPage 上，页拆了队列就该跟着没；这一趟没有页。
+QVector<Entry> g_autoQueue;
+QStringList g_autoOk;
+QStringList g_autoBad;
+QString g_autoSrc;
+std::function<void(const QString&)> g_autoFinish;
+
+void writeAutoNote(const QString& note)
+{
+    autoCfg().setValue(QStringLiteral("store/autoUpdateNote"), note);
+    autoCfg().setValue(QStringLiteral("store/autoUpdateAt"),
+                       QDateTime::currentDateTime().toString(Qt::ISODate));
+}
+
+void autoStep(QObject* owner)
+{
+    if (g_autoQueue.isEmpty()) {
+        const QString note = autoUpdateSummary(g_autoOk, g_autoBad, g_autoSrc);
+        writeAutoNote(note);
+        Utils::log(QStringLiteral("autoupdate: %1").arg(note));
+        if (g_autoFinish)
+            g_autoFinish(note);
+        g_autoFinish = nullptr;
+        return;
+    }
+    const Entry e = g_autoQueue.takeFirst();
+    installEntry(e, owner, {}, [owner, e](const InstallResult& r) {
+        const QString who = e.name.isEmpty() ? e.file : e.name;
+        if (r.ok)
+            g_autoOk << who;
+        else
+            g_autoBad << QStringLiteral("%1 %2").arg(who, r.err);
+        autoStep(owner);
+    });
+}
+
+} // namespace
+
+bool autoUpdateEnabled()
+{
+    // 默认**开**：他这句是"自动做 X"，不是"给我个按钮我按了才做"。
+    return autoCfg().value(QStringLiteral("store/autoUpdate"), true).toBool();
+}
+
+bool autoUpdateDue()
+{
+    return autoCfg().value(QStringLiteral("store/autoUpdateDate")).toString().trimmed()
+        != QDate::currentDate().toString(Qt::ISODate);
+}
+
+QVector<Entry> autoUpdateTargets(const QVector<Row>& all)
+{
+    // 只认 State::Update —— 已装的、清单版本比本机新的那一档。
+    // Missing（清单里有、本机没装）**故意不在这里**：那是"新插件"，他拍的是仍要自己点。
+    // Different（哈希不同但版本不比本机新）也不在：那多半是本机手工同步的更新的一份，
+    // 自动拿商店那份盖上去就是把他的东西换掉。
+    QVector<Entry> out;
+    for (const Row& r : all)
+        if (r.state == State::Update && r.entryUsable)
+            out.append(r.remote);
+    return out;
+}
+
+QString autoUpdateSummary(const QStringList& ok, const QStringList& bad, const QString& src)
+{
+    QString s;
+    if (!ok.isEmpty())
+        s = QStringLiteral("自动更新了 %1 颗：%2").arg(ok.size()).arg(ok.join(QStringLiteral("、")));
+    else if (bad.isEmpty())
+        s = QStringLiteral("没有要换的");
+    else
+        s = QStringLiteral("一颗都没换成");
+    if (!bad.isEmpty())
+        s += QStringLiteral("%1%2 颗没成：%3").arg(ok.isEmpty() ? QString() : QStringLiteral(" · "))
+                 .arg(bad.size()).arg(bad.join(QStringLiteral("；")));
+    // 「已落盘，下次启动用新的」这句**只在真换了东西的时候说**：一颗都没动就说"已落盘"，
+    // 是拿一句像模像样的话盖住"其实什么都没发生"（第一版三种说法都带着它，判据里那条
+    // "没动过文件的那句不许说已落盘"就是为这个加的）。
+    if (!ok.isEmpty())
+        s += QStringLiteral("（%1 · 已落盘，下次启动用新的）").arg(src);
+    else
+        s += QStringLiteral("（%1）").arg(src);
+    return s;
+}
+
+QString autoUpdateNote()
+{
+    const QString what = autoCfg().value(QStringLiteral("store/autoUpdateNote")).toString();
+    if (what.isEmpty())
+        return QString();
+    const QDateTime when = QDateTime::fromString(
+        autoCfg().value(QStringLiteral("store/autoUpdateAt")).toString(), Qt::ISODate);
+    return when.isValid() ? QStringLiteral("%1 · %2").arg(when.toString(QStringLiteral("MM-dd hh:mm")), what)
+                          : what;
+}
+
+void runDailyUpdate(QObject* parent, const std::function<void(const QString&)>& onDone)
+{
+    static QObject owner;                 // 这趟没有窗口可挂：进程级，和 app 同寿
+    QObject* const host = parent ? parent : &owner;
+    // 回话里的空串 = **这一趟根本没跑**（没开，或今天已经跑过）。界面那行读的是配置里那句
+    // note（autoUpdateNote），不是这个回调 —— 所以这里不该把上次的 note 再报一遍，
+    // 否则每次启动都会多一条"自动更新花了 0 ms"的假心跳。
+    if (!autoUpdateEnabled() || !autoUpdateDue()) {
+        onDone(QString());
+        return;
+    }
+    // 先记今天再动手：跑挂了也不至于每次启动都刷一遍网络（那的表现是"开机就卡"）。
+    autoCfg().setValue(QStringLiteral("store/autoUpdateDate"),
+                       QDate::currentDate().toString(Qt::ISODate));
+
+    fetch(indexUrl(), host, {}, {}, {},
+          [host, onDone](const Fetched& got) {
+              QStringList problems;
+              QVector<Entry> entries;
+              QString src;
+              if (got.ok) {
+                  saveCachedIndex(got.body);
+                  entries = parseIndex(got.body, &problems);
+                  src = QStringLiteral("清单 %1 条，走的是 %2").arg(entries.size()).arg(got.via);
+              } else if (const QByteArray cached = loadCachedIndex(); !cached.isEmpty()) {
+                  entries = parseIndex(cached, &problems);
+                  src = QStringLiteral("网络没成（%1），拿本地缓存那 %2 条清单试").arg(got.err)
+                            .arg(entries.size());
+              } else {
+                  const QString note = QStringLiteral("今天没跑成：%1，本地也没有缓存清单").arg(got.err);
+                  writeAutoNote(note);
+                  Utils::log(QStringLiteral("autoupdate: %1").arg(note));
+                  onDone(note);
+                  return;
+              }
+              g_autoQueue = autoUpdateTargets(rows(entries));
+              g_autoOk.clear();
+              g_autoBad.clear();
+              g_autoSrc = src;
+              g_autoFinish = onDone;
+              Utils::log(QStringLiteral("autoupdate: 开始（%1 条清单里挑出 %2 颗要换）")
+                             .arg(entries.size()).arg(g_autoQueue.size()));
+              autoStep(host);
+          });
+}
+
 } // namespace PluginStore

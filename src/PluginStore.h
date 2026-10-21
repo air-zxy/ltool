@@ -130,6 +130,44 @@ QString sha256Of(const QString& path);   // 读不出来返回空串
 // 返回空串 = 成功。
 QString finishDownload(const QString& partPath, const Entry& e, const QString& dir = QString());
 
+// ---- 装一颗（2026-10-21 从商店页里搬进来的）----
+// 「下到 .part → 验哈希和字节 → 落地」这一段原来长在 `ToolsPage::runInstall` 里，和卡片上的
+// 按钮/状态行缠在一起。自动更新那一趟没有界面（启动后十几秒在后台跑），要么复制一遍那条
+// 下载路（= 两条路，早晚说法不一），要么搬出来。搬出来了：界面那侧只剩"把进度写成字"。
+struct InstallResult {
+    bool ok = false;
+    QString err;    // 空 = 成了；不空就是给人看的那句话（原样上界面，别自己再拼）
+    QString via;    // 成功那条的名字（镜像 / 代理 / 直连）
+};
+
+// parent 只用来挂那条 QNetworkReply（parent 没了回复一起断），不要求是窗口。
+// onProgress 可能一次都不回调（服务器没给 Content-Length 时）；done 一定会回。
+void installEntry(const Entry& e, QObject* parent,
+                  const std::function<void(qint64, qint64)>& onProgress,
+                  const std::function<void(const InstallResult&)>& done);
+
+// 同一颗 dll 此刻是不是已经有一趟在飞：是就别再起第二趟（两趟写同一个 .part 必坏，
+// 而手动那路和自动那路确实可能同时点中同一颗）。
+bool installInFlight(const QString& file);
+
+// ---- 每天一次的自动更新（2026-10-21 他点名：「一天自动更新一次，如果有新插件」）----
+// 范围是他拍的：**只换已装的那几颗**，清单里新出现的插件仍要他自己点「安装」
+// —— 往机器上塞没选过的 dll 是另一件事。
+bool autoUpdateEnabled();     // 配置 store/autoUpdate，**默认开**（他这句是"自动做 X"）
+bool autoUpdateDue();         // 今天还没跑过（跑过就把 store/autoUpdateDate 写成今天）
+// 挑出这一趟要换的：只认 State::Update。抽成纯函数是为了「新插件不许自动装」这条
+// 边界能在离屏判据里钉住 —— 它一旦写进联网那段就没人测得到了。
+QVector<Entry> autoUpdateTargets(const QVector<Row>& all);
+QString autoUpdateNote();     // 上次跑完留给界面看的那句话；没跑过是空串
+// 那句 note 怎么拼（纯函数，离屏钉得住）：成了几颗、哪几颗没成、清单是从哪条拿到的。
+// 「下次启动用新的」是实话的一半：文件当场就换掉了，但这个进程还加载着老的那颗。
+QString autoUpdateSummary(const QStringList& ok, const QStringList& bad, const QString& src);
+// 跑一趟：拉清单（拉不到就用本地缓存那份）→ 挑 → 一颗一颗装 → 把结果写成 note。
+// 全程不弹任何东西、不 reload 插件（换下来的那颗可能正被这个进程加载着，
+// 界面只会说"下次启动生效"）。onDone 一定会回：**空串 = 这一趟没跑**（没开，或今天已经跑过），
+// 非空就是那句 note。商店页那一行不靠这个回调，它直接读 `autoUpdateNote()`。
+void runDailyUpdate(QObject* parent, const std::function<void(const QString&)>& onDone);
+
 // 启用/禁用一个已装的插件 = 在 `<file>` 和 `<file>.off` 之间改名。返回空串 = 做完了
 // （本来就在那个状态也算做完了，note 里说清）。没有"当场卸掉"这条路 —— Qt 插件 unload
 // 之后里面活着的控件就是悬空指针，所以界面必须同时说"下次启动生效"。

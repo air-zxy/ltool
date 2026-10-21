@@ -44,6 +44,10 @@ public:
     // 公开是为了离屏判据能跑同一条（无窗口平台上那个模态确认框会立刻返回「不」）。
     void applyUninstall(const QString& file, const QString& name, QLabel* state);
     void refreshStore();     // 联网拉清单：判哈希/落盘/改名都在 PluginStore 那几个纯函数里
+    // 商店页那一行"上次自动更新说了什么"（2026-10-21 加自动更新时立的）。
+    // 抽出来是因为它是**常驻**说明，不是某次动作的临时状态：卡片墙重排、拉清单失败都得让它还在。
+    // static：判据要能不造一整扇商店页就问这一行说了什么（它不读任何成员）。
+    static QString autoUpdateLine();
 
 private:
     QVector<PluginStore::Row> shopRows() const;   // 这一面卡片的数据，唯一一条路
@@ -69,6 +73,7 @@ protected:
     void keyPressEvent(QKeyEvent* e) override;   // Esc = 从点开的那张页回到卡片墙
 
     QLabel* m_storeStatus = nullptr;
+    QLabel* m_autoNote = nullptr;   // 「上次自动更新说了什么」那一行（常驻）
     bool m_storeBusy = false;
     QVector<Queued> m_queue;       // 点下去但还没开始的那些
     int m_installing = 0;    // 在飞的 dll 颗数；归零才 rebuildGrid（一颗装完就拆墙 = 把还在下的卡片控件删掉）

@@ -62,6 +62,7 @@ private:
     QCheckBox* m_favorites = nullptr;
     QCheckBox* m_shellMenu = nullptr;
     QCheckBox* m_archiveProgress = nullptr;
+    QCheckBox* m_autoUpdate = nullptr;
     QLabel* m_shellInfo = nullptr;
     QLabel* m_imePunctInfo = nullptr;
 };
