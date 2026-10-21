@@ -1600,3 +1600,26 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 两边都验过：
 - 真区间 `v1.3.3..HEAD` 180 行 → 命中 0（占位符那条不再红）；
 - 拿一份临时文件塞三行（合法路径 / 占位符 / 真用户名 `zzrealname`）→ 只点名为 1 条、退出码 1。
+
+## v1.4.0 发出去了（2026-10-22 01:2x，run 39641826096 = success）
+
+- Release id 419844618、**23 个资产**：安装包 22,572,344 B + 19 颗 dll + `ltool-sdk-1.4.0.zip` +
+  `plugins-index.json` + `sha256.txt`。tag `v1.4.0` 是 annotated，指向 `bf53b66`（脱敏那把图案统一之后那一笔）。
+- **对着公开那一面复验**（`python tools/postrelease_check.py`，退出码 0）：
+  公开说明 21,792 字里带家目录的行 **0**；商店那条链 `releases/download/v1.4.0/plugins-index.json`
+  **HTTP 200、19 条**（装 1.4.0 之后那条一直 404 的链这次随发版活了）；
+  `sha256.txt` 里安装包那一行 == 资产 API 的 digest（`1895560fd733…`）。
+- tag 走过一次弯路：第一次推的 `v1.4.0` 指在 `e6128e8`（带的是那颗写宽的判据），CI 在我自己那道闸上红了、
+  Release 没建成（当时查是 404）。按你拍的"把 tag 移到修复那一笔"：删远端那个同名 tag → 在 `bf53b66` 重打 → 推。
+  删的时候没有 Release 挂在它下面，所以没有"删 tag 连带删掉发布物"那种副作用。
+- `--autoupdatenow` **这一轮没有再跑**：跑了就会把装着的 19 颗换成商店那批（MSVC 每次字节不同），
+  而"要不要以商店那份为准"（A/B/C）你还没拍。README 那一行跟着改成了这个状态。
+- 网络工具那条坑（值得记）：这台机的 msys python 走 `urllib` 拿 GitHub 是
+  `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`（没有可信 CA 那份），
+  而 curl 自带 —— 所以 `postrelease_check.py` 里对外一律 `subprocess curl` + 重试，
+  一次抖动不算"那条链没活"。
+- 插件仓库同步（另一半）：`tools/sync_plugins.py` 报 **新放 36 / 改动 36 / 已一致 34**，
+  6 颗整个缺的（clipboard、downloads、grid、linuxdo、software、tasks）连各自那份 `CMakeLists.txt` 一起补上，
+  类名是从主仓库 `CMakeLists.txt` 里现问的（`ltool_add_tool(<id> <Class> …)`，不第二处抄）；
+  `sdk/` 用主仓库重新铺：**26 个头 + 4 个 onnxruntime 头 + ltoolcore.lib（API 4，1.4.0）**。
+  推之前要先在本地把 19 颗独立编一遍 —— 那边没有 PCH，历史上正是这条路才暴露"少 include"。
