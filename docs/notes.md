@@ -1547,3 +1547,19 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
   （日志两条 `swept 4 orphan`，时间正好在 `-Apply` 之后）。所以脚本现在自己把这个归类打出来
   （`of those, referenced by the history now: 0 ; not referenced: 4`）—— 不说清的话，下一轮看
   "还缺 4 个"就像"没搬干净"。程序那侧的 `backfillFromLegacy` 从一开始就只补被引用的，不会来回拉锯。
+
+### 这一次 runner 上每条旗标量到几个（和这台机器不一样，别说成一个数）
+
+`python build/verify/ci_log_pathcfg.py <日志 zip>` 数的（run 39636325299 = `bbd6265`，终态 success）：
+
+    --plugintest 250 · --storetest 104 · --cliptest 88(+1 跳) · --pathcfg 40 · --startuptest 54(+1 跳)
+    --cfgcheck 28 · --username 36 · --seamtest 38 · --pinyin 60 · --appdirs 12 · --about 27
+    --rowmenu 9 · --mfttest 10(+1 跳) · --diskbranch 4 · --storeexit 14 · --smoke 0 条判据（它是诊断，CI 那道闸判的是"有输出且退出码 0"）
+
+- `--pathcfg` 在 runner 上是 **40**，这台机器是 37 过 + 1 跳 —— 差的正是那三条（冷启动子进程 + 两条交接）：
+  本机有常驻实例，那种子进程会把启动器叫到屏幕上所以点名跳过；runner 上它们真跑了，
+  日志里那行 `INFO 冷启动子进程 verdict=alive ms=6005` 就是它执行过的凭据。
+- `--pinyin` 在这台机器 68、runner 60：少的 8 条**按环境点名跳过**（`INFO 跳过 gg 那三条：这台机器的 webs.json 里没配 gg`
+  · `跳过 An 那两条：索引里没有 Antigravity` · `没有 QQ` · `没有中文名应用` · `ChatGPT 那条` 等），
+  而"跳过"这一形状在 pinyin 那一节是 `INFO` 开头不是 `SKIP` 开头 —— 只 grep `^SKIP` 会把"少了几条"读成"莫名少了"。
+  数判据的工具自己先把这点补上了（`ok` 开头的 --cfgcheck、`INFO 跳过` 都归类打出来）。
