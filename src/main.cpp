@@ -21,6 +21,7 @@
 #include <QPixmap>
 #include <algorithm>
 #include <QPlainTextEdit>
+#include <QTreeWidget>
 #include "ltool-plugin.h"
 #include "DiskScan.h"
 #include "FileIndexer.h"
@@ -1005,6 +1006,29 @@ int main(int argc, char* argv[])
             auto* edit = jp->findChild<QPlainTextEdit*>();
             check("那段文本真的进了工具", edit && edit->toPlainText().contains('1')
                   ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
+            // ---- 左右各是谁（他 2026-10-21：「左边输入，右边看效果」）----
+            // 判的是**真实控件的几何**，不是"splitter 第 0 个是谁"那种自己造的断言。
+            if (edit) {
+                // 量几何之前必须真 show 一次：隐藏着的控件不跑布局，量出来是 minimumSizeHint
+                //（第一版就量到"输入框 48px 宽、树 48px 宽"——那不是布局，那是没布局）。
+                jp->show();
+                jp->resize(900, 600);
+                QCoreApplication::processEvents();
+                auto* tree = jp->findChild<QTreeWidget*>();
+                const QRect e = edit->rect().translated(edit->mapTo(jp, QPoint(0, 0)));
+                const QRect t = tree ? tree->rect().translated(tree->mapTo(jp, QPoint(0, 0))) : QRect();
+                std::printf("INFO json 页布局：页宽=%d 输入框 x=%d 宽=%d · 结果树 x=%d 宽=%d\n",
+                            jp->width(), e.x(), e.width(), t.x(), t.width());
+                check("输入框在左边（x 比结果树小）", tree && e.x() < t.x()
+                      ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
+                check("输入框可编辑（左半边不是只读展示区）",
+                      edit->isReadOnly() ? QStringLiteral("no") : QStringLiteral("yes"), QStringLiteral("yes"));
+                // 阈值按**页宽**算，不写死像素：离屏那个虚拟屏比真机窄，写死 300 会先被环境夹掉
+                check("两边都真的分到了宽度（不是挤成一条）", tree
+                      && e.width() >= jp->width() / 4 && t.width() >= jp->width() / 4
+                      ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
+                jp->hide();
+            }
         }
         has("没实现 feedText 的工具老实返回 false（不假装收下了）",
             !PluginHost::feed(QStringLiteral("disk"), QStringLiteral("随便一段文本")));
