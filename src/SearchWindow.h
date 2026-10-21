@@ -49,7 +49,10 @@ public:
     explicit SearchWindow(QWidget* parent = nullptr);
 
     void toggleVisible();
-    void showLauncher();
+    // why = 是谁要求的这一次呼出。三条路都能把搜索框弹出来（热键、托盘左键单击、
+    // 第二个实例转交过来的 "show"），而**只有热键那条以前留日志** —— 于是"它怎么自己出来了"
+    // 在现场查不到。现在每一条都必须报上名字（2026-10-21 他问的就是这个）。
+    void showLauncher(const char* why);
     void warmUp();   // 启动后先映射+绘制一遍，别把这份开销留给第一次按热键
     void rescan() { startScan(false, true); }        // 手动：强制全量重建
     void startInitialScan() { startScan(false, false); } // 启动：增量优先

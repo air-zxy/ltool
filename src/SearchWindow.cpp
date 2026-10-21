@@ -448,9 +448,10 @@ void SearchWindow::openTool(const QString& id, const QString& text)
 
 // ---------- 显示/隐藏 ----------
 
-void SearchWindow::showLauncher()
+void SearchWindow::showLauncher(const char* why)
 {
     // 设置页现在是非模态的，热键随时能把搜索框弹出来（以前模态时弹出来也打不了字）
+    Utils::log(QStringLiteral("show: 呼出（要求者=%1）").arg(QString::fromUtf8(why)));
     m_showLatency.start();
     m_paintLogged = false;
     const int wsBefore = Platform::workingSetMB();
@@ -517,11 +518,20 @@ void SearchWindow::warmUp()
     show();
     repaint();
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    // 这一行量的必须是**停在预热位置那一刻**的矩形。以前它排在 `move(saved)` 之后才读 x()/y()，
+    // 读到的是恢复完的落点（本机日志一直打 (0,0 660x100) 就是这个），
+    // 而"有没有被 Qt 夹回屏幕里"这件事当场就测不到 —— 被夹回来的话，那一下就是"搜索框自己闪出来"。
+    const QRect parked = geometry();
+    bool onScreen = false;
+    for (QScreen* sc : QGuiApplication::screens())
+        if (sc->geometry().intersects(parked)) { onScreen = true; break; }
     hide();
     setWindowOpacity(1.0);
     move(saved);
-    Utils::log(QStringLiteral("warmup: 预热时窗口矩形=(%1,%2 %3x%4)（应在所有显示器之外）")
-                   .arg(x()).arg(y()).arg(width()).arg(height()));
+    Utils::log(QStringLiteral("warmup: 预热时窗口矩形=(%1,%2 %3x%4) · %5")
+                   .arg(parked.x()).arg(parked.y()).arg(parked.width()).arg(parked.height())
+                   .arg(onScreen ? QStringLiteral("还压在某个显示器里（只靠透明度 0 遮着）")
+                                 : QStringLiteral("在所有显示器之外")));
 }
 
 void SearchWindow::toggleVisible()
@@ -548,7 +558,7 @@ void SearchWindow::toggleVisible()
     if (onTop)
         hide();
     else
-        showLauncher();
+        showLauncher("热键");
 }
 
 void SearchWindow::updateHeight()
