@@ -6,7 +6,6 @@
 """
 import importlib.util
 import os
-import re
 import sys
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -14,7 +13,12 @@ spec = importlib.util.spec_from_file_location('mrn', os.path.join(here, 'make_re
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
-HOME_RE = re.compile(r'[A-Za-z]:[\\/]{1,2}[Uu]sers[\\/]{1,2}\S+|(?:/[Uu]sers|/home)/[A-Za-z0-9._-]+')
+# 判据用的图案**就是脱敏那一颗用的图案**（从 make_release_notes 里拿，不第二份）：
+# 第一版这里自己写了一条更宽的（`C:\Users\` 后面接任意非空白），于是它连
+# `C:\Users\<你的名字>\AppData` 这种**占位符**都判红 —— 一条真历史里合法的说明文字
+# 把闸踩红了，而那正是"脱敏没处理、但也不该处理"的形状。
+# 闸要判的是"有一个真用户名活着出来了"，不是"出现了 C:\Users 这几个字"。
+HOME_RE = m.USER_HOME_RE
 
 if len(sys.argv) >= 3 and sys.argv[1] == '--file':
     with open(sys.argv[2], encoding='utf-8') as f:
