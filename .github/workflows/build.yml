@@ -73,6 +73,20 @@ jobs:
         shell: bash
         run: bash tools/theme_gate.sh
 
+      # 发版说明那两份说明文字里不许带家目录 + 用户名。
+      # 为什么放在"每推都跑"这一栏而不是发版那一次：CI 的发布步骤会把每笔提交的**正文**原样
+      # 拼进公开 Release 页，而这个仓库的正文本来就写着实测路径（本机就有过一句
+      # 「旧目录 C:\Users\<名字>\AppData\Roaming\ltool 原样在那儿」）。
+      # 只在推 tag 那次才量的话，漏出去的那一版已经发出去了。
+      - name: 发版说明脱敏闸（家目录/用户名不进公开 Release 页）
+        shell: bash
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: |
+          python tools/make_release_notes.py --check
+          python tools/notes_history_leak_check.py
+
       # 接口号闸：core 公开的头动了布局（加/删数据成员或虚函数）却没升 LTOOL_PLUGIN_API_VERSION
       # 就是红。10-20 那次磁盘清理闪退走的就是这条路 —— 老插件名字全齐、LoadLibrary 成功、
       # 按老偏移读 DiskScan::Tree 然后 0xc0000005；这一道保证下次再动布局必须升号，
@@ -416,6 +430,8 @@ jobs:
           # 顺带产出 installer/sha256.txt（说明里承诺了"下 sha256.txt 对整批"，那它必须真存在）。
           python tools/make_release_notes.py "$GITHUB_REF_NAME" release-notes.md
           test -s release-notes.md
+          # 量的就是**将要发出去的那份文件**本身（上面那一栏量的是判断，这一行量的是产物）
+          python tools/notes_history_leak_check.py --file release-notes.md
           echo "---- 说明开头 12 行 ----"; head -12 release-notes.md
           # 资产 = 安装包 + SDK + **这次发版配套的商店**（清单 + 19 颗 dll）+ 一张校验表。
           # 商店那边拼的就是 releases/download/<这个标签>/<文件名>，标签必须等于 "v"+版本号，

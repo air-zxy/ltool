@@ -94,6 +94,12 @@ powershell -File build\verify\deliver.ps1        # 构建 → abi（两棵 dll �
 CI 有一步专门核对这两颗文件名在不在资产列表里）。"上一个标签"是 `git describe <标签>^` 问出来的，
 不是"最新的那个标签"—— 前者才是历史上在这之前的那一个。
 
+**说明里的机器路径会被脱敏**：那把正文原样搬进公开页的椅子，也就会把「旧目录 `C:\Users\<你的名字>\AppData\...`」
+这类实测路径搬上去（本仓库的真历史里就有一句）。`scrub()` 只认"家目录 + 用户名"那一段，换成 `%USERPROFILE%`；
+`D:\software\ltool`、`%LOCALAPPDATA%` 这类文档要的路径一个字不动。两道闸都在 CI"每推都跑"那一栏：
+`--check`（6 条，摘掉脱敏当场红 4 条）+ `tools/notes_history_leak_check.py`（拿真区间 171 行、或直接拿
+将要发出去的 `release-notes.md` 量，判据按**形状**而不是按某个用户名 —— 这个文件自己要进公开仓库）。
+
 ## 网站关键字
 
 首次运行生成 `<数据目录>\webs.json`，可自行增删：

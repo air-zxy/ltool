@@ -1563,3 +1563,22 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
   · `跳过 An 那两条：索引里没有 Antigravity` · `没有 QQ` · `没有中文名应用` · `ChatGPT 那条` 等），
   而"跳过"这一形状在 pinyin 那一节是 `INFO` 开头不是 `SKIP` 开头 —— 只 grep `^SKIP` 会把"少了几条"读成"莫名少了"。
   数判据的工具自己先把这点补上了（`ok` 开头的 --cfgcheck、`INFO 跳过` 都归类打出来）。
+
+## 推 v1.4.0 之前先把发版说明脱敏（2026-10-22，他拍的"先加脱敏再推"）
+
+- 为什么这一步值得停下来问一句：CI 的发布步骤跑 `tools/make_release_notes.py`，它把 v1.3.3..v1.4.0
+  **每笔提交的正文原样**拼进公开 Release 页，而真历史里那句
+  `- 本机实测：983 个文件 / 360 MB，旧目录 \`C:\Users\<用户名>\AppData\Roaming\ltool\` 还是 378 MB 原样在那儿`
+  正好在这个区间里（`9313288`）。同一串字符在 `git log` 里是一行历史，印在发版封面上是另一回事。
+  数过：这一区间标题+正文里带用户名的就 **1 处**。
+- 改法：`scrub()` 只吃"家目录 + 用户名"那一段（反斜杠和正斜杠两种写法都认，后者是 Qt 归一化之后的形状），
+  换成 `%USERPROFILE%`；`D:\software\ltool`、`%LOCALAPPDATA%\Programs\ltool` 这类**文档要的路径一个字都不动**
+  （判据里就有这两条"不许动"）。接在 `commits()` 的标题和 `body_lines()` 的每一项上。
+- 两道闸，都放在**每推都跑**那一栏而不是只在发版那一次（只在推 tag 才量的话，漏出去的那一版已经发出去了）：
+  `python tools/make_release_notes.py --check`（6 条），
+  `python tools/notes_history_leak_check.py [区间 | --file release-notes.md]`（真区间 17 笔 / 171 行 → 命中 0；
+  发布步骤里再拿**将要发出去的那份文件**量一遍）。反向验过：把 `scrub` 改成原样返回 → `--check` 当场红 4 条；
+  往一个临时文件里塞一句 `C:\Users\someone\AppData` → leak check 退出码 1 并点名那一行。
+- 判据脚本里**不写死任何一个用户名**（只按形状判）：那个文件本身要进公开仓库。
+- 校验 yml 用 `build/verify/yaml_check.js`（`$TEMP\jsy` 那份 js-yaml；这台机的 msys python 没有 pip）。
+  这份 yml 现在 1 个 job / 24 步，新那一步排在配色闸后面。

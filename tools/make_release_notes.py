@@ -25,6 +25,11 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 「家目录 + 用户名」那一段的两种写法（Windows 反斜杠 / POSIX 正斜杠）。
+# 用户名只吃 `[A-Za-z0-9._-]+`：这样 `C:\Users\Public\Desktop` 也会被换成 %USERPROFILE%\Public\...，
+# 那条本来就是系统公共目录、不是任何人的家 —— 但它出现在发版页里同样没有意义，换了不亏。
+USER_HOME_RE = re.compile(r'[A-Za-z]:[\\/]{1,2}[Uu]sers[\\/]{1,2}[A-Za-z0-9._-]+|(?<![\w/])(?:/[Uu]sers|/home)/[A-Za-z0-9._-]+')
+
 # 一节配一个图标：按提交标题里的关键词挑，第一条命中的算。
 # 这不是装饰 —— 一眼能看出那一节是修 bug、加功能还是动界面，正是那份参考说明好用的地方。
 ICONS = (
@@ -71,7 +76,8 @@ def commits(rng):
         if not chunk.strip():
             continue
         head, _, body = chunk.partition('\x1f')
-        out.append((head.strip(), body.strip()))
+        # 标题也过一遍 scrub：`C:\Users\x\…` 这种串在标题里同样出现过。
+        out.append((scrub(head.strip()), body.strip()))
     return out
 
 
@@ -106,6 +112,17 @@ def plugin_versions():
     return out
 
 
+def scrub(text):
+    """把带用户名的家目录换成 %USERPROFILE% 再进说明。
+
+    为什么要这一道：这个仓库的提交正文本来就写着实测路径（`C:\\Users\\<名字>\\AppData\\...`），
+    而这份说明是**公开 Release 页上最显眼的一块** —— 同样的字符串在 `git log` 里是一行历史，
+    印到发版封面上就是另一回事了。只认"家目录那一段"，别的（`D:\\software\\ltool`、
+    `%LOCALAPPDATA%`）是文档要的路径，原样留着。
+    """
+    return USER_HOME_RE.sub('%USERPROFILE%', text)
+
+
 def body_lines(body):
     """提交正文原样搬进来，但保证每条都是 markdown 的一项：
     这个仓库的提交信息本来就按 `- ` 一行一条写，少数几行是续行（缩进的），把它们并回上一条。"""
@@ -121,10 +138,39 @@ def body_lines(body):
             items.append(line.rstrip())
     if not items:
         items = ['（这一笔没写正文，标题就是全部。）']
-    return items
+    return [scrub(i) for i in items]
+
+
+def self_check():
+    """`--check`：脱敏自己的判据。放在 CI 那条"每推都跑"的线上，不是只在发版那一次 ——
+    否则把用户名漏出去的那一笔要等到推 tag 才看得见（而那时已经发出去了）。"""
+    bad = []
+
+    def eq(got, want, why):
+        if got != want:
+            bad.append('%s：got=[%s] want=[%s]' % (why, got, want))
+
+    eq(scrub(r'旧目录 C:\Users\zzname\AppData\Roaming\ltool 还在'),
+       r'旧目录 %USERPROFILE%\AppData\Roaming\ltool 还在', 'Windows 家目录那一段')
+    eq(scrub('posix 那边是 /home/zzname/projects/x'),
+       'posix 那边是 %USERPROFILE%/projects/x', 'POSIX 家目录那一段')
+    eq(scrub(r'D:\software\ltool\data'), r'D:\software\ltool\data', '不是家目录的路径不许动')
+    eq(scrub(r'%LOCALAPPDATA%\Programs\ltool'), r'%LOCALAPPDATA%\Programs\ltool', '占位符写法不许动')
+    eq(scrub('C:/Users/zzname/x'), '%USERPROFILE%/x', '正斜杠写法也要认（Qt 归一化之后就长这样）')
+    # 整条链：正文里带用户名的那一笔，经过 body_lines 之后一项都不许剩下用户名
+    items = body_lines('- 本机实测：983 个文件，旧目录 `C:\\Users\\zzname\\AppData\\Roaming\\ltool` 原样在那儿')
+    if any('zzname' in i for i in items):
+        bad.append('body_lines 漏了用户名：%s' % items)
+    print('NOTES_CHECK_TOTAL=6')
+    print('NOTES_CHECK_BAD=%d' % len(bad))
+    for b in bad:
+        print('FAIL %s' % b)
+    return 1 if bad else 0
 
 
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == '--check':
+        return self_check()
     if len(sys.argv) != 3:
         print('用法：python tools/make_release_notes.py <标签> <输出文件>')
         return 2
