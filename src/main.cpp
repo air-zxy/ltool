@@ -598,6 +598,8 @@ int main(int argc, char* argv[])
     // --storetest 会写 store/indexUrl 这一项（它就是验"配置里改了地址就跟着走"），
     // --storeexit 会写 store/pendingRemove（那一条判据走的就是"卸载排进待删表"那段），
     // --linuxdotest 会写 linuxdo/* 这一节（间隔、关键词、中转前缀、上次看到哪条）：
+    // --startuptest 要把那张页建起来跑一遍（它导出报告时写 dataDir，所以也一并挪走；
+    //   它真写注册表那几条走的是 HKCU 下自造的临时键 Software\ltool-startuptest-<pid>，跑完删掉）。
     // 这几种都把数据目录整个挪到临时目录再跑，碰不到真实的用户数据。
     // 挪的是 `LTOOL_DATA_DIR`（dataDir() 的第一优先档）—— 以前挪的是 APPDATA，
     // 而 1.4.0 之后数据默认落在**软件目录下的 data\**，挪 APPDATA 就管不着它了。
@@ -609,7 +611,8 @@ int main(int argc, char* argv[])
             || a == QLatin1String("--appdirs") || a == QLatin1String("--cfgcheck")
             || a == QLatin1String("--storetest") || a == QLatin1String("--storeexit")
             || a == QLatin1String("--linuxdotest")
-            || a == QLatin1String("--linuxdonet") || a == QLatin1String("--cliptest")) {
+            || a == QLatin1String("--linuxdonet") || a == QLatin1String("--cliptest")
+            || a == QLatin1String("--startuptest")) {
             const QString sandbox = QDir::tempPath() + "/" + a.mid(2);
             QDir(sandbox).removeRecursively();
             QDir().mkpath(sandbox);
@@ -640,7 +643,13 @@ int main(int argc, char* argv[])
     // 数据目录搬家：老 %APPDATA%\ltool → 软件目录下的 data\（他 2026-10-21 点名"不要放在 C 盘"）。
     // **只在"正常启动"那一次做**（命令行里没有任何 `--` 旗标）：否则我拿构建目录那份 exe 跑一条
     // 自测，就会先把 378 MB 真实数据复制进 build\Release\data。旧目录一律原样留着不删。
-    if (std::none_of(app.arguments().cbegin() + 1, app.arguments().cend(),
+    // 坑（本机真崩过，0xC0000005）：`QCoreApplication::arguments()` **按值返回 QStringList**
+    //（Qt 6.10 头里就写着 `static QStringList arguments();`），所以 `app.arguments().cbegin()` 和
+    // `app.arguments().cend()` 是**两个临时容器**上的指针。不带旗标时头指针正好越过末尾，
+    // 于是解引用别人家的堆；带任意 `--` 旗标反而不炸（predicate 第一个元素就命中，压根没走这个坏区间）——
+    // 这就是为什么所有离线判据全绿、双击图标却必崩。盯着它的判据在 `--pathcfg` 最后一条：起一个**不给旗标**的子进程。
+    const QStringList args = app.arguments();
+    if (std::none_of(args.cbegin() + 1, args.cend(),
                      [](const QString& a) { return a.startsWith(QLatin1String("--")); })) {
         QString moved;
         const int movedN = Utils::migrateLegacyDataDir(&moved);
@@ -662,7 +671,6 @@ int main(int argc, char* argv[])
     DevEnv::ensureDefaultPlugins();
     WebShortcuts::ensureDefaultWebs();
 
-    const QStringList args = app.arguments();
     const bool smoke = args.contains("--smoke");
     const bool showOnStart = args.contains("--show");
     const bool openSettingsOnStart = args.contains("--settings") || args.contains("--settingspage");
@@ -917,6 +925,14 @@ int main(int argc, char* argv[])
         return runPluginSelftest(QStringLiteral("linuxdo"), "ltoolLinuxdoNetRun",
                                  SelftestArg::Ms, secs > 0 ? secs : 60);
     }
+
+    // --startuptest：「开机启动分析」那一路的判据（StartupApproved 字节读/写、什么算系统服务、
+    // 那张页藏了多少条 + 「就地两段」的第一下必须一个字节都不写）。
+    // 真写那几条走的是**自己造的临时键** `HKCU\Software\ltool-startuptest-<pid>`，跑完删掉 ——
+    // 他机器上真实的那六条启动项一条都不改（第二下确认在判据里明确不点）。
+    // 页面那半要真扫一次这台机器（只读，几百个文件的签名，秒级 —— 耗时打在日志里）。
+    if (args.contains("--startuptest"))
+        return runPluginSelftest(QStringLiteral("startup"));
 
     // --plugintest：DLL 插件那条链从头到尾真跑一遍（这次是**真的 LoadLibrary**，
     // 但一次都不 show()，不碰他的桌面）。
@@ -3394,6 +3410,95 @@ int main(int argc, char* argv[])
             QDir(from).removeRecursively();
             QDir(to).removeRecursively();
         }
+        {
+            // **冷启动那条路自己得能走通**：上面那个守卫的形状是"一个 `--` 旗标都没有才搬家"，
+            // 而这一套判据、以及所有别的自测，全都带着旗标跑 —— 那条分支一次都没被任何判据踩过。
+            // 本机就是这么漏掉一个必崩的：`app.arguments()` 按值返回，`.cbegin()` 和 `.cend()` 分属
+            // 两个临时 QStringList，没有旗标时那头指针越过末尾去解引用别人家的堆 ⇒ 0xC0000005，
+            // 现象是"双击图标就闪退，而跑任何一条自测都好好的"。
+            // 只能起子进程、且**一个旗标都不给**，才是被测的那条路。
+            // 有没有常驻实例：**不能用 QLocalSocket 连一下问** —— 那条 server 那边算"第二个实例来交接"，
+            // 他那份常驻实例会当场把启动器叫到屏幕上（本机 21:15 就这么发生了一次，日志里留着那句
+            // `show: 呼出（要求者=第二个实例转交过来的 show）`）。命名管道问一句就够了：
+            // `WaitNamedPipeW` 只看"有没有人在听"，不建立连接、不写一个字节。
+            const QString pipe = QStringLiteral("\\\\.\\pipe\\") + QString::fromWCharArray(kInstanceKey);
+            if (WaitNamedPipeW((LPCWSTR)pipe.utf16(), 0)) {
+                std::printf("SKIP 冷启动子进程 —— 这台机器上有常驻实例，它会把启动器叫到他屏幕上，不打扰\n");
+            } else {
+                const QString box = QDir::tempPath() + "/ltool-coldstart";
+                QDir(box).removeRecursively();
+                QDir().mkpath(box);
+                // 截图/录像的落点是 exe 旁边（软件目录），不给它指进沙箱就会在构建目录留下 captures\，
+                // 那个会被安装包收走（同一族的坑，见 --pindel 那里）。
+                QSettings boxCfg(box + "/config.ini", QSettings::IniFormat);
+                boxCfg.setValue(QStringLiteral("paths/captures"), box + "/captures");
+                boxCfg.setValue(QStringLiteral("paths/recordings"), box + "/recordings");
+                boxCfg.sync();
+                QProcess child;
+                QProcessEnvironment pe = QProcessEnvironment::systemEnvironment();
+                pe.insert(QStringLiteral("LTOOL_DATA_DIR"), box);
+                pe.insert(QStringLiteral("QT_QPA_PLATFORM"), QStringLiteral("offscreen"));
+                child.setProcessEnvironment(pe);
+                QElapsedTimer et;
+                et.start();
+                child.start(QCoreApplication::applicationFilePath(), {});   // ← 一个参数都不给
+                child.waitForStarted(5000);
+                const bool stillRunning = child.waitForFinished(6000);      // true = 到点也没退 = 活着
+                QString verdict;
+                if (child.state() != QProcess::NotRunning)
+                    verdict = QStringLiteral("alive");
+                else if (child.exitStatus() == QProcess::CrashExit)
+                    verdict = QStringLiteral("crashed-0x%1").arg(quint32(child.exitCode()), 8, 16, QLatin1Char('0'));
+                else
+                    verdict = QStringLiteral("exit%1").arg(child.exitCode());
+                check("冷启动（不给任何旗标）6 秒内不许崩", verdict, "alive");
+                std::printf("INFO 冷启动子进程 verdict=%s ms=%lld box=%s\n", verdict.toUtf8().constData(),
+                            static_cast<long long>(et.elapsed()), box.toUtf8().constData());
+                std::fflush(stdout);
+                if (child.state() != QProcess::NotRunning) {
+                    // 这个活着的孩子现在就坐在 `ltool.instance` 那根管道上 —— 顺手把
+                    // **"只连不写"到底算不算"把窗口叫出来"** 量一遍：算的话，任何探测都会抢他的屏幕
+                    //（本机 21:15 就是被判据自己这么抢了一次）。
+                    const QString logPath = box + "/log.txt";
+                    const auto showCount = [&logPath] {
+                        QFile f(logPath);
+                        if (!f.open(QIODevice::ReadOnly))
+                            return 0;
+                        return int(f.readAll().count("show: 呼出"));
+                    };
+                    QCoreApplication::processEvents();   // 等它把 server 挂上（它自己那 1.2 秒预热都还没完）
+                    QElapsedTimer waitPipe;
+                    waitPipe.start();
+                    while (!WaitNamedPipeW((LPCWSTR)pipe.utf16(), 0) && waitPipe.elapsed() < 8000)
+                        QThread::msleep(200);
+                    const int before = showCount();
+                    QLocalSocket bare;
+                    bare.connectToServer(QString::fromWCharArray(kInstanceKey));
+                    if (bare.waitForConnected(1500)) {
+                        QThread::msleep(600);            // 那边读一次、什么都不该做
+                        bare.disconnectFromServer();
+                    }
+                    check("只连上、一个字节都不写的连接，不许被当成「把启动器叫出来」",
+                          QString::number(showCount() - before), "0");
+                    QLocalSocket ask;
+                    ask.connectToServer(QString::fromWCharArray(kInstanceKey));
+                    if (ask.waitForConnected(1500)) {
+                        ask.write("show\n");
+                        ask.waitForBytesWritten(1500);
+                        QThread::msleep(600);
+                        ask.disconnectFromServer();
+                    }
+                    check("真写了 show 的那条路还得照常把窗口叫出来（别让上面那条把门焊死）",
+                          showCount() - before >= 1 ? QStringLiteral("yes") : QStringLiteral("no"), "yes");
+                    std::printf("INFO 交接探测 before=%d pipe=%s\n", before,
+                                WaitNamedPipeW((LPCWSTR)pipe.utf16(), 0) ? "有人听" : "没人听");
+                    std::fflush(stdout);
+                    child.kill();   // 它是这一趟自造的实例，留着就是第二个托盘
+                    child.waitForFinished(3000);
+                }
+                QDir(box).removeRecursively();
+            }
+        }
         QFile::remove(newCap + "/" + key);
         QDir(QDir::tempPath() + "/ltool-pathcfg").removeRecursively();
         std::printf("pathcfg: 失败 %d 项\n", bad);
@@ -4238,6 +4343,12 @@ int main(int argc, char* argv[])
             const QByteArray msg = c->readAll();
             c->disconnectFromServer();
             c->deleteLater();
+            // **空的就当没这回事**：只连上、没写东西的连接太多了（判据探"这台机器上有没有常驻实例"、
+            // 半开的连接、被杀掉的发送方），把它们当成「把主窗口叫出来」= 别人一探测就抢他的屏幕。
+            // 真要叫窗口的那条路径自己会写 "show\n"（本机实测：判据那条探测真把他那份启动器叫出来了，
+            // 日志里留下 `show: 呼出（要求者=第二个实例转交过来的 show）`）。
+            if (msg.trimmed().isEmpty())
+                continue;
             // 右键解压/压缩那个一次性进程把气泡递过来（"note\t标题\t正文"），
             // 它自己不该为了举着气泡多活 5 秒。其余任何消息都还是"把主窗口叫出来"。
             const QList<QByteArray> parts = msg.split('\t');

@@ -69,22 +69,44 @@ QStringList childKeys(HKEY parent, int cap)
     return out;
 }
 
-// 任务管理器「启动」页里被用户关掉的那些，状态存在 StartupApproved 的一个 12 字节 blob 里：
-// 首字节 0x03 = 启用，其它（0x02/0x82…）= 已禁用。没有这个值就按启用算。
-bool approvedFlag(HKEY root, const QString& approvedSub, const QString& valueName)
+// 「任务管理器 → 启动」那个开关存在 `StartupApproved\<Run|StartupFolder>` 下的一个 REG_BINARY 里。
+// **首字节 0x03 = 已被关掉，0x02 = 开着；压根没有这个值 = 也从没被碰过 = 开着。**
+// 这里以前是反的（注释写着"0x03=启用"，代码照着写 `enabled = (blob[0] == 0x03)`）。
+// 本机拿真注册表对出来：`ltool`、`org.yuanli.utools` 是 `02 00…`（它们确实在自启动），
+// `Steam`、`NeatDM`、`CiscoMeetingDaemon`、`MicrosoftEdgeAutoLaunch…` 是 `03 + 一个 FILETIME`
+// —— 那四条才是被关掉的形状。判据（`--startupscan`）钉的就是这两组真字节。
+namespace {
+
+QByteArray readApprovedBlob(HKEY root, const QString& sub, const QString& valueName)
 {
     HKEY k = nullptr;
-    if (RegOpenKeyExW(root, (LPCWSTR)approvedSub.utf16(), 0, KEY_READ, &k) != ERROR_SUCCESS)
-        return true;
-    bool enabled = true;
-    BYTE blob[16] = {};
-    DWORD size = sizeof(blob), type = 0;
-    if (RegQueryValueExW(k, (LPCWSTR)valueName.utf16(), nullptr, &type, blob, &size) == ERROR_SUCCESS
-        && size >= 1)
-        enabled = (blob[0] == 0x03);
+    if (RegOpenKeyExW(root, (LPCWSTR)sub.utf16(), 0, KEY_READ, &k) != ERROR_SUCCESS)
+        return QByteArray();
+    QByteArray out;
+    DWORD size = 0, type = 0;
+    if (RegQueryValueExW(k, (LPCWSTR)valueName.utf16(), nullptr, &type, nullptr, &size) == ERROR_SUCCESS
+        && type == REG_BINARY && size > 0 && size < 4096) {
+        out.resize(int(size));
+        RegQueryValueExW(k, (LPCWSTR)valueName.utf16(), nullptr, &type,
+                         reinterpret_cast<BYTE*>(out.data()), &size);
+    }
     RegCloseKey(k);
-    return enabled;
+    return out;
 }
+
+QString regWhy(LONG r)
+{
+    if (r == ERROR_ACCESS_DENIED)
+        return QStringLiteral("要管理员权限（这条写在 HKLM）");
+    return QStringLiteral("注册表返回 %1").arg(quint32(r));
+}
+
+bool approvedFlag(HKEY root, const QString& approvedSub, const QString& valueName)
+{
+    return StartupAudit::approvedState(readApprovedBlob(root, approvedSub, valueName)) == Approved::On;
+}
+
+} // namespace
 
 // ---------- 数字签名（纯本地读，不联网做吊销检查） ----------
 
@@ -243,6 +265,9 @@ void scanRunKeys(QVector<StartupItem>* out)
             it.note = t.label;
             it.targetPath = Utils::exeFromCommand(it.command);
             it.enabled = approvedFlag(t.root, QString::fromWCharArray(t.approvedSub), it.name);
+            // 记下这条开关住在哪：改它的时候不用再从 location 反推（反推就是第二份规则）
+            it.approvedPath = QString::fromWCharArray(t.hive) + "\\" + QString::fromWCharArray(t.approvedSub);
+            it.approvedValue = it.name;
             finish(it);
             out->append(it);
         }
@@ -278,6 +303,10 @@ void scanStartupFolders(QVector<StartupItem>* out)
         { FOLDERID_Startup, "用户启动文件夹" },
         { FOLDERID_CommonStartup, "全体用户启动文件夹" },
     };
+    // 这一路的状态全存这同一个键里（值名 = 那个文件名，和下面 approvedFlag 传的同一个串），
+    // 所以"改它"用的路径也从这里拼，不留第二份。
+    const QString sfSub = QStringLiteral("Software\\Microsoft\\Windows\\CurrentVersion"
+                                         "\\Explorer\\StartupApproved\\StartupFolder");
     for (const auto& f : folders) {
         wchar_t* path = nullptr;
         if (FAILED(SHGetKnownFolderPath(f.id, 0, nullptr, &path)))
@@ -299,10 +328,9 @@ void scanStartupFolders(QVector<StartupItem>* out)
             } else {
                 it.targetPath = full;
             }
-            it.enabled = approvedFlag(HKEY_CURRENT_USER,
-                                      QStringLiteral("Software\\Microsoft\\Windows\\CurrentVersion"
-                                                     "\\Explorer\\StartupApproved\\StartupFolder"),
-                                      name);
+            it.enabled = approvedFlag(HKEY_CURRENT_USER, sfSub, name);
+            it.approvedPath = QStringLiteral("HKEY_CURRENT_USER\\") + sfSub;
+            it.approvedValue = name;
             finish(it);
             out->append(it);
         }
@@ -579,6 +607,86 @@ QVector<StartupItem> scan()
     scanShellHooks(&out);
     scanTasks(&out);
     return out;
+}
+
+Approved approvedState(const QByteArray& blob)
+{
+    if (blob.isEmpty())
+        return Approved::On;
+    return uchar(blob.at(0)) == 0x03 ? Approved::Off : Approved::On;
+}
+
+QByteArray approvedBlobFor(Approved to, const QByteArray& existing)
+{
+    // 长度照原来那份：UWP / 打包应用那种是 24 字节，把它截成 12 就是写坏。原来没有才给标准的 12。
+    QByteArray out = existing;
+    if (out.size() < 1)
+        out = QByteArray(12, '\0');
+    out[0] = char(to == Approved::Off ? 0x03 : 0x02);
+    return out;
+}
+
+bool isSystemService(const QString& imagePath, const QString& systemRoot)
+{
+    // 注意 QDir::fromNativeSeparators 是"把系统的 \ 换成 Qt 的 /"（不是反过来）：
+    // 两边都过它一遍，后面就只用 / 比较，注册表里的 \ 和用户写的 / 落进同一种形状。
+    const QString root = QDir::fromNativeSeparators(systemRoot).toLower();
+    const QString p = QDir::fromNativeSeparators(imagePath).toLower();
+    if (p.isEmpty())
+        return false;
+    // %SystemRoot% 没展开的那种写法（服务 ImagePath 里常见）：它指的就是系统目录，先认。
+    if (p.startsWith(QStringLiteral("%systemroot%/")))
+        return true;
+    if (!root.isEmpty() && p.startsWith(root))
+        return true;
+    // 系统服务住的地方就这两个名字。用"路径里出现 /system32/"而不是"整条等于系统根"，
+    // 是为了让上面那种没展开的和 C:\WINNT\ 那种老别名也能一起落到同一条规则里。
+    return p.contains(QStringLiteral("/system32/")) || p.contains(QStringLiteral("/syswow64/"))
+        || p.endsWith(QStringLiteral("/system32")) || p.endsWith(QStringLiteral("/syswow64"));
+}
+
+QString setStartupEnabled(const StartupItem& it, bool on)
+{
+    if (it.approvedPath.isEmpty() || it.approvedValue.isEmpty())
+        return QStringLiteral("这条不是应用启动项（服务 / 计划任务 / 加载项），这一页不动它。");
+    HKEY root = nullptr;
+    QString sub;
+    if (it.approvedPath.startsWith(QStringLiteral("HKEY_CURRENT_USER\\"))) {
+        root = HKEY_CURRENT_USER;
+        sub = it.approvedPath.mid(int(qstrlen("HKEY_CURRENT_USER\\")));
+    } else if (it.approvedPath.startsWith(QStringLiteral("HKEY_LOCAL_MACHINE\\"))) {
+        root = HKEY_LOCAL_MACHINE;
+        sub = it.approvedPath.mid(int(qstrlen("HKEY_LOCAL_MACHINE\\")));
+    } else {
+        return QStringLiteral("认不出这个注册表根：%1").arg(it.approvedPath);
+    }
+    const Approved want = on ? Approved::On : Approved::Off;
+    HKEY k = nullptr;
+    LONG r = RegCreateKeyExW(root, (LPCWSTR)sub.utf16(), 0, nullptr, 0,
+                             KEY_READ | KEY_WRITE, nullptr, &k, nullptr);
+    if (r != ERROR_SUCCESS)
+        return QStringLiteral("打不开 %1：%2").arg(it.approvedPath, regWhy(r));
+    const QByteArray existing = [&] {
+        QByteArray out;
+        DWORD size = 0, type = 0;
+        if (RegQueryValueExW(k, (LPCWSTR)it.approvedValue.utf16(), nullptr, &type, nullptr, &size) == ERROR_SUCCESS
+            && type == REG_BINARY && size > 0 && size < 4096) {
+            out.resize(int(size));
+            RegQueryValueExW(k, (LPCWSTR)it.approvedValue.utf16(), nullptr, &type,
+                             reinterpret_cast<BYTE*>(out.data()), &size);
+        }
+        return out;
+    }();
+    const QByteArray blob = approvedBlobFor(want, existing);
+    r = RegSetValueExW(k, (LPCWSTR)it.approvedValue.utf16(), 0, REG_BINARY,
+                       reinterpret_cast<const BYTE*>(blob.constData()), DWORD(blob.size()));
+    RegCloseKey(k);
+    if (r != ERROR_SUCCESS)
+        return QStringLiteral("写不进去：%1").arg(regWhy(r));
+    // 写完了读回来核对：状态没变成我们要的那样，就等于没改成，界面不许说"已经关了"
+    if (approvedState(readApprovedBlob(root, sub, it.approvedValue)) != want)
+        return QStringLiteral("写了，但读回来还是原来那个状态（Explorer 可能另有缓存）");
+    return QString();
 }
 
 QString sourceLabel(StartupItem::Source s)

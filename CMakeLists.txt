@@ -351,7 +351,8 @@ ltool_add_tool(ads AdsPlugin            plugins/ads/AdsPage.cpp plugins/ads/adsp
 ltool_add_tool(disk DiskPlugin          plugins/disk/DiskPage.cpp plugins/disk/diskplugin.cpp)
 ltool_add_tool(network NetworkPlugin    plugins/network/NetworkPage.cpp plugins/network/networkplugin.cpp)
 ltool_add_tool(registry RegistryPlugin  plugins/registry/RegistryPage.cpp plugins/registry/registryplugin.cpp)
-ltool_add_tool(startup StartupPlugin    plugins/startup/StartupPage.cpp plugins/startup/startupplugin.cpp)
+ltool_add_tool(startup StartupPlugin    plugins/startup/StartupPage.cpp plugins/startup/startupplugin.cpp
+                                         plugins/startup/startupselftest.cpp)
 ltool_add_tool(user UserPlugin          plugins/user/UserAccount.cpp plugins/user/userplugin.cpp
                                                       plugins/user/userselftest.cpp)
 ltool_add_tool(json JsonPlugin          plugins/json/JsonTool.cpp plugins/json/jsonplugin.cpp)
