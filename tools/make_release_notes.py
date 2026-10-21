@@ -142,7 +142,11 @@ def main():
     L.append('')
     keys = []
     for subject, _ in cs[-3:][::-1]:          # 最近三笔当"本次重点"
-        k = re.split(r'[：:，,——]', subject)[0].strip()
+        # 取标题里第一个短句当"重点"。但有的标题写成「1.0.3：检查更新不再打 api…」——
+        # 冒号前只是个版本号，拿它当重点等于什么都没说（本机 dry-run 第一次就撞上），
+        # 所以太短或整个是数字就往后挪一段。
+        parts = [x.strip() for x in re.split(r'[：:，,——]', subject) if x.strip()]
+        k = next((x for x in parts if len(x) >= 6 and not re.fullmatch(r'[\dvx.]+', x)), subject)
         if len(k) > 30:
             k = k[:29] + '…'
         keys.append(k)
