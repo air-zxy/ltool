@@ -1098,6 +1098,7 @@ void SearchWindow::runSearch()
     }
 
     QVector<int> toolLoose;
+    QVector<int> toolExact;   // 工具直达命中的那几条。**只算不发** —— 谁排第一由下面那段决定
     {
         const auto& metas = PluginHost::scan();
         if (low == QStringLiteral("工具") || low == QStringLiteral("tools")
@@ -1108,7 +1109,6 @@ void SearchWindow::runSearch()
             rebuildList();
             return;
         }
-        QVector<int> exact;
         for (const int i : std::as_const(toolIndices)) {
             const PluginHost::Meta& td = metas[i];
             const QString name = td.name.toLower();
@@ -1136,27 +1136,74 @@ void SearchWindow::runSearch()
                         }
             }
             if (hitExact)
-                exact << i;
+                toolExact << i;
             else if (hitLoose)
                 toolLoose << i;
         }
-        if (!exact.isEmpty() && !webKeywordWins) {
-            // 直达**不再清场**。以前这里 `return`，后面「网站 / 网址直开 / 应用 / 文件 / 系统 /
-            // 剪贴板历史」五节整个没跑到 —— 那是一条有特权的路，拿真实的 apps.json 复算过：
-            // 这台机器上 51 个查询串会命中它、连带 44 个应用永远搜不出来（最刺眼的是 `windows`：
-            // 「Windows 用户名」那把工具的名字本身就是 windows 开头，于是所有 Windows* 应用没了）。
-            // 现在工具那一节照样摆在最前面（**第一行还是它，回车还是它**），只是不再铲平别人。
-            addSection(QStringLiteral("工具"));
-            for (const int i : std::as_const(exact))
-                addToolRow(i);
-            // 松散命中的那几个并进**同一节**（强的在前、弱的在后），末尾那个"工具"标题就不再重复
-            for (const int i : std::as_const(toolLoose))
-                addToolRow(i);
-            toolLoose.clear();
-        }
     }
 
-    // 网站关键字 / 网址直开（webs / webTok / webArgs 在工具那一节之前就算好了）
+    // 应用匹配。从原来"应用搜索"那一段搬到这里，是因为"谁排第一"要同时知道
+    // 直达命中没有和应用命中没有 —— 在发射点之后才算就来不及了。
+    struct Match { int score; int idx; };    QVector<Match> ms;
+    for (int i = 0; i < m_apps.size(); ++i) {
+        const int s = scoreApp(m_apps[i], low);
+        if (s >= 0)
+            ms.append({s, i});
+    }
+    std::sort(ms.begin(), ms.end(), [this](const Match& a, const Match& b) {
+        if (a.score != b.score)
+            return a.score < b.score;
+        const int ua = m_usage.value(usageKey(m_apps[a.idx].lnkPath, m_apps[a.idx].target), 0);
+        const int ub = m_usage.value(usageKey(m_apps[b.idx].lnkPath, m_apps[b.idx].target), 0);
+        if (ua != ub)
+            return ua > ub;
+        return m_apps[a.idx].name.size() < m_apps[b.idx].name.size();
+    });
+
+    // 节的先后（他 2026-10-21 拍的）：**没命中直达时应用第一、网站第二**；
+    // 命中工具直达时直达仍占第一行、回车还是它（10-19 定的一条，他这次选的是"别让位"）。
+    // 电源那两条（休眠/关机）也是直达，在上面就先发 —— 那支要是让位，输 `shutdown`
+    // 回车可能变成启动一个名字像 shutdown 的应用。
+    // 直达**不再清场**。以前这里 `return`，后面「网站 / 网址直开 / 应用 / 文件 / 系统 /
+    // 剪贴板历史」五节整个没跑到 —— 那是一条有特权的路，拿真实的 apps.json 复算过：
+    // 这台机器上 51 个查询串会命中它、连带 44 个应用永远搜不出来（最刺眼的是 `windows`：
+    // 「Windows 用户名」那把工具的名字本身就是 windows 开头，于是所有 Windows* 应用没了）。
+    const bool toolFirst = !toolExact.isEmpty() && !webKeywordWins;
+    if (toolFirst) {
+        addSection(QStringLiteral("工具"));
+        for (const int i : std::as_const(toolExact))
+            addToolRow(i);
+        // 松散命中的那几个并进**同一节**（强的在前、弱的在后），末尾那个"工具"标题就不再重复
+        for (const int i : std::as_const(toolLoose))
+            addToolRow(i);
+        toolLoose.clear();
+    }
+
+    if (!ms.isEmpty())
+        addSection("── 应用 ──");
+    const int appLimit = qMin(8, ms.size());
+    for (int k = 0; k < appLimit; ++k) {
+        const AppEntry& a = m_apps[ms[k].idx];
+        SearchResult r;
+        r.kind = SearchResult::App;
+        r.title = a.name;
+        r.subtitle = a.target.isEmpty() ? a.lnkPath : a.target;
+        r.target = a.target;
+        r.extra = a.lnkPath;
+        if (!a.iconFile.isEmpty())
+            r.icon = QIcon(a.iconFile);
+        else if (a.category == QLatin1String("system")
+                 || a.category == QLatin1String("appsfolder"))
+            r.icon = Utils::letterIcon(a.name, QColor(31, 141, 160));
+        addItem(r);
+    }
+
+    // 网站这一组排第二：关键字命中 / 网址直开 /（≥2 个字符）引擎兜底。
+    // 兜底那条以前单独甩在整个列表最末尾，等于"网站"这一类排到了最后 —— 现在三条挨着放。
+    // webs / webTok / webArgs 在工具那一节之前就算好了。
+    // 这一组**以前没有表头**：那几行直接跟在上一节的表头（搜 `b64` 时就是"工具"）底下，
+    // 看着像工具的结果。补一个"── 网站 ──"，顺带让"应用在前、网站在后"这条能被判据量到。
+    const int webMark = m_results.size();
     for (const WebEntry& w : webs) {
         if (!w.keys.contains(webTok) && w.name.compare(webTok, Qt::CaseInsensitive) != 0)
             continue;
@@ -1187,55 +1234,6 @@ void SearchWindow::runSearch()
         r.icon = letterIcon("网", QColor(31, 141, 160));
         addItem(r);
     }
-
-    // 应用搜索
-    struct Match { int score; int idx; };    QVector<Match> ms;
-    for (int i = 0; i < m_apps.size(); ++i) {
-        const int s = scoreApp(m_apps[i], low);
-        if (s >= 0)
-            ms.append({s, i});
-    }
-    std::sort(ms.begin(), ms.end(), [this](const Match& a, const Match& b) {
-        if (a.score != b.score)
-            return a.score < b.score;
-        const int ua = m_usage.value(usageKey(m_apps[a.idx].lnkPath, m_apps[a.idx].target), 0);
-        const int ub = m_usage.value(usageKey(m_apps[b.idx].lnkPath, m_apps[b.idx].target), 0);
-        if (ua != ub)
-            return ua > ub;
-        return m_apps[a.idx].name.size() < m_apps[b.idx].name.size();
-    });
-
-    if (!ms.isEmpty())
-        addSection("── 应用 ──");
-    const int appLimit = qMin(8, ms.size());
-    for (int k = 0; k < appLimit; ++k) {
-        const AppEntry& a = m_apps[ms[k].idx];
-        SearchResult r;
-        r.kind = SearchResult::App;
-        r.title = a.name;
-        r.subtitle = a.target.isEmpty() ? a.lnkPath : a.target;
-        r.target = a.target;
-        r.extra = a.lnkPath;
-        if (!a.iconFile.isEmpty())
-            r.icon = QIcon(a.iconFile);
-        else if (a.category == QLatin1String("system")
-                 || a.category == QLatin1String("appsfolder"))
-            r.icon = Utils::letterIcon(a.name, QColor(31, 141, 160));
-        addItem(r);
-    }
-
-    if (!toolLoose.isEmpty()) {
-        addSection(QStringLiteral("工具"));
-        for (const int i : std::as_const(toolLoose))
-            addToolRow(i);
-    }
-
-
-
-    // 文件搜索（≥2 个字符才搜，避免太泛）：丢到线程池，结果稍后插回列表
-    if (low.size() >= 2)
-        startFileSearch(q);
-
     // 网络搜索兜底（始终提供）
     if (low.size() >= 2) {
         SearchResult r;
@@ -1246,6 +1244,24 @@ void SearchWindow::runSearch()
         r.icon = letterIcon("搜", QColor(136, 87, 229));
         addItem(r);
     }
+    if (m_results.size() > webMark) {
+        SearchResult h;
+        h.kind = SearchResult::Info;
+        h.actionable = false;
+        h.isSection = true;
+        h.title = QStringLiteral("── 网站 ──");
+        m_results.insert(webMark, h);   // 表头补在这一组最前面（列表是 rebuildList() 时按 m_results 铺的）
+    }
+
+    if (!toolLoose.isEmpty()) {
+        addSection(QStringLiteral("工具"));
+        for (const int i : std::as_const(toolLoose))
+            addToolRow(i);
+    }
+
+    // 文件搜索（≥2 个字符才搜，避免太泛）：丢到线程池，结果稍后插回列表
+    if (low.size() >= 2)
+        startFileSearch(q);
 
     if (m_results.isEmpty()) {
         SearchResult r;

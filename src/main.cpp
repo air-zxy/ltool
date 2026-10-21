@@ -1116,6 +1116,47 @@ int main(int argc, char* argv[])
             check("搜 renwu 不该被工具顶掉", section(QStringLiteral("工具")), QStringLiteral("no"));
             check("搜 renwu 时应用那一节还在（工具绝不独占整页）",
                   section(QStringLiteral("── 应用 ──")), QStringLiteral("yes"));
+            // ---- 节的先后（他 2026-10-21 拍的：应用第一、网站第二；命中直达时直达仍第一）----
+            // 数的是**行号**，不是"在不在"—— 两条都在但顺序反了，正是这次要改的东西。
+            const auto pos = [list](const QString& s) {
+                if (!list)
+                    return -1;
+                for (int i = 0; i < list->count(); ++i)
+                    if (list->item(i)->text() == s)
+                        return i;
+                return -1;
+            };
+            std::printf("INFO 搜 renwu 时：应用节在第 %d 行 · 网站节在第 %d 行\n",
+                        pos(QStringLiteral("── 应用 ──")), pos(QStringLiteral("── 网站 ──")));
+            check("没命中直达：应用节排在网站节之前",
+                  pos(QStringLiteral("── 应用 ──")) >= 0
+                      && pos(QStringLiteral("── 网站 ──")) > pos(QStringLiteral("── 应用 ──"))
+                  ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
+            input->setText(QStringLiteral("b64"));
+            settle();
+            std::printf("INFO 搜 b64（工具直达）时：工具节在第 %d 行 · 应用节在第 %d 行\n",
+                        pos(QStringLiteral("工具")), pos(QStringLiteral("── 应用 ──")));
+            check("命中工具直达：那一节仍在第 0 行（回车还是它）",
+                  pos(QStringLiteral("工具")) == 0 ? QStringLiteral("yes") : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+            // `windows` 是这条最刺眼的一档：「Windows 用户名」那把工具名字就以 windows 开头，
+            // 而本机确实有一堆 Windows* 应用 —— 直达拿第一行，但**不许把应用那一节铲平**。
+            input->setText(QStringLiteral("windows"));
+            settle();
+            std::printf("INFO 搜 windows 时：工具节在第 %d 行 · 应用节在第 %d 行 · 网站节在第 %d 行\n",
+                        pos(QStringLiteral("工具")), pos(QStringLiteral("── 应用 ──")),
+                        pos(QStringLiteral("── 网站 ──")));
+            check("搜 windows：直达仍占第 0 行",
+                  pos(QStringLiteral("工具")) == 0 ? QStringLiteral("yes") : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+            check("搜 windows：应用那一节没被铲平，且排在直达之后、网站之前",
+                  pos(QStringLiteral("── 应用 ──")) > 0
+                      && pos(QStringLiteral("── 应用 ──")) < pos(QStringLiteral("── 网站 ──"))
+                  ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
+            input->setText(QStringLiteral("zzqqxx"));
+            settle();
+            check("网站那一组现在有表头（以前那几行跟在上一节表头底下，看着像工具的结果）",
+                  section(QStringLiteral("── 网站 ──")), QStringLiteral("yes"));
             input->clear();
             settle();
         }
