@@ -53,6 +53,25 @@ function Get-Sha($p) {
 $srcFiles = @(Get-ChildItem -LiteralPath $Legacy -Recurse -File -Force)
 $copied = 0; $sameName = 0; $identical = 0; $failed = 0; $bytes = 0L
 $conflicts = @()
+$missing = @()
+
+# Which images does the TARGET's clipboard history reference right now (by image "head":
+# abc.png and abc.t120.png share it, so one referenced entry covers its thumbnail too).
+# Copied files that nothing references are NOT data loss -- the app's daily sweep will treat
+# them as orphans and take them away again. Saying so here is what keeps the next dry run from
+# looking like "still 4 missing, the migration never finished".
+$referenced = @{}
+$cj = Join-Path $Target 'clipboard.json'
+if (Test-Path -LiteralPath $cj) {
+  try {
+    foreach ($it in @(Get-Content -LiteralPath $cj -Raw -Encoding UTF8 | ConvertFrom-Json)) {
+      if ($it.image -and $it.path) {
+        $head = ([System.IO.Path]::GetFileName([string]$it.path) -split '\.')[0]
+        $referenced[$head] = 1
+      }
+    }
+  } catch { Write-Output 'clipboard.json unreadable -- reference split skipped' }
+}
 
 foreach ($f in $srcFiles) {
   $rel = $f.FullName.Substring($Legacy.Length).TrimStart('\')
@@ -65,6 +84,7 @@ foreach ($f in $srcFiles) {
   }
   $copied++
   $bytes += $f.Length
+  $missing += ,@($rel, $referenced.ContainsKey(($f.Name -split '\.')[0]))
   $verb = if ($Apply) { 'copying   : ' } else { 'would copy: ' }
   Write-Output ($verb + $rel)
   if (-not $Apply) { continue }
@@ -82,6 +102,12 @@ Write-Output ('legacy files scanned : ' + $srcFiles.Count)
 Write-Output ('missing in target    : ' + $copied + '  (' + [math]::Round($bytes / 1MB, 1) + ' MB)')
 Write-Output ('already in target    : ' + $sameName + '  (byte-identical ' + $identical + ', different ' + $conflicts.Count + ')')
 Write-Output ('copy failed          : ' + $failed)
+$refN = @($missing | Where-Object { $_[1] }).Count
+Write-Output ('  of those, referenced by the history now: ' + $refN + ' ; not referenced: ' + ($copied - $refN))
+if (($copied - $refN) -gt 0) {
+  Write-Output '  (the unreferenced ones are not lost data -- the app calls them orphans and sweeps them again.'
+  Write-Output '   That is why a second dry run of this script can still show a few "missing".)'
+}
 if ($conflicts.Count -gt 0) {
   Write-Output ''
   Write-Output 'These exist on BOTH sides with different bytes. This script does NOT touch them --'
