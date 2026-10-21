@@ -2108,14 +2108,9 @@ int main(int argc, char* argv[])
                 auto* launcher = new SearchWindow;
                 const QString shots = QDir::tempPath() + QStringLiteral("/ltool-cfgshots");
                 launcher->resize(560, 300);
-                const auto relLum = [](QRgb c) {
-                    const auto ch = [](int v) {
-                        const double s = v / 255.0;
-                        return s <= 0.03928 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4);
-                    };
-                    return 0.2126 * ch(qRed(c)) + 0.7152 * ch(qGreen(c)) + 0.0722 * ch(qBlue(c));
-                };
-                const auto edgeContrast = [launcher, &relLum](const QString& file, QString* why) {
+                // 亮度/对比度的算法在 Theme 里只有一份（原来这里抄过一份局部 lambda，
+                // 剪贴板那张卡也要问同样的问题，就来第二处 —— 搬进 Theme 收掉）。
+                const auto edgeContrast = [launcher](const QString& file, QString* why) {
                     const QPixmap pm = launcher->grab();
                     const QImage img = pm.toImage().convertToFormat(QImage::Format_ARGB32);
                     pm.save(file, "PNG");
@@ -2131,9 +2126,8 @@ int main(int argc, char* argv[])
                     }
                     const QRgb e = img.pixel(0, cy);
                     const QRgb f = img.pixel(8, cy);
-                    const double a = relLum(e), b = relLum(f);
                     *why = QStringLiteral("描边=%1 底=%2").arg(QColor(e).name(), QColor(f).name());
-                    return (qMax(a, b) + 0.05) / (qMin(a, b) + 0.05);
+                    return Theme::contrast(e, f);
                 };
                 Theme::setMode(Theme::Mode::Dark);
                 QString whyN;

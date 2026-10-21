@@ -1090,3 +1090,41 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
   4 行 `CMakeLists.txt` 模板：GLOB 自己目录的 `*.cpp` + `plugin.json`，类名从主仓库 `CMakeLists.txt` 现读，
   不手抄），`sdk/` 由主仓库 `tools/make_sdk.py` 重生成。它的独立构建 + `abi_check`/`abi_stale` 两道闸都过了
   （19 颗、缺 0 个符号、布局陈旧 0 颗，dll 里个人路径 0 命中）。
+
+## 日间模式剪贴板一整墙看不清：自绘那张页抄了一份深色真值，因为它读不了 `rgba()`（2026-10-21，1.3.4）
+- 他这句是「日间模式剪贴板每个卡片很难看，那个背景完全看不清」。病因不在剪贴板：
+  `ClipCardDelegate::paint` 里那三颗颜色是**手抄的深色字面量**（`255,255,255,20` / `255,255,255,31` / `#3f6ae0`），
+  而它抄的不是懒 —— 表里 `card`/`cardLine` 那两颗当时写的是 CSS 的 `rgba(...)`，**QColor 解析不了**，
+  自绘代码拿不到，只能自己抄一份。于是切到日间=白卡上画白字白线。
+- 修法是把那两颗角色改成 `#AARRGGBB`（QColor 和 QSS 都认，`rowSel`/`hairline` 那一族早就是这么办的），
+  剪贴板改成只问表：`ClipboardPage::cardInks(bool selected)` 一颗函数当 delegate 的唯一取色口，
+  再给这张页接 `QEvent::ThemeChange` → `viewport()->update()`（不然切了模式卡片要等鼠标划过才换色）。
+  夜间那两份值按 alpha 换算（0.08→`0x14`、0.12→`0x1f`），**换算不是改外观**：夜里量到的三个数一字没动。
+- 半透明必须**先合成再比**：`Theme::over(卡片底, 列表底)` 出来那颗不透明的"纸"，正文/小字/描边都压它算。
+  拿 `rgba` 的原始 rgb 直接算会得出假的高对比（白卡 8% 白的 rgb 就是 255,255,255，压黑字能算出 20:1）。
+  这套公式原来在 `src/main.cpp` 的 `--cfgcheck` 里是一颗局部 lambda，这次搬进 `Theme`（`relativeLuminance` /
+  `contrast` / `over`），cfgcheck 那两条改读它 —— 同一个算式不许有第二份。
+- 实测（`--cliptest` 打的 INFO 行，正文/小字/描边）：夜间 `12.01 / 4.63 / 1.47` · 日间 `16.83 / 5.07 / 3.47`。
+  **第一版量到的日间描边是 1.52** —— 那条照抄了 iOS separator 的 `#d1d1d6`，白卡压白页等于没有线，
+  他说的"背景完全看不清"有这一半；换成启动器那圈描边同一支 `#868a90` 才到 3.47（WCAG 1.4.11 非文本要 ≥3:1）。
+- 四条新判据钉的是**决策的输入**（`cardInks()` 那个返回值），不是截图：日正文 ≥4.5、夜正文 ≥4.5（改颜色不许弄坏老模式）、
+  日描边 ≥3、夜描边 ≥1.4（夜里那条一直是 1.47，他这次点的是日间，拿 3:1 去动他用了很久的默认外观得他点头）。
+  两个模式各渲一张 PNG 到 `%TEMP%\ltool-clip-cards-{night,day}.png` 供肉眼复核 —— 离屏没中文字形，字是豆腐块，那就核色块和线。
+- **连带读到这两颗角色的地方**（改共享角色必须报的账）：`src/ToolsPage.cpp:103` 商店卡片墙 `border: 1px solid @cardLine`
+  和 `src/SearchWindow.cpp:260` 的 `background:@card`。日间商店卡片那道线一起变深（同一族问题，一次改到位），
+  启动器 hover 底没动（日/夜换算前后同值）。`--cfgcheck` 那 11 条（含描边 3.11:1 那条）跑完一字没动。
+- 为什么这道事故能发生：`tools/theme_gate.sh` 只扫 `src/`，**`plugins/**` 是明确写在闸外的**（19 颗 dll 各有一份写死的深色，
+  改它们=重发全部产物）。所以"漏一处没人响"在插件侧连数的人都没有。这次只把剪贴板这一颗接进表，
+  README 那一行原来把「剪贴板」列在"切不动"名单里，现在按实际改掉（录屏、置顶窗、宫图仍在名单里）。
+- CI 那圈离线判据原来**没有** `--cliptest` 和 `--storetest`（12 面里不含这两面）—— 那意味着这 4 条对比度判据
+  只有我本机跑过。补进同一循环（14 面），两面都在本机离屏 `失败 0 项`（`--cliptest` 77 绿 + 1 行点名 SKIP，`--storetest` 84 绿）。
+- 版本：core `1.3.3→1.3.4`（可感知的显示 bug 修复=patch；数据格式和插件接口都没动，`API` 保持 4，
+  `core_abi_gate.py` 在改完的工作树上 `GATE_HITS=0`），剪贴板插件 `1.1.1→1.1.2`（每颗自己递增那道闸）。
+- **SDK 闭包因此涨了一个头**：`tools/make_sdk.py` 量到 `25 → 26`，多出来的正是 `Theme.h`
+  （`src/` 里只有 `.cpp` include 它，所以它以前不在任何插件的 include 闭包里；这次剪贴板第一个 include 它）。
+  插件仓库那头要重生成 `sdk/` 才编得过这颗 —— 那是下一次同步的事。
+- 拿**装好的那份**跑离屏判据时我又踩了一次弹框：安装包只打 `qwindows.dll`（`D:\software\ltool\platforms\` 实测就这一个），
+  所以对着它设 `QT_QPA_PLATFORM=offscreen` 不是"安静地不跑"，是**Qt 自己弹一扇系统模态错误框到他桌面上**
+  （"Available platform plugins are: windows."）。`deliver.ps1` 的 `installed` 那栏本来就是拿
+  `build\Release\platforms`（那里有 `qoffscreen.dll`）喂给装好的 exe —— 我绕过了那道守卫。
+  规矩：这两个变量是一颗原子的，`QT_QPA_PLATFORM=offscreen` 只能配一份**真有 qoffscreen.dll** 的 plugin path。

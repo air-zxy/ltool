@@ -54,6 +54,13 @@ QColor color(const char* role, int alpha);
 QString expand(const char* qssWithTokens);
 QString expand(const QString& qssWithTokens);
 
+// WCAG 2.1 那套算法，写在这里只有一份：判据要拿它问"这两个角色放在一起看不看得见"，
+// 而各个页自己抄一份系数就会各自算出不同数（`--cfgcheck` 原来那份局部 lambda 已搬过来）。
+// 半透明的颜色不许直接比 —— 先 `over()` 合成到它真正压着的那层底上（卡片底压在列表底上）。
+double relativeLuminance(QRgb c);
+double contrast(QRgb a, QRgb b);
+QColor over(const QColor& top, const QColor& bottom);   // 按 top 自己的 alpha 合成，结果不带 alpha
+
 // 弹层那两份（菜单 / 悬停说明）。Qt6 的 windows11/windowsvista 风格画弹层用的是系统的
 // 浅色底，调色板它不读 —— 只能靠样式表，所以这两份必须跟着模式走。
 QString menuStyle();

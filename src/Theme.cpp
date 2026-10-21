@@ -94,13 +94,21 @@ const Role kRoles[] = {
     { "panelEdge",  "#1affffff", "#868a90" },
     { "rowSel",     "#1cffffff", "#2e0066cc" },
     { "hairline",   "#ffffff", "#14182a" },
-    // 再往下这几颗的值是 CSS 的 rgba() 写法，QColor 解析不了 —— 只准在 QSS 里写 @name，
-    // 自绘要半透明请用 color("角色", alpha)。
+    // 下面这几颗里**还写着 rgba() 的那些**QColor 解析不了 —— 只准在 QSS 里写 @name，
+    // 自绘要半透明请用 color("角色", alpha)，或者照卡片那两颗改成 #AARRGGBB（两边都吃）。
     { "tintCyan",   "rgba(6, 182, 212, 0.16)", "rgba(6, 182, 212, 0.12)" },
     { "tintCyanLine", "rgba(6, 182, 212, 0.32)", "rgba(6, 182, 212, 0.40)" },
     { "hoverSoft",  "rgba(255,255,255,26)", "rgba(20,24,40,22)" },
-    { "card",       "rgba(255,255,255,0.08)", "#ffffff" },
-    { "cardLine",   "rgba(255,255,255,0.12)", "#d1d1d6" },
+    // 卡片那两颗原本是 `rgba(255,255,255,0.08)` / `0.12` —— **只有自绘剪贴板那一张卡需要 QColor 形式**，
+    // 而 QColor 不认 rgba()，于是它只能把三颗深色值抄进自己文件里，日间模式一开就是
+    // "白卡片上写白字"（他 2026-10-20 报的那句）。改成 `#AARRGGBB` 一份值两边都吃：
+    // QSS 认它，QColor 也认它（`rowSel`/`hairline` 那一族早就是这么办的）。alpha 换算：0.08→0x14、0.12→0x1f。
+    { "card",       "#14ffffff", "#ffffffff" },
+    // 日间那颗描边原来跟着 iOS 的 separator 取 `#d1d1d6` —— 拿判据一量只有 **1.52:1**，
+    // 白卡压白页、边界糊成一片（他这次说的"背景完全看不清"有这一半）。
+    // 换成启动器那圈描边同一支 `panelEdge` 的日间值：非文本对比度 3.47:1（WCAG 1.4.11 要 ≥3:1）。
+    // 夜里那一份保持"12% 白"没动 —— 他这次点的是日间，而且这条和启动器一样按"夜里只钉住别更糊"判。
+    { "cardLine",   "#1fffffff", "#ff868a90" },
     { "scrollHandle", "rgba(255,255,255,60)", "rgba(20,24,40,60)" },
     { "onAccent",   "white", "white" },
 };
@@ -168,6 +176,32 @@ QColor color(const char* role, int alpha)
     QColor c = color(role);
     c.setAlpha(alpha);
     return c;
+}
+
+// WCAG 2.1 的相对亮度与对比度。判据要问"这两颗颜色放一起看得见吗"，只能有一个算法 ——
+// 原来 `--cfgcheck` 里那份局部 lambda 就是第二份，搬这儿了。
+double relativeLuminance(QRgb c)
+{
+    const auto ch = [](int v) {
+        const double s = v / 255.0;
+        return s <= 0.03928 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * ch(qRed(c)) + 0.7152 * ch(qGreen(c)) + 0.0722 * ch(qBlue(c));
+}
+
+double contrast(QRgb a, QRgb b)
+{
+    const double la = relativeLuminance(a), lb = relativeLuminance(b);
+    const double hi = la > lb ? la : lb, lo = la > lb ? lb : la;
+    return (hi + 0.05) / (lo + 0.05);
+}
+
+QColor over(const QColor& top, const QColor& bottom)
+{
+    const double a = top.alphaF();
+    return QColor::fromRgbF(a * top.redF() + (1.0 - a) * bottom.redF(),
+                            a * top.greenF() + (1.0 - a) * bottom.greenF(),
+                            a * top.blueF() + (1.0 - a) * bottom.blueF());
 }
 
 QString expand(const char* qssWithTokens)

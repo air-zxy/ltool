@@ -9,6 +9,7 @@
 // load() 当场裁掉，「过滤 / 行号」那 36 条就全踩在一份被动过的数据上。
 #include "ClipboardPage.h"
 #include "ClipboardStore.h"
+#include "Theme.h"
 #include "Utils.h"
 
 #include <QApplication>
@@ -215,10 +216,44 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     check("这张页现在是卡片墙（IconMode + 自绘 delegate 都在）", page.viewKind(), "卡片墙");
     {   // 版面自己渲一张出来复核（离屏没有中文字形，字会是豆腐块 —— 那就核色块、格子和压字）
         page.resize(700, 460);
-        page.grab().save(QDir::tempPath() + "/ltool-clip-cards.png");
+        page.grab().save(QDir::tempPath() + "/ltool-clip-cards-night.png");
         std::printf("INFO 卡片版面渲了一张（肉眼复核用）：%s · %dx%d\n",
-                    (QDir::tempPath() + "/ltool-clip-cards.png").toUtf8().constData(),
+                    (QDir::tempPath() + "/ltool-clip-cards-night.png").toUtf8().constData(),
                     page.width(), page.height());
+    }
+    // ---- 两个模式的墨水对比度 ----
+    // 2026-10-20 他报"日间模式剪贴板每个卡片很难看，那个背景完全看不清"：这张页原来是自绘 +
+    // 自己抄了一份深色真值，白天就是"白卡片上写白字"。量的是 `cardInks()` 那颗决策的输入
+    // （delegate 用的就是它），不量截图；截图两个模式各渲一张供肉眼复核。
+    // 半透明的卡片底必须先合成到列表底上再比 —— 拿 rgba 的原始 rgb 直接比会算出假的高对比。
+    {
+        const auto inksIn = [](Theme::Mode m, double* bodyC, double* timeC, double* edgeC) {
+            Theme::setMode(m);
+            const ClipboardPage::CardInks ink = ClipboardPage::cardInks(false);
+            const QColor paper = Theme::over(ink.fill, Theme::color("base"));
+            *bodyC = Theme::contrast(ink.body.rgb(), paper.rgba());
+            *timeC = Theme::contrast(ink.time.rgb(), paper.rgba());
+            *edgeC = Theme::contrast(Theme::over(ink.stroke, paper).rgba(), paper.rgba());
+        };
+        double nb = 0, nt = 0, ne = 0, db = 0, dt = 0, de = 0;
+        inksIn(Theme::Mode::Dark, &nb, &nt, &ne);
+        inksIn(Theme::Mode::Light, &db, &dt, &de);
+        page.grab().save(QDir::tempPath() + "/ltool-clip-cards-day.png");
+        inksIn(Theme::Mode::Dark, &nb, &nt, &ne);   // 切回夜间再渲一张夜里的
+        std::printf("INFO 卡片对比度（正文/小字/描边）：夜间 %.2f/%.2f/%.2f · 日间 %.2f/%.2f/%.2f\n",
+                    nb, nt, ne, db, dt, de);
+        // 正文按 WCAG AA 要 ≥4.5:1（这次的红就是这个数不达标）；夜里那份正文本来就是亮的，
+        // 一起钉住"改颜色不许把老模式弄坏"。
+        check("日间：卡片正文压卡片底 ≥4.5:1（他这次报的就是这个数）",
+              db >= 4.5 ? "yes" : "no", "yes");
+        check("夜间：卡片正文压卡片底也 ≥4.5:1（改颜色不许把老模式弄坏）",
+              nb >= 4.5 ? "yes" : "no", "yes");
+        // 描边是非文本（WCAG 1.4.11 ≥3:1）—— 日间那张卡靠的就是"白卡 + 一道线"，
+        // 线一糊一整墙就糊成一片白（他这次说的"背景完全看不清"有这一半：旧值 #d1d1d6 只有 1.52:1）。
+        check("日间：卡片描边压卡片底 ≥3:1（非文本那条）", de >= 3.0 ? "yes" : "no", "yes");
+        // 夜间那条一直是"12% 白"压在近黑上（1.47:1），他这次没说夜里 —— 所以只钉"别比现在更糊"，
+        // 和启动器那圈描边一条规矩（拿 3:1 去动他用了很久的默认外观是另一件事，得他点头）。
+        check("夜间：卡片描边不许比现在这份更糊（≥1.4:1）", ne >= 1.4 ? "yes" : "no", "yes");
     }
     check("第一张卡占的格子和 cardSize() 是同一个数（不是每行自己算的）",
           QStringLiteral("%1x%2").arg(page.cardSizeAt(0).width()).arg(page.cardSizeAt(0).height())
