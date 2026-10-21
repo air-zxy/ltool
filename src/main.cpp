@@ -4500,6 +4500,44 @@ int main(int argc, char* argv[])
             } else {
                 std::printf("SKIP 在前台时再按=收起（这个环境抢不到前台，测不了这一支）\n");
             }
+            // ---- 失焦到底该不该收：问那颗纯函数（离屏抢不到前台，真造不出这两支）----
+            // 他 2026-10-21 报的"隐藏的时候会卡一下"就是第 1 条：以前这里只问"离上次呼出够不够 500ms"，
+            // 于是**呼出后 0.5 秒内点走**一律被当成激活竞争吞掉，要等 600ms 的复查才收，
+            // 看起来就是"我点开了别的东西，它还挂在那儿"。现在先问"这一次有没有真的拿到过前台"。
+            {
+                const auto name = [](SearchWindow::BlurAction a) {
+                    return QString::fromUtf8(a == SearchWindow::BlurAction::HideNow ? "立刻收"
+                                   : a == SearchWindow::BlurAction::IgnoreActivationRace ? "当竞争，稍后复查"
+                                   : a == SearchWindow::BlurAction::WaitCaptureEnds ? "等截图" : "菜单开着不动");
+                };
+                using BA = SearchWindow::BlurAction;
+                const auto act = [](bool fg, bool back, qint64 ms, bool menu, bool cap) {
+                    return SearchWindow::blurAction(fg, back, ms, menu, cap);
+                };
+                check("拿到过前台 + 呼出后 120ms 点走 = 立刻收（他说的就是这一支）",
+                      act(true, false, 120, false, false) == BA::HideNow, name(act(true, false, 120, false, false)));
+                check("拿到过前台 + 隔了 2 秒点走 = 立刻收（同一支，不该看那个数字）",
+                      act(true, false, 2000, false, false) == BA::HideNow, name(act(true, false, 2000, false, false)));
+                check("从没拿到过前台 + 120ms = 先不动，稍后复查（#40 那一支不许退化）",
+                      act(false, false, 120, false, false) == BA::IgnoreActivationRace,
+                      name(act(false, false, 120, false, false)));
+                check("从没拿到过前台 + 2 秒 = 收起（宽限早过了，没有理由还挂着）",
+                      act(false, false, 2000, false, false) == BA::HideNow, name(act(false, false, 2000, false, false)));
+                check("自己的右键菜单开着 = 不收（哪怕已经拿到过前台）",
+                      act(true, false, 120, true, false) == BA::StayMenuOpen, name(act(true, false, 120, true, false)));
+                check("F1 截图进行中 = 等它结束再收（--capturehold 那一支优先）",
+                      act(true, false, 120, false, true) == BA::WaitCaptureEnds, name(act(true, false, 120, false, true)));
+                check("拿到过前台、可前台又回到了呼出之前那个窗口 = 当激活竞争（#40 那支没被换掉）",
+                      act(true, true, 120, false, false) == BA::IgnoreActivationRace,
+                      name(act(true, true, 120, false, false)));
+                check("拿到过前台、前台去了**别的**窗口 = 真点走了，立刻收（这就是他报的那一下）",
+                      act(true, false, 120, false, false) == BA::HideNow,
+                      name(act(true, false, 120, false, false)));
+                check("这两支必须给不同答案，否则「拿到过前台」这个输入等于没读",
+                      act(true, false, 120, false, false) != act(false, false, 120, false, false),
+                      QStringLiteral("%1 vs %2").arg(name(act(true, false, 120, false, false)),
+                                                     name(act(false, false, 120, false, false))));
+            }
             delete other;
             std::printf("toggle: 失败 %d 项\n", toggleBad);
             std::fflush(stdout);

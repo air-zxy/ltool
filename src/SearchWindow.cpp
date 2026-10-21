@@ -452,6 +452,7 @@ void SearchWindow::showLauncher(const char* why)
 {
     // 设置页现在是非模态的，热键随时能把搜索框弹出来（以前模态时弹出来也打不了字）
     Utils::log(QStringLiteral("show: 呼出（要求者=%1）").arg(QString::fromUtf8(why)));
+    m_hadForeground = false;   // 每一次呼出重新判：见 blurAction
     m_showLatency.start();
     m_paintLogged = false;
     const int wsBefore = Platform::workingSetMB();
@@ -604,20 +605,49 @@ void SearchWindow::paintEvent(QPaintEvent*)
     p.drawPath(path);
 }
 
+SearchWindow::BlurAction SearchWindow::blurAction(bool hadForeground, bool backToPrevious,
+                                                 qint64 msSinceShow, bool menuVisible, bool capturing)
+{
+    if (menuVisible)
+        return BlurAction::StayMenuOpen;      // 自己的右键菜单开着，这条失焦不是"点走了"
+    if (capturing)
+        return BlurAction::WaitCaptureEnds;   // F1 截图进行中：等它结束再收（--capturehold 那一支）
+    // **拿到过前台之后的失焦就是真点走了，立刻收。** 以前这里只看"离上次呼出够不够 500ms"，
+    // 于是呼出后 0.5 秒内点走一律被当成激活竞争吞掉，要等 600ms 的复查才收 ——
+    // 他 2026-10-21 说的"隐藏的时候会卡一下"就是这个等待（本机日志里这一支一天 35 次）。
+    const bool inGrace = msSinceShow >= 0 && msSinceShow < 500;
+    // 从来没拿到过前台 = 我们压根没成为前台，这条失焦不是"点走了"；
+    // 拿到过、但前台**回到了呼出之前那个窗口** = 我们的激活被 Windows 撤回去（前台锁）。
+    // 这两种都是 #40 立的那一支：当场 hide 就变成"按了没出来"，所以先不动，宽限一过自己复查。
+    if (inGrace && (!hadForeground || backToPrevious))
+        return BlurAction::IgnoreActivationRace;
+    return BlurAction::HideNow;
+}
+
 bool SearchWindow::event(QEvent* e)
 {
+    if (e->type() == QEvent::WindowActivate)
+        m_hadForeground = true;
     if (e->type() == QEvent::WindowDeactivate) {
-        // 弹出后极短时间内的失焦是激活竞争，忽略；右键菜单打开时也不隐藏。
         // 设置页现在是非模态的，点去设置页时搜索框照样该收起（以前模态时不能这么判）
-        const bool grace = m_showTime.isValid() && m_showTime.elapsed() < 500;
-        if (!grace && (!m_menu || !m_menu->isVisible())) {
-            if (m_captureHold && CaptureState::isActive()) {
-                if (!m_captureHold->isActive())
-                    m_captureHold->start();   // 截图结束再收（见构造函数里的说明）
-            } else {
-                hide();
-            }
-        } else if (grace) {
+        const bool backToPrevious = m_prevFg
+                                    && GetForegroundWindow() == reinterpret_cast<HWND>(m_prevFg);
+        const BlurAction act = blurAction(m_hadForeground, backToPrevious,
+                                          m_showTime.isValid() ? m_showTime.elapsed() : -1,
+                                          m_menu && m_menu->isVisible(), CaptureState::isActive());
+        Utils::log(QStringLiteral("hide: 失焦 → %1（拿到过前台=%2 距呼出=%3ms）")
+                       .arg(act == BlurAction::HideNow ? QStringLiteral("立刻收")
+                            : act == BlurAction::IgnoreActivationRace ? QStringLiteral("当激活竞争，600ms 后复查")
+                            : act == BlurAction::WaitCaptureEnds ? QStringLiteral("等截图结束")
+                            : QStringLiteral("菜单开着，不动"))
+                           .arg(m_hadForeground ? 1 : 0)
+                           .arg(m_showTime.isValid() ? m_showTime.elapsed() : -1));
+        if (act == BlurAction::HideNow) {
+            hide();
+        } else if (act == BlurAction::WaitCaptureEnds) {
+            if (m_captureHold && !m_captureHold->isActive())
+                m_captureHold->start();   // 截图结束再收（见构造函数里的说明）
+        } else if (act == BlurAction::IgnoreActivationRace) {
             // 宽限期里丢掉的这条失焦，以前没人再回头看，于是窗口能一直"可见但躲在别的程序后面"。
             // 那个状态本身没坏处，坏在它是"看不见却还活着"——下一次按热键的判据全靠它。
             // 所以宽限一过自己复查：确实不是活动窗口就收起。

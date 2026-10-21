@@ -54,6 +54,21 @@ public:
     // 在现场查不到。现在每一条都必须报上名字（2026-10-21 他问的就是这个）。
     void showLauncher(const char* why);
     void warmUp();   // 启动后先映射+绘制一遍，别把这份开销留给第一次按热键
+
+    // 失焦那一条到底该不该收：抽成静态纯函数，是为了这两支能在离屏问出来
+    //（离屏**抢不到前台**，真造不出"拿到过前台之后点走"那一次，只能问谓词本身）。
+    enum class BlurAction {
+        HideNow,                // 立刻收
+        IgnoreActivationRace,   // 先不动，宽限一过自己复查（#40 那一支）
+        WaitCaptureEnds,        // F1 截图进行中，等它结束
+        StayMenuOpen,           // 自己的右键菜单开着
+    };
+    // backToPrevious = 前台现在回到了**这次呼出之前**那个窗口（m_prevFg）。
+    // 这一颗是为了不把两件事混成一件：拿到过前台之后失焦，
+    //   回到原主 = 我们的激活被 Windows 撤回去（前台锁），那才是 #40 要保的那一支；
+    //   去了别的窗口 = 他真的点走了，就该立刻收。
+    static BlurAction blurAction(bool hadForeground, bool backToPrevious, qint64 msSinceShow,
+                                 bool menuVisible, bool capturing);
     void rescan() { startScan(false, true); }        // 手动：强制全量重建
     void startInitialScan() { startScan(false, false); } // 启动：增量优先
     void setHotkeyLabel(const QString& label);
@@ -133,6 +148,9 @@ private:
     QElapsedTimer m_showLatency;   // 从按下呼出到画出来的分段计时（诊断"唤出慢"）
     bool m_paintLogged = false;
     bool m_warmed = false;
+    // 这一次呼出**有没有真的拿到过前台**。它是"失焦"该不该收起的那道判据的输入：
+    // 拿到过 = 用户真的点走了（立刻收）；从来没拿到过 = 激活竞争/前台锁没抢到（先别动，见 blurAction）。
+    bool m_hadForeground = false;
     bool m_showFavorites = false;    // 配置里勾了才在空查询时展开常用列表         // 预热只做一次
     bool m_settingsOpen = false;
     QPointer<QWidget> m_settingsDlg;   // 设置页开着时热键不再弹搜索框
