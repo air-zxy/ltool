@@ -19,29 +19,36 @@ param(
 $ErrorActionPreference = 'Stop'
 
 function Get-InstallLocation {
-  $keys = @(
-    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ltool_is1',
-    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ltool_is1',
-    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\ltool_is1'
+  # The uninstall key is Inno's GUID form ("{B7E6F3A1-...}_is1"), NOT "ltool_is1".
+  # The first version looked up a hardcoded 'ltool_is1', never found it, and silently fell back
+  # to the hardcoded path below -- right by luck. Not finding it must be said out loud.
+  $roots = @(
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
   )
-  foreach ($k in $keys) {
-    if (Test-Path $k) {
-      $v = (Get-ItemProperty -Path $k -ErrorAction SilentlyContinue).InstallLocation
-      if ($v) { return $v.TrimEnd('\') }
+  foreach ($r in $roots) {
+    if (-not (Test-Path $r)) { continue }
+    foreach ($k in (Get-ChildItem $r -ErrorAction SilentlyContinue)) {
+      $v = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
+      if ($v.DisplayName -notlike '*ltool*') { continue }
+      if ($v.InstallLocation) { return $v.InstallLocation.TrimEnd('\') }
     }
   }
   return ''
 }
 
 if (-not $Legacy) { $Legacy = Join-Path $env:APPDATA 'ltool' }
+$targetFrom = '-Target argument'
 if (-not $Target) {
   $inst = Get-InstallLocation
-  if ($inst) { $Target = Join-Path $inst 'data' } else { $Target = 'D:\software\ltool\data' }
+  if ($inst) { $Target = Join-Path $inst 'data'; $targetFrom = 'uninstall key InstallLocation' }
+  else { $Target = 'D:\software\ltool\data'; $targetFrom = 'HARDCODED FALLBACK (no ltool uninstall key found!)' }
 }
 
 Write-Output ('mode    : ' + $(if ($Apply) { 'APPLY (copies for real)' } else { 'DRY RUN (nothing written, add -Apply)' }))
 Write-Output ('legacy  : ' + $Legacy)
-Write-Output ('target  : ' + $Target)
+Write-Output ('target  : ' + $Target + '   (source: ' + $targetFrom + ')')
 if (-not (Test-Path $Legacy)) { Write-Output 'legacy dir is gone -- nothing to do'; exit 0 }
 if (-not (Test-Path $Target)) { Write-Output ('target dir does not exist: ' + $Target); exit 1 }
 

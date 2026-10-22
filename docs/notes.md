@@ -1699,3 +1699,15 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 总数：`--plugintest` 250 → 253（页缓存那三条）→ **257**（直达那四条）；离线全套仍然 0 红
   （`--cliptest 88+1 跳`、`--pathcfg 37+1 跳`、`--storetest 104`、`--startuptest 55`、`--pinyin 68`…），
   `plugin_version_gate` `NEEDS_BUMP=0`（这一小步只动了 core 的判据侧）。
+
+### 「打包安装我试试」这一趟里，我自己写坏的两个东西（都当场修了）
+
+- `build/verify/migrate_ltool_data.ps1` 找卸载键时写死 `ltool_is1` —— **真名是 Inno 那串 GUID
+  `{B7E6F3A1-...}_is1`**，所以它一直查不到、又**不出声地**退回写死的 `D:\software\ltool\data`，
+  结果碰巧对。改成按 `DisplayName` 现搜两棵 hive，并把「target 是从哪儿来的」打进那一行
+  （查不到就明说是 HARDCODED FALLBACK）。
+- 同一个文件被我加了中文注释 ⇒ **无 BOM 的 .ps1 直接 ParserError**（这仓库第五次踩）。
+  全文件回到纯 ASCII。它的头部注释本来就写着"ASCII only on purpose"，是我自己没照着做。
+- 还有一条**别再用错证据**：`ltool.exe` 的字节里 grep 不到 `1.4.1` 也 grep 不到 `1.4.0`
+  （ANSI 和 UTF-16 两种编码各数一遍都是 0）—— 短字面量在 release 产物里会被拆开，
+  所以"装了哪一版"要看**注册表 `DisplayVersion`** 和**安装包文件名**，不是看 exe 里那串字。
