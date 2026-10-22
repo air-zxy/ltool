@@ -3,9 +3,10 @@
 # 为什么要它：判据"绿"要说的是"这一栏量的是哪次 run 的终态"，推上去只算进了流水线。
 # token 走 git credential fill，只进 header、不进任何输出。
 set -u
-RUN="${1:?用法：bash build/verify/ci_wait.sh <run-id>}"
+RUN="${1:?用法：bash tools/ci_wait.sh <run-id>}"
 RUNFILE=$(mktemp)   # 落在临时目录，不进仓库
-cd "$(dirname "$0")/../.." || exit 1
+# 挪进 tools/ 的时候这里的深度要跟着改：以前在 build/verify/ 下是 ../..，现在只有一层。
+cd "$(dirname "$0")/.." || exit 1
 CRED=$(mktemp)
 printf 'protocol=https\nhost=github.com\n\n' | git credential fill >"$CRED" 2>/dev/null
 TOK=$(grep -m1 '^password=' "$CRED" | cut -d= -f2)
