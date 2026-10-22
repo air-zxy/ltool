@@ -1335,6 +1335,39 @@ int main(int argc, char* argv[])
               QStringLiteral("yes"));
         check("卡片互不重叠（三列排版真的分开了）", overlap ? QStringLiteral("yes") : QStringLiteral("no"),
               QStringLiteral("no"));
+        // ---- 他报「b64 会闪退」那一条路：搜索框直达 → 弹设置页 → 展开那张卡 → 顺手把后面那段文本递进去 ----
+        // SearchWindow 那边是 `openTool(id, extra)` → `SettingsWindow::showTool` → 这里同一个函数，
+        // 所以他"每次都会"的动作在这条上是被判据走得到的（他 2026-10-22 确认稳定复现）。
+        const bool opened = wall.showTool(QStringLiteral("base64"), QStringLiteral("aGVsbG8="));
+        check("直达那一路（展开卡片 + 递文本）走通了，没在路上崩",
+              opened ? QStringLiteral("yes") : QStringLiteral("no"), QStringLiteral("yes"));
+        QString bpErr;
+        QWidget* bp = PluginHost::page(QStringLiteral("base64"), nullptr, &bpErr);
+        const auto edits = bp ? bp->findChildren<QPlainTextEdit*>() : QList<QPlainTextEdit*>();
+        // 哪个框是哪个：按**角色**认（只读的那个是结果框），不按 findChildren 的顺序 ——
+        // 第一版按"第 0 个是输入"写，红了一次：那个顺序是对象树顺序，不是界面左右顺序。
+        QPlainTextEdit* bin = nullptr;
+        QPlainTextEdit* bout = nullptr;
+        for (QPlainTextEdit* e : edits) {
+            if (e->isReadOnly())
+                bout = e;
+            else
+                bin = e;
+        }
+        check("递给 base64 的那串真的进了输入框",
+              bin && bin->toPlainText() == QStringLiteral("aGVsbG8=")
+                  ? QStringLiteral("yes") : QStringLiteral("[%1 个框，输入框=%2]")
+                                                 .arg(edits.size())
+                                                 .arg(bin ? bin->toPlainText() : QStringLiteral("无")),
+              QStringLiteral("yes"));
+        check("那一串当场解出来了（结果框里是 hello）",
+              bout && bout->toPlainText() == QStringLiteral("hello")
+                  ? QStringLiteral("yes") : QStringLiteral("[%1]").arg(bout ? bout->toPlainText() : QStringLiteral("无")),
+              QStringLiteral("yes"));
+        check("stack 当前那一格就是这张页（不是回到卡片墙）",
+              bp && wall.findChild<QStackedWidget*>() && wall.findChild<QStackedWidget*>()->currentWidget() == bp
+                  ? QStringLiteral("yes") : QStringLiteral("no"),
+              QStringLiteral("yes"));
         std::printf("plugintest: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad == 0 ? 0 : 1;

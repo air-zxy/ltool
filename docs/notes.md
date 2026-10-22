@@ -1682,3 +1682,20 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
   只用固定缓冲区 + `fromLatin1`，异常处理里再多分配一次，第二次崩会把线索一起吃掉。
   顺手给 `store: 重排卡片墙` 那行加了「摘掉的那格=<类名>」：正常永远该是卡片墙那一类，
   哪天摘到一张插件页，那行会先替这次崩溃说话。
+
+### 这一处后来被**证死**了（同一轮 12:2x，他答"每次都会 · 从搜索框直达进去"）
+
+- 他那两条一给，路径就收窄到 `SearchWindow.cpp:1474` 那一行：`openTool(id, extra)`
+  → `SettingsWindow::showTool` → `ToolsPage::showTool` → `PluginHost::page()` + `PluginHost::feed()`。
+  "每次都会"排除了"偶发时序"，所以那条路必须能进判据 —— 加了 4 条走**真那条链**（拿 `ToolsPage wall`
+  直接调 `showTool("base64", "aGVsbG8=")`，判输入框/结果框/stack 当前格）。
+- **反向验 = 决定性的一步**：把三处缓存（`g_pages` 和 base64/json 两份 `m_page`）退回旧的裸指针写法、
+  判据一字不动重编 → `--plugintest` **段错误退出（rc=139）**，死在"宿主不会把已释放的页再发一次"
+  那条报红之后的下一步（也就是拿那块页去 `m_stack->indexOf/addWidget`）。
+  和他事件日志那个 `崩在 Qt6Core + 读地址 0x8` 同一个形状。改回来 → **257 条 0 红**。
+  所以这次不是"我修了一处看着像的"，是"同一条路在旧写法上必崩、在新写法上不崩"。
+- 判据自己也被修过一次：`findChildren<QPlainTextEdit*>()` 的下标不是界面顺序（第 0 个其实是只读的结果框），
+  第一版按"0 是输入"写，当场红两条 —— 红的是判据。现在按**角色**认（只读 = 结果框）。
+- 总数：`--plugintest` 250 → 253（页缓存那三条）→ **257**（直达那四条）；离线全套仍然 0 红
+  （`--cliptest 88+1 跳`、`--pathcfg 37+1 跳`、`--storetest 104`、`--startuptest 55`、`--pinyin 68`…），
+  `plugin_version_gate` `NEEDS_BUMP=0`（这一小步只动了 core 的判据侧）。
