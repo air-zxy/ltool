@@ -1042,29 +1042,52 @@ int main(int argc, char* argv[])
                                                               : QStringLiteral("no"),
                   QStringLiteral("yes"));
         }
-        // 缓存里那张页**被别人删掉**之后，`page(id)` 不许再把那块已释放的内存发出去。
-        // 这条盯的是 2026-10-22 他报的「b64 会闪退」的形状：页是 `createPage(parent)` 时交给调用方
-        // 那棵树拥有的，而 `ToolsPage::rebuildGrid()` 会把 stack 摘掉的那一格 deleteLater 掉 ——
-        // 宿主这头和插件壳那头各存了一份**裸指针**，谁都不知道对方已经没了。
-        {
+        // 缓存里那张页**被别人删掉**之后，`page(id)` 不许再把那块已释放的内存发出去，
+        // 插件壳里那颗 `m_page` 也不许再往它身上写字。
+        // 2026-10-22 他报的「b64 会闪退」就是这个形状：页是 `createPage(parent)` 交给调用方那棵树
+        // 拥有的，而 `ToolsPage::rebuildGrid()` 会把摘掉的那一格 deleteLater —— 宿主这头和壳那头
+        // 各存了一份裸指针，谁都不知道对方已经没了。
+        // 原来这一趟只钉 base64 一颗。它不该只钉一颗：`g_pages`、壳里的 `m_page`、卡片墙这三样
+        // 对每颗插件是同一套代码，形状和"是哪一颗"无关 —— 下次轮到谁都有可能。
+        int evictTotal = 0, evictClean = 0;
+        for (const char* idc : kTools) {
+            const QString id = QLatin1String(idc);
+            const PluginHost::Meta* m = PluginHost::meta(id);
+            if (!m || !m->ok())
+                continue;
             QString err;
-            QWidget* first = PluginHost::page(QStringLiteral("base64"), nullptr, &err);
-            has("base64 页在（页被删那一趟要用它）", first != nullptr);
-            if (first) {
-                QPointer<QWidget> guard(first);
-                delete first;                       // 模拟 ToolsPage 那一刀（同步删，不靠事件循环）
-                const bool died = guard.isNull();
-                QWidget* again = PluginHost::page(QStringLiteral("base64"), nullptr, &err);
-                check("宿主不会把已释放的页再发一次（缓存里那颗跟着死）",
-                      QStringLiteral("%1/%2").arg(died ? QStringLiteral("dead") : QStringLiteral("alive"))
-                          .arg(again && again != first ? QStringLiteral("new") : QStringLiteral("same")),
-                      QStringLiteral("dead/new"));
-                check("重造出来的那张能用（不是空指针）",
-                      again && again->metaObject()->className() != nullptr ? QStringLiteral("yes")
-                                                                          : QStringLiteral("no"),
-                      QStringLiteral("yes"));
+            QWidget* first = PluginHost::page(id, nullptr, &err);
+            if (!first) {
+                check((id + "：删了再拿这一趟得先有一张页").toUtf8().constData(),
+                      QStringLiteral("no"), QStringLiteral("yes"));
+                continue;
             }
+            ++evictTotal;
+            QPointer<QWidget> guard(first);
+            delete first;                    // 那一刀（同步删，不等事件循环）
+            const bool died = guard.isNull();
+            // 缓存还没来得及清的时候先递一次文本：壳里那颗 m_page 指的正是刚死的这张
+            //（旧写法在这里是一次 use-after-free = 他看到的闪退）
+            const bool fed = PluginHost::feed(id, QStringLiteral("123"));
+            QWidget* again = PluginHost::page(id, nullptr, &err);
+            QPointer<QWidget> freshGuard(again);
+            const bool usable = again != nullptr && !freshGuard.isNull();
+            // 这里**不比对地址**：`delete` 之后新造那张经常落在同一块回收内存上（grid 就这么被
+            // 判成过 "same"）。地址相等说明不了"发的是旧的"，指针跟着死 + 当场用得动才说明得了。
+            if (again == first)
+                std::printf("INFO %s：新造的那张落在回收地址上（不是同一对象）\n", idc);
+            if (died && !fed && usable)
+                ++evictClean;
+            check((id + "：页删掉之后 缓存跟着死 / 递文本不接 / 再要一张用得动").toUtf8().constData(),
+                  QStringLiteral("%1/%2/%3")
+                      .arg(died ? QStringLiteral("dead") : QStringLiteral("alive"))
+                      .arg(fed ? QStringLiteral("fed") : QStringLiteral("refused"))
+                      .arg(usable ? QStringLiteral("usable") : QStringLiteral("none")),
+                  QStringLiteral("dead/refused/usable"));
         }
+        check("每颗插件都过了「页被删后再拿」这一趟",
+              QStringLiteral("%1/%2").arg(evictClean).arg(evictTotal),
+              QStringLiteral("%1/%1").arg(evictTotal));
         // 递文本那条路（API 2 新加的）：搜索框"json 这串"/"b64 这串"靠它
         QString err;
         QWidget* jp = PluginHost::page(QStringLiteral("json"), nullptr, &err);
@@ -1368,6 +1391,67 @@ int main(int argc, char* argv[])
               bp && wall.findChild<QStackedWidget*>() && wall.findChild<QStackedWidget*>()->currentWidget() == bp
                   ? QStringLiteral("yes") : QStringLiteral("no"),
               QStringLiteral("yes"));
+        // ---- 每一颗都走一遍他报的那条路，中间插一次「拆墙」----
+        // 上面那三条钉的是他报的那一次（base64）。这一段把同一条路按颗铺开：直达 → 拆墙 → 再直达。
+        // 这一趟量的是"进程还活着"，不是功能对不对 —— 所以它红了就等于有人又要开始闪退。
+        int hitTotal = 0, hitOk = 0;
+        QStringList hitIds;
+        for (const char* idc : kTools) {
+            const QString id = QLatin1String(idc);
+            const PluginHost::Meta* m = PluginHost::meta(id);
+            if (!m || !m->ok())
+                continue;
+            ++hitTotal;
+            hitIds << id;
+            if (wall.showTool(id, QStringLiteral("123")))
+                ++hitOk;
+        }
+        check("逐颗直达（带一段文本）：每颗都展开成了当前那一格",
+              QStringLiteral("%1/%2").arg(hitOk).arg(hitTotal), QStringLiteral("%1/%1").arg(hitTotal));
+        for (int round = 1; round <= 2; ++round) {
+            wall.rebuildGrid();                    // 第 0 格摘掉 deleteLater = 那一刀
+            for (int i = 0; i < 30; ++i)
+                QCoreApplication::processEvents();   // 让它真的落地，别停在队列里
+            int back = 0;
+            for (const QString& id : hitIds)
+                if (wall.showTool(id))
+                    ++back;
+            check(QStringLiteral("第 %1 次拆墙之后再逐颗直达：一颗没崩").arg(round).toUtf8().constData(),
+                  QStringLiteral("%1/%2").arg(back).arg(hitTotal), QStringLiteral("%1/%1").arg(hitTotal));
+        }
+        // ---- 整扇商店页关掉那一趟（他真正的形状：页挂在 `ToolsPage` 那棵树上，一关全没）----
+        // 上面 delete 的是单张页；这里是**一扇窗里点开过的页一起没**。
+        // 另开一扇（不 show，离屏内自生自灭），逐颗直达，然后把这扇窗删掉。
+        {
+            ToolsPage* other = new ToolsPage;
+            int inTree = 0;
+            for (const QString& id : hitIds)
+                if (other->showTool(id))
+                    ++inTree;
+            check("第二扇商店页也能逐颗直达",
+                  QStringLiteral("%1/%2").arg(inTree).arg(hitTotal), QStringLiteral("%1/%1").arg(hitTotal));
+            delete other;                          // 关掉那扇窗：这一批页跟着那棵树一起没
+            // 顺序是**先递文本、再要页**：`page()` 会把壳里那颗 `m_page` 顶成新造的那张，
+            // 那样"往已经没掉的页上写字"这一支就永远量不到了 —— 量不到不等于没有。
+            int safe = 0;
+            for (const QString& id : hitIds) {
+                const bool refused = !PluginHost::feed(id, QStringLiteral("123"));
+                QString err;
+                QWidget* w = PluginHost::page(id, nullptr, &err);
+                QPointer<QWidget> wGuard(w);
+                const bool usable = w != nullptr && !wGuard.isNull();
+                if (refused && usable)
+                    ++safe;
+                check((id + "：那扇窗关掉之后 递文本不接 / 再要一张用得动").toUtf8().constData(),
+                      QStringLiteral("%1/%2").arg(refused ? QStringLiteral("refused") : QStringLiteral("fed"))
+                          .arg(usable ? QStringLiteral("usable") : QStringLiteral("none")),
+                      QStringLiteral("refused/usable"));
+            }
+            check("每颗插件都过了「整扇窗关掉后再拿」这一趟",
+                  QStringLiteral("%1/%2").arg(safe).arg(hitTotal), QStringLiteral("%1/%1").arg(hitTotal));
+        }
+        std::printf("INFO 三趟按颗铺开的闪退判据：%d 颗插件，各过了「页被单删」「拆墙后再直达 ×2」「整扇窗关掉后再拿」\n",
+                    evictTotal);
         std::printf("plugintest: 失败 %d 项\n", bad);
         std::fflush(stdout);
         return bad == 0 ? 0 : 1;
