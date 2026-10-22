@@ -45,9 +45,17 @@ def nearest_tag():
     return (r.stdout or '').strip()
 
 
-def expected_plugins():
-    """主仓库现在有几颗插件：现算。颗数写死在这里，加一颗就要来改一次，
-    而忘了改的那一次它会拿着旧数字判"清单没问题"。"""
+def expected_plugins(tag=''):
+    """那一版发出去时有几颗插件：**从那个 tag 数**，不从工作树数。
+    第一版这里是现算工作树，于是拿 v1.4.1 那次发版（19 条）比今天（20 颗）报了一条 PROBLEM ——
+    那是把"过去的产物"和"未来的树"放在一起比，量错了对象。tag 不在本地时退回现算并说清楚。"""
+    if tag:
+        r = subprocess.run(['git', 'ls-tree', '-r', '--name-only', tag, '--'], cwd=root,
+                           capture_output=True, text=True)
+        names = [l for l in (r.stdout or '').splitlines()
+                 if l.startswith('plugins/') and l.endswith('/plugin.json')]
+        if names:
+            return len(names)
     return len(glob.glob(os.path.join(root, 'plugins', '*', 'plugin.json')))
 
 
@@ -72,8 +80,9 @@ else:
         sys.exit(1)
     rel = json.loads(get('https://api.github.com/repos/mateo-ki/ltool/releases/tags/' + tag))
 
-want = expected_plugins()
-print('量的是 %s 那一版；主仓库现在 %d 颗插件' % (tag or '（无名）', want))
+want = expected_plugins(tag)
+now = expected_plugins()
+print('量的是 %s 那一版（那次发出去 %d 颗插件；工作树现在 %d 颗）' % (tag or '（无名）', want, now))
 bad = 0
 
 # 1 说明里不许有家目录/用户名
@@ -90,7 +99,7 @@ try:
     plugins = idx.get('plugins', idx if isinstance(idx, list) else [])
     print('商店清单：HTTP 200，条目=', len(plugins))
     if len(plugins) < want:
-        print('   PROBLEM 清单只有 %d 条，主仓库有 %d 颗' % (len(plugins), want))
+        print('   PROBLEM 清单只有 %d 条，而 %s 那一次构建有 %d 颗插件' % (len(plugins), tag, want))
         bad += 1
 except Exception as e:
     print('PROBLEM 商店那条链还是不通：', e)
