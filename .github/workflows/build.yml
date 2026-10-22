@@ -248,7 +248,12 @@ jobs:
           head -c 5000 /dev/urandom > "$RUNNER_TEMP/test_diskbranch/root.bin"
           export LTOOL_DISKBRANCH_DIR="$RUNNER_TEMP/test_diskbranch"
 
-          for f in --smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --seamtest --diskbranch --mfttest --storeexit --storetest --cliptest --startuptest --pathcfg; do
+          # 这三面旗是**插件自己带着的判据**（grid 64 / linuxdo 44 / random 52），主程序里只有一句点名。
+          # 以前这个名单里没有它们：那就等于"只有写它的那个人本机跑过一遍"，
+          # 之后谁改了那张页都没人数 —— #94 那次（--storenet 四条红没人看见）是同一个形状。
+          # 三条都离线、都不 show 窗口，加起来约 1.2 秒；linuxdo 与 random 走沙箱数据目录，
+          # grid 那条自己算临时路径自己删（`src/main.cpp` 里 `--gridtest` 那一段写明了这一点）。
+          for f in --smoke --plugintest --rowmenu --username --about --cfgcheck --appdirs --pinyin --seamtest --diskbranch --mfttest --storeexit --storetest --cliptest --gridtest --linuxdotest --randtest --startuptest --pathcfg; do
             echo "===== $f ====="
             log_file="$RUNNER_TEMP/test_${f//--/}.log"
             cmd="./ltool.exe $f"
