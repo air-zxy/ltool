@@ -1050,44 +1050,57 @@ int main(int argc, char* argv[])
         // 原来这一趟只钉 base64 一颗。它不该只钉一颗：`g_pages`、壳里的 `m_page`、卡片墙这三样
         // 对每颗插件是同一套代码，形状和"是哪一颗"无关 —— 下次轮到谁都有可能。
         int evictTotal = 0, evictClean = 0;
-        for (const char* idc : kTools) {
-            const QString id = QLatin1String(idc);
-            const PluginHost::Meta* m = PluginHost::meta(id);
-            if (!m || !m->ok())
-                continue;
-            QString err;
-            QWidget* first = PluginHost::page(id, nullptr, &err);
-            if (!first) {
-                check((id + "：删了再拿这一趟得先有一张页").toUtf8().constData(),
-                      QStringLiteral("no"), QStringLiteral("yes"));
-                continue;
+        // 三趟而不是只跑一遍：这类生命周期 bug 的形状和堆怎么复用有关（"新造那张正好落在刚释放的
+        // 地址上"就是跑第二遍才会撞上的那种）。第一趟逐颗出声，后两趟只在坏的时候点名。
+        for (int round = 1; round <= 3; ++round) {
+            int total = 0, clean = 0;
+            const bool talk = round == 1;
+            for (const char* idc : kTools) {
+                const QString id = QLatin1String(idc);
+                const PluginHost::Meta* m = PluginHost::meta(id);
+                if (!m || !m->ok())
+                    continue;
+                QString err;
+                QWidget* first = PluginHost::page(id, nullptr, &err);
+                if (!first) {
+                    check((id + "：删了再拿这一趟得先有一张页").toUtf8().constData(),
+                          QStringLiteral("no"), QStringLiteral("yes"));
+                    continue;
+                }
+                ++total;
+                QPointer<QWidget> guard(first);
+                delete first;                    // 那一刀（同步删，不等事件循环）
+                const bool died = guard.isNull();
+                // 缓存还没来得及清的时候先递一次文本：壳里那颗 m_page 指的正是刚死的这张
+                //（旧写法在这里是一次 use-after-free = 他看到的闪退）
+                const bool fed = PluginHost::feed(id, QStringLiteral("123"));
+                QWidget* again = PluginHost::page(id, nullptr, &err);
+                QPointer<QWidget> freshGuard(again);
+                const bool usable = again != nullptr && !freshGuard.isNull();
+                // 这里**不比对地址**：`delete` 之后新造那张经常落在同一块回收内存上（grid 就这么被
+                // 判成过 "same"）。地址相等说明不了"发的是旧的"，指针跟着死 + 当场用得动才说明得了。
+                if (again == first && talk)
+                    std::printf("INFO %s：新造的那张落在回收地址上（不是同一对象）\n", idc);
+                const bool okShape = died && !fed && usable;
+                if (okShape)
+                    ++clean;
+                if (talk || !okShape)
+                    check((id + QStringLiteral("（第 %1 趟）：页删掉之后 缓存跟着死 / 递文本不接 / 再要一张用得动")
+                                .arg(round)).toUtf8().constData(),
+                          QStringLiteral("%1/%2/%3")
+                              .arg(died ? QStringLiteral("dead") : QStringLiteral("alive"))
+                              .arg(fed ? QStringLiteral("fed") : QStringLiteral("refused"))
+                              .arg(usable ? QStringLiteral("usable") : QStringLiteral("none")),
+                          QStringLiteral("dead/refused/usable"));
             }
-            ++evictTotal;
-            QPointer<QWidget> guard(first);
-            delete first;                    // 那一刀（同步删，不等事件循环）
-            const bool died = guard.isNull();
-            // 缓存还没来得及清的时候先递一次文本：壳里那颗 m_page 指的正是刚死的这张
-            //（旧写法在这里是一次 use-after-free = 他看到的闪退）
-            const bool fed = PluginHost::feed(id, QStringLiteral("123"));
-            QWidget* again = PluginHost::page(id, nullptr, &err);
-            QPointer<QWidget> freshGuard(again);
-            const bool usable = again != nullptr && !freshGuard.isNull();
-            // 这里**不比对地址**：`delete` 之后新造那张经常落在同一块回收内存上（grid 就这么被
-            // 判成过 "same"）。地址相等说明不了"发的是旧的"，指针跟着死 + 当场用得动才说明得了。
-            if (again == first)
-                std::printf("INFO %s：新造的那张落在回收地址上（不是同一对象）\n", idc);
-            if (died && !fed && usable)
-                ++evictClean;
-            check((id + "：页删掉之后 缓存跟着死 / 递文本不接 / 再要一张用得动").toUtf8().constData(),
-                  QStringLiteral("%1/%2/%3")
-                      .arg(died ? QStringLiteral("dead") : QStringLiteral("alive"))
-                      .arg(fed ? QStringLiteral("fed") : QStringLiteral("refused"))
-                      .arg(usable ? QStringLiteral("usable") : QStringLiteral("none")),
-                  QStringLiteral("dead/refused/usable"));
+            check(QStringLiteral("第 %1 趟「页被删后再拿」：颗颗干净").arg(round).toUtf8().constData(),
+                  QStringLiteral("%1/%2").arg(clean).arg(total),
+                  QStringLiteral("%1/%1").arg(total));
+            if (round == 1) {
+                evictTotal = total;
+                evictClean = clean;
+            }
         }
-        check("每颗插件都过了「页被删后再拿」这一趟",
-              QStringLiteral("%1/%2").arg(evictClean).arg(evictTotal),
-              QStringLiteral("%1/%1").arg(evictTotal));
         // 递文本那条路（API 2 新加的）：搜索框"json 这串"/"b64 这串"靠它
         QString err;
         QWidget* jp = PluginHost::page(QStringLiteral("json"), nullptr, &err);
