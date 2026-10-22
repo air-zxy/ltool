@@ -816,9 +816,15 @@ void ToolsPage::rebuildGrid()
     // 他报的是"卸完插件……然后内存爆炸卡死"，而那台是 Win10（我这台 Win11 上离屏量到 58→63 MB，
     // 复现不了）。每重排一次就把工作集和格子数写进日志：下次炸之前那几行能分出
     // "每次重排都长一点"（= 有东西没释放）和"某一下突然长"（= 那一下真去干了重活）。
-    Utils::log(QStringLiteral("store: 重排卡片墙（卡片 %1 张 / stack %2 格 / 工作集 %3 MB）")
+    Utils::log(QStringLiteral("store: 重排卡片墙（卡片 %1 张 / stack %2 格 / 摘掉的那格=%3 / 工作集 %4 MB）")
                    .arg(findChildren<QFrame*>(QStringLiteral("row")).size())
                    .arg(m_stack->count())
+                   // 这半句是 2026-10-22 加的：这一行按写法**永远该摘的是卡片墙**（第 0 格），
+                   // 而插件页往后追加。哪天真摘到一张插件页，缓存里那份裸指针就成了悬空
+                   //（`PluginHost::g_pages` 和各壳里的 `m_page` 都不知道自己被删了）——
+                   // 有这一格才分得清"崩"和"没崩但删错了东西"。
+                   .arg(old ? QString::fromLatin1(old->metaObject()->className())
+                            : QStringLiteral("无"))
                    .arg(Platform::workingSetMB()));
 }
 

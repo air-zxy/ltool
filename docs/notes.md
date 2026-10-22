@@ -1646,3 +1646,39 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
   第三次（直连重试）就过了 ⇒ 推完一定要 `git ls-remote` 对上 sha 再算成功（这次 `b4ba2e1` 已对上）。
 - 版本：插件仓库只是主仓库的镜像，**不升任何号**（三颗的版本号就是主仓库发出去的那三个号）；
   core 侧这轮只有文档和工具（`tools/sync_plugins.py`、`tools/postrelease_check.py`）⇒ 不升号。
+
+## 「b64 会闪退」：插件页的命不在宿主手里，可两边都存了裸指针（2026-10-22 12:00 他报的）
+
+- 先分两层取证（进程崩没崩 vs 只是界面没反应）：事件日志 `Id=1001` 有 **2026-10-22 12:00:17 ltool.exe
+  崩在 `Qt6Core.dll` 6.10.2.0 + RVA `0x3fc2b8`，异常 `c0000005`、访问地址 `0x8`**；
+  `%LOCALAPPDATA%\CrashDumps\ltool.exe.17412.dmp` 同一分钟。**是真崩**，不是"点了没反应"。
+- 签名和昨天那一批不是一个：10-21 那 10 次全是 `0x1489c9`（= 我已经修掉的 `app.arguments()` 那个），
+  今天这个是**新的一个偏移**。用 `build/verify/crashsig.ps1 -Days 7` 一列就分得清（这台机的 PowerShell
+  从 bash 里传 `$_` 会被吃掉，所以走 .ps1 + 纯 ASCII）。
+- 现场那一趟在日志里是：`12:00:01 clipboard: swept 2 orphan` → `12:00:03 plugin: 建页 base64` →
+  `store: 展开 base64（stack 第 1 格 / 共 2 格）` → `12:00:04 store: 重排卡片墙（卡片 38 张 / stack 2 格）` →
+  `12:00:09 呼出` → `12:00:12 hide` → 崩。
+- **代码上确实站得住的一处**（这轮修了）：插件页是 `createPage(parent)` 时交给调用方那棵树拥有的，
+  而 `ToolsPage::rebuildGrid()` 会把 stack 摘掉的那一格 `deleteLater()`；宿主这边 `PluginHost::g_pages`
+  和各壳里那份 `m_page` 存的都是**裸指针**，谁都不知道对方已经没了 → 下一次 `page(id)` 或 `feedText()`
+  就是 use-after-free，形状正好是"在 Qt 里读一个成员（偏移 8）"。
+  改：`g_pages` 换成 `QHash<QString, QPointer<QWidget>>`（缓存里那颗跟着页一起死，`page()` 遇到死的就重造），
+  `base64` / `json` 那两份 `m_page` 换成 `QPointer`，`feedText` 在页没了的时候**老实返回 false**（不假装收下）；
+  `grid` 那份 `m_page` 从头到尾没人读过 —— 那是个只写不读的字段，连着删掉（不留空开关）。
+- 判据：`--plugintest` 加 3 条 —— 拿 base64 那张页**真删一次**，再问宿主要点什么。
+  修完是 `dead/new` + `yes`；反向验（把 `page()` 换回"缓存里有就发出去"那份写法）当场红 2 条
+  （`got=[dead/same]`、重造那条 `got=[no]`），其余 251 条照绿。总数 250 → **253**。
+- 插件号：`base64` 1.0.1→**1.0.2**、`json` 1.0.2→**1.0.3**、`grid` 1.0.2→**1.0.3**（都是行为修复，走补丁位）。
+  core：接口没动布局（`core_abi_gate` `GATE_HITS=0`），但 `ltool.iss` 的号 **1.4.0 → 1.4.1** ——
+  **1.4.0 已经发出去了，发出去的号不能被后来的产物复用**（这条规矩上次是拿商店那条链当尺子量的：
+  1.4.1 的产物会去找 `releases/download/v1.4.1/plugins-index.json`，**在你推 `v1.4.1` 之前它是 404**，
+  应用会退回本地缓存那 19 条并照实说 —— 这是设计里的行为，不是回归）。
+- 老实说一句：**这处补丁我没能证明就是他这一次崩的那一处**。上面那条链是"代码上真有、且一崩就是这个形状"，
+  但偏移 `0x3fc2b8` 在 Qt6Core 内部、附近没有可读的导出（`pe_rva.py` 量到的是 `QBluetoothPermission` 那个
+  staticMetaObject 之后 23 KB 的一处**未导出代码**），单凭这一个数定不到调用方。
+  所以下次真崩要能自己说清 —— 崩溃处理里补了**栈回溯**：`SetUnhandledExceptionFilter` 现在拿
+  `CaptureStackBackTrace`（kernel32 那一版，不用链 ntdll.lib）打最多 12 帧，
+  每帧一行 `CRASH FRAME ## 模块名+0xRVA` 进 `log.txt`，行号可以喂回 `pe_rva.py` 去问旁边是谁；
+  只用固定缓冲区 + `fromLatin1`，异常处理里再多分配一次，第二次崩会把线索一起吃掉。
+  顺手给 `store: 重排卡片墙` 那行加了「摘掉的那格=<类名>」：正常永远该是卡片墙那一类，
+  哪天摘到一张插件页，那行会先替这次崩溃说话。

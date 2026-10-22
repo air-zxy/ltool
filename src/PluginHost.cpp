@@ -11,6 +11,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLibrary>
+#include <QPointer>
 #include <QPluginLoader>
 #include <QWidget>
 
@@ -19,7 +20,11 @@ namespace {
 QVector<PluginHost::Meta> g_metas;
 QHash<QString, QPluginLoader*> g_loaders;      // 只装不卸：卸载会留下悬空的 QWidget
 QHash<QString, LToolPlugin*> g_plugins;
-QHash<QString, QWidget*> g_pages;
+QHash<QString, QPointer<QWidget>> g_pages;
+// ^ 用 QPointer 不是讲究：这些页的命**不在宿主手里** —— 它们是 `createPage(parent)` 时交给
+// 调用方那棵树去拥有的（`ToolsPage` 重排卡片墙那一格会把它摘掉的那颗 deleteLater 掉）。
+// 裸指针缓存的话，下一次 `page(id)` 就把一块已经释放的 QWidget 发出去，
+// 界面上一按就是"读地址 8"那种 0xC0000005（2026-10-22 base64 崩的那一趟正在查这条路）。
 // 每个 id **最近一次装载失败的原因**（成功就销掉）。界面要说"这个动作没人接"的时候，
 // 得能分出"目录里根本没这个文件"和"文件在、可它起不来" —— 2026-10-19 他按 F1 弹的
 // 就是那句"是不是缺 ltool-capture.dll"，而 dll 明明躺着：商店那份产物和这版 core 的
@@ -162,8 +167,11 @@ LToolPlugin* plugin(const QString& id)
 
 QWidget* page(const QString& id, QWidget* parent, QString* err)
 {
-    if (g_pages.contains(id))
-        return g_pages.value(id);
+    if (g_pages.contains(id)) {
+        if (QWidget* cached = g_pages.value(id))
+            return cached;
+        g_pages.remove(id);        // 那张页已经不在了：留一格永远不会再亮的缓存没有意义，重造一张
+    }
     LToolPlugin* p = plugin(id);
     if (!p) {
         if (err)

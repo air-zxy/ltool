@@ -72,6 +72,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QElapsedTimer>
+#include <QPointer>
 #include <QProcess>
 #include <QEventLoop>
 #include <QImage>
@@ -640,6 +641,32 @@ int main(int argc, char* argv[])
         Utils::log(QStringLiteral("FATAL CRASH: code=0x%1 addr=%2")
                        .arg(QString::number(code, 16).toUpper())
                        .arg(reinterpret_cast<quintptr>(addr), 0, 16));
+        // 再把这一趟的栈打出来：以前只能报到"崩在 Qt6Core 里读地址 8"这一格，
+        // 而日志只说得出"当时正开着哪张页" —— 分不出是从哪一路掉进去的（2026-10-22 base64 那次就这样）。
+        // 拿模块名 + RVA 打，之后可以喂给 build/verify/pe_rva.py 去问它旁边是哪个导出。
+        // 刻意只用固定缓冲区 + fromLatin1：异常处理里再分配一次大对象，第二次崩会把线索一起吃掉。
+        void* frames[12] = {};
+        const USHORT n = CaptureStackBackTrace(0, 12, frames, nullptr);   // kernel32 那一版，不用链 ntdll.lib
+        char line[160];
+        for (USHORT i = 0; i < n; ++i) {
+            HMODULE mod = nullptr;
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(frames[i]), &mod) && mod) {
+                wchar_t name[64] = L"?";
+                if (GetModuleBaseNameW(GetCurrentProcess(), mod, name, 62) > 0) {
+                    const auto rva = reinterpret_cast<unsigned long long>(frames[i]) - reinterpret_cast<unsigned long long>(mod);
+                    _snprintf_s(line, sizeof line, _TRUNCATE, "CRASH FRAME %02u %ls+0x%llx",
+                                i, name, rva);
+                } else {
+                    _snprintf_s(line, sizeof line, _TRUNCATE, "CRASH FRAME %02u 0x%llx",
+                                i, reinterpret_cast<unsigned long long>(frames[i]));
+                }
+            } else {
+                _snprintf_s(line, sizeof line, _TRUNCATE, "CRASH FRAME %02u 0x%llx",
+                            i, reinterpret_cast<unsigned long long>(frames[i]));
+            }
+            Utils::log(QString::fromLatin1(line));
+        }
         return EXCEPTION_CONTINUE_SEARCH;
     });
     QApplication app(argc, argv);
@@ -1014,6 +1041,29 @@ int main(int argc, char* argv[])
                   PluginHost::page(id, nullptr, &err) == page ? QStringLiteral("yes")
                                                               : QStringLiteral("no"),
                   QStringLiteral("yes"));
+        }
+        // 缓存里那张页**被别人删掉**之后，`page(id)` 不许再把那块已释放的内存发出去。
+        // 这条盯的是 2026-10-22 他报的「b64 会闪退」的形状：页是 `createPage(parent)` 时交给调用方
+        // 那棵树拥有的，而 `ToolsPage::rebuildGrid()` 会把 stack 摘掉的那一格 deleteLater 掉 ——
+        // 宿主这头和插件壳那头各存了一份**裸指针**，谁都不知道对方已经没了。
+        {
+            QString err;
+            QWidget* first = PluginHost::page(QStringLiteral("base64"), nullptr, &err);
+            has("base64 页在（页被删那一趟要用它）", first != nullptr);
+            if (first) {
+                QPointer<QWidget> guard(first);
+                delete first;                       // 模拟 ToolsPage 那一刀（同步删，不靠事件循环）
+                const bool died = guard.isNull();
+                QWidget* again = PluginHost::page(QStringLiteral("base64"), nullptr, &err);
+                check("宿主不会把已释放的页再发一次（缓存里那颗跟着死）",
+                      QStringLiteral("%1/%2").arg(died ? QStringLiteral("dead") : QStringLiteral("alive"))
+                          .arg(again && again != first ? QStringLiteral("new") : QStringLiteral("same")),
+                      QStringLiteral("dead/new"));
+                check("重造出来的那张能用（不是空指针）",
+                      again && again->metaObject()->className() != nullptr ? QStringLiteral("yes")
+                                                                          : QStringLiteral("no"),
+                      QStringLiteral("yes"));
+            }
         }
         // 递文本那条路（API 2 新加的）：搜索框"json 这串"/"b64 这串"靠它
         QString err;
