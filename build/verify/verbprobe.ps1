@@ -3,7 +3,7 @@
 # 走的就是 Explorer 自己那条 ShellExecuteEx 路径，不需要合成鼠标点击。
 $cn = [string][char]0x5185 + [char]0x5B58 + [char]0x4FEE + [char]0x6539 + [char]0x5668   # 内存修改器
 $targets = @(
-  @{ what = 'Desktop 上的文件夹'; root = 'C:\Users\loukas\Desktop'; leaf = $cn },
+  @{ what = 'Desktop 上的文件夹'; root = [Environment]::GetFolderPath('Desktop'); leaf = $cn },
   @{ what = 'D 盘普通文件夹';     root = 'D:\project\cpp\ltool';    leaf = 'build' },
   @{ what = 'D 盘普通文件';       root = 'D:\project\cpp\ltool';    leaf = 'vcpkg.json' }
 )

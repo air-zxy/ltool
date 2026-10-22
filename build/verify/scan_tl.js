@@ -1,6 +1,6 @@
 const fs = require('fs');
 const rl = require('readline');
-const path = 'C:/Users/loukas/.qoder-cn/projects/D--project-cpp-ltool/941a36ee-99ed-4c3e-a872-01c130d8528b.jsonl';
+const path = process.env.USERPROFILE + '/.qoder-cn/projects/D--project-cpp-ltool/<会话id>.jsonl';
 const inp = fs.createReadStream(path, { encoding: 'utf8' });
 const rl2 = rl.createInterface({ input: inp, crlfDelay: Infinity });
 let n = 0;

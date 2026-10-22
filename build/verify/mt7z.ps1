@@ -3,7 +3,7 @@
 # 三次各跑一遍，取中位数；单次数字不作数（上一轮就是这么翻车的）。
 $exe = 'D:\project\cpp\ltool\build\Release\ltool.exe'
 $seven = 'C:\Program Files\7-Zip\7z.exe'
-$src = 'C:\Users\loukas\Desktop\WinPlayerD1018'
+$src = Join-Path ([Environment]::GetFolderPath('Desktop')) '<桌面夹具：填你要压的子目录>'
 $work = 'D:\project\cpp\ltool\build\verify\mt7z'
 $out = 'D:\project\cpp\ltool\build\verify\mt7z.out'
 if (Test-Path $work) { Remove-Item $work -Recurse -Force }

@@ -1740,3 +1740,24 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - **没测的那几样，说清楚免得当成测过了**：右键动作 / F1 / F2 那一路只验"找得到人"，一条都不真执行
   （真执行会截他的屏、会开录、会删文件）；商店的下载·卸载走 `--storetest` 的纯函数那一层，
   真删 dll 那条没跑；启动时那颗 `Activate` 只验牌和符号对不对，没在这儿真起后台轮询。
+
+## 方案 A：把探针里的真账号换成运行时取法，并给仓库本体立一道闸（2026-10-22）
+
+- 查出来的形状：`build/verify` 里 **16 个一次性探针、17 处**带着真用户名（还有桌面上一个私人夹具目录名、
+  两份会话转录的绝对路径）。根因不是"忘了改"，是 `.gitignore` 那条 `build/verify/*.sh` **只挡了一半** ——
+  挡得住 .sh，挡不住 .ps1/.py/.js，而且对**已经跟踪**的文件忽略规则根本不生效。
+- 换法按语言各走各的运行时取法，不是抹成字面量 `%USERPROFILE%`（那会把还能用的探针弄坏）：
+  python `os.path.expanduser(r"~\...")`、PowerShell `"$env:APPDATA\..."` / `[Environment]::GetFolderPath('Desktop')`
+  （后者连重定向过的桌面也认）、node `process.env.USERPROFILE`、shell `"$HOME/..."`。
+- 补丁只走**逐字匹配 + 数量断言**，不用正则：反斜杠在"源字符串 / 正则 / 替换模板"三层里各要逃一次，
+  逃错一层的下场是"匹配不到、于是静默改了个寂寞还报绿"。任何一处数量对不上 → 整批一个字节都不写盘。
+- 落地后逐张过语法闸：`python -m py_compile`（4 颗）、`node --check`（4 颗）、`bash -n`（1 颗）、
+  PowerShell **只解析不执行**（`[scriptblock]::Create`，7 颗，`PS_PARSE_BAD=0`）。BOM 与 LF 逐张保持原样
+  （无 BOM 那四颗 .ps1 换进去的字必须纯 ASCII，中文进无 BOM 的 .ps1 = 整条 ParserError）。
+- 自己踩的一次：脚本的"用了 `expanduser` 却没 `import os`"这条检查排在**写盘之后**，
+  于是 16 张已落地、第 17 张红着退出 —— 当场补上 `import os` 再重扫。**收尾检查要排在写盘前面**，
+  排在后面就等于给自己留了一个"改坏一半"的中间态。
+- 新闸 `tools/tracked_leak_check.py`（CI 每推都跑，572 张）：图案和脱敏那颗同源，但加了一张占位白名单 ——
+  直接拿 `USER_HOME_RE` 判会把 `C:/Users/x`、`zzname` 这些占位也判红（这一轮"形状命中 11 行、真用户名 0 行"），
+  那就是 #64 那颗坑的第二次踩法。反向验：`git add -N` 一颗带 `C:\Users\<某个真账号>\...` 的探针 →
+  `TRACKED_LEAK_HITS=1`、退出码 1；撤掉 → 0。YAML 本地过 js-yaml：`jobs=1 windows`、`steps=25`（原来 24）。

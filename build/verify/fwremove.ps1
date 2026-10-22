@@ -12,4 +12,4 @@ $f = New-Object -ComObject HNetCfg.FwPolicy2
 $left = 0
 foreach ($r in $f.Rules) { if ($r.Name -eq $name) { $left++ } }
 Write-Output ('rules with that name left = ' + $left)
-Get-Content 'C:\Users\loukas\AppData\Roaming\ltool\log.txt' | Select-String 'firewall:' | Select-Object -Last 3
+Get-Content "$env:APPDATA\ltool\log.txt" | Select-String 'firewall:' | Select-Object -Last 3

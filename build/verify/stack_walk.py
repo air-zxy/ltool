@@ -1,6 +1,7 @@
+import os
 import struct
 
-dump = r"C:\Users\loukas\AppData\Local\CrashDumps\ltool.exe.12504.dmp"
+dump = os.path.expanduser(r"~\AppData\Local\CrashDumps\ltool.exe.12504.dmp")
 exe = r"D:\project\cpp\ltool\build\Release\ltool.exe"
 d = open(dump, "rb").read()
 img = open(exe, "rb").read()

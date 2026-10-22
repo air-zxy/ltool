@@ -14,4 +14,4 @@ foreach ($r in $f.Rules) {
         Write-Output ('RULE: ' + $r.Name + ' | dir=' + $r.Direction + ' act=' + $r.Action + ' on=' + $r.Enabled)
     }
 }
-Get-Content 'C:\Users\loukas\AppData\Roaming\ltool\log.txt' | Select-String 'firewall:' | Select-Object -Last 6
+Get-Content "$env:APPDATA\ltool\log.txt" | Select-String 'firewall:' | Select-Object -Last 6

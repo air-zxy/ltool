@@ -2,7 +2,7 @@
 $cn = [string][char]0x5185 + [char]0x5B58 + [char]0x4FEE + [char]0x6539 + [char]0x5668
 $sh = New-Object -ComObject Shell.Application
 $cases = @(
-  @{ root = 'C:\Users\loukas\Desktop'; leaf = $cn },
+  @{ root = [Environment]::GetFolderPath('Desktop'); leaf = $cn },
   @{ root = 'D:\project\cpp\ltool'; leaf = 'vcpkg.json' }
 )
 $out = New-Object System.Collections.Generic.List[string]

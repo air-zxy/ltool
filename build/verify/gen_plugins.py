@@ -3,7 +3,7 @@ import io, json, re, os
 # 唯一来源：上一版（repo 里那份，D: 的已经在同步时被改过之前）ToolsPage.cpp 的 makeTools()。
 # 名字/描述/关键词/颜色全部从那儿解析，不是我重新打一遍 —— 手打就会漂，
 # 而 plugin.json 和插件壳里那五个 override 说的是同一件事，漂了没人发现。
-SRC = r"C:\Users\loukas\ltool-work\repo\src\ToolsPage.cpp"
+SRC = os.path.expanduser(r"~\ltool-work\repo\src\ToolsPage.cpp")
 ROOT = r"D:\project\cpp\ltool"
 
 txt = io.open(SRC, encoding="utf-8").read()

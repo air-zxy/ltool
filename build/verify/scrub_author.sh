@@ -6,10 +6,10 @@
 #   grep -rn "1216915972" 工作树        → 空
 # 它只在 32 条提交的 author/committer 字段上。GitHub 自己那条合并提交（noreply@github.com）原样留着。
 #
-# 这个脚本**不推送**：它只改本地那份 C:/Users/loukas/ltool-work/repo，
+# 这个脚本**不推送**：它只改本地那份 $HOME/ltool-work/repo，
 # 改完打印要按的那条命令（带 --force-with-lease，不是裸 --force）。
 set -e
-REPO="/c/Users/loukas/ltool-work/repo"
+REPO="$HOME/ltool-work/repo"
 OLD_EMAIL="1216915972@qq.com"
 NEW_NAME="mateo-ki"
 NEW_EMAIL="52289949+mateo-ki@users.noreply.github.com"

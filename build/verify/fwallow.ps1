@@ -6,4 +6,4 @@ $p = Start-Process -FilePath $exe -ArgumentList @('--fwallow', 'D:\project\cpp\l
 Write-Output ('exit=0x' + ('{0:X8}' -f $p.ExitCode))
 Get-Content $o -Encoding UTF8
 Write-Output '--- log ---'
-Get-Content 'C:\Users\loukas\AppData\Roaming\ltool\log.txt' | Select-String 'firewall:' | Select-Object -Last 12
+Get-Content "$env:APPDATA\ltool\log.txt" | Select-String 'firewall:' | Select-Object -Last 12

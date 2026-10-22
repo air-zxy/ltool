@@ -1,5 +1,5 @@
 const fs = require('fs');
-const p = 'C:/Users/loukas/.qoder-cn/memory/win-machine-env.md';
+const p = process.env.USERPROFILE + '/.qoder-cn/memory/win-machine-env.md';
 const lines = fs.readFileSync(p, 'utf8').split(/\r?\n/);
 const start = lines.findIndex(l => l.includes('静态注册表右键"级联子菜单"要两样一起'));
 if (start < 0) throw new Error('start not found');

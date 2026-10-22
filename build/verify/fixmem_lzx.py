@@ -2,9 +2,10 @@
 # 把项目记忆里 ".lzx = 多线程压缩那条路" 那条改掉：格式被用户否了（别人拿到不认识），
 # 代码已删，但量出来的结论要留下，不然下一个人又会去试 zstd-in-7z。
 import io
+import os
 import sys
 
-P = r"C:\Users\loukas\.qoder-cn\projects\D--project-cpp-ltool\memory\ltool-verify-and-deploy.md"
+P = os.path.expanduser(r"~\.qoder-cn\projects\D--project-cpp-ltool\memory\ltool-verify-and-deploy.md")
 Q = chr(34)   # 双引号：正文字符串用单引号写，里面才能放引号
 s = io.open(P, encoding="utf-8").read()
 start = s.find('- **' + chr(96) + '.lzx' + chr(96) + ' = 多线程压缩那条路')

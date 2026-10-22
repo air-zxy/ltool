@@ -1,6 +1,6 @@
 const fs = require('fs');
 const rl = require('readline');
-const src = 'C:/Users/loukas/.qoder-cn/projects/D--project-cpp-ltool/941a36ee-99ed-4c3e-a872-01c130d8528b.jsonl';
+const src = process.env.USERPROFILE + '/.qoder-cn/projects/D--project-cpp-ltool/<会话id>.jsonl';
 const want = new Set([9323, 9406, 9409, 9408, 16920, 2335, 9351, 9396]);
 const inp = fs.createReadStream(src, { encoding: 'utf8' });
 const ri = rl.createInterface({ input: inp, crlfDelay: Infinity });
