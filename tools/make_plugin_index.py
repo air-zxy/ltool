@@ -7,7 +7,7 @@
   ② 那个仓库的 `plugins/` 是主仓库源码的一份**分叉**（diff 实测：record 少整个 WindowPreview，
      disk/registry/startup/capture/clipboard/language/user 全不同）；
   ③ 于是"发一次商店"和"发一次 core"在物理上就是两件事 —— 漂是必然，不漂是运气。
-搬到这里只剩一条流水线：CI 在同一次构建里编出 ltoolcore.dll + 19 颗插件 dll，
+搬到这里只剩一条流水线：CI 在同一次构建里编出 ltoolcore.dll + 每一颗插件 dll，
 本脚本从**那批产物**现算 sha256/字节数，连 index.json 一起当**这次发版的资产**发出去。
 商店读 `releases/latest/download/…`，拿到的就是和最新 core 一起编出来的那一套。
 

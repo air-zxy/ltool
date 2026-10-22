@@ -41,7 +41,7 @@ if (-not $NoBuild) {
 # （2026-10-16 真踩过：删掉 Utils::launch / revealInExplorer 之后装的那份 9 颗起不来）。
 # 量的是 build\Release\ltool-plugins（这次构建那份）+ D:\software\ltool\ltool-plugins（装着的、
 # 崩的就是它）。**不再量 C:\work\ltool_plugin\dist**：商店从 1.3.0 起读的是主仓库这次发版的资产
-# （releases/download/v<版本>/plugins-index.json，19 颗 dll 和 core 同一次构建），
+# （releases/download/v<版本>/plugins-index.json，插件 dll 和 core 同一次构建），
 # 那批手工提交进 git 的 dist 已经不是交付渠道，继续量它只会每轮喊一次没人能修的狼。
 $inst = 'D:\software\ltool\ltool-plugins'
 $abiTargets = @("$root\build\Release\ltool-plugins")
@@ -142,13 +142,13 @@ $coreB = (Get-FileHash "$root\build\Release\ltoolcore.dll" -Algorithm SHA256).Ha
 $coreI = if (Test-Path 'D:\software\ltool\ltoolcore.dll') { (Get-FileHash 'D:\software\ltool\ltoolcore.dll' -Algorithm SHA256).Hash } else { '' }
 if ($coreB -ne $coreI) { $verdict += ('  !!! ltoolcore.dll 不对（build {0} inst {1}）' -f $coreB.Substring(0,8), $coreI.Substring(0,8)) }
 # 插件目录：从 c43b82f「开箱零插件」起，安装包**不再内建任何插件 dll**，只建一个空目录。
-# 这里只验目录在不在（不在 = 包坏了，装完一个插件都放不进去）；装着的那 19 颗对不对，
+# 这里只验目录在不在（不在 = 包坏了，装完一个插件都放不进去）；装着的那几颗对不对，
 # 由下面 plugins 那步逐颗对齐 —— 以前它只报个数，而 10-20 崩的就是"装着的那颗是老的"。
 $plugDir = 'D:\software\ltool\ltool-plugins'
 if (-not (Test-Path $plugDir)) { $verdict += '  !!! 装完没有 ltool-plugins 目录（零插件包也要建这个空目录）' }
 Phase 'install' $sw $verdict
 
-# ---- 装完之后，把装着的那 19 颗对齐到**刚编出来的这一份** ----
+# ---- 装完之后，把装着的那几颗对齐到**刚编出来的这一份** ----
 # 为什么这一步要进这条闭环（2026-10-20 磁盘清理闪退）：core 的公开面一动（结构体加成员、
 # Utils 搬进 platform 缝），老插件 dll 要么 LoadLibrary 失败，要么更坏 —— 名字全齐、装载成功、
 # 按老偏移读新结构体然后当场 0xc0000005。接口号升到 4 之后宿主会**拒绝**装载对不上号的那颗，
@@ -181,7 +181,7 @@ if ($plugs.Count -eq 0) {
   # 但它会一直躺在目录里 —— 数出来点名，别让它变成"这目录怎么文件比卡片多"。
   $oldLeft = @(Get-ChildItem "$plugDir\*.old.*" -ErrorAction SilentlyContinue).Count
   # **对齐之后再量一遍**：上面 abi / stale 那两栏量的是"装之前"那批（那才是崩的原因），
-  # 这一栏要说的是"现在这台机器上跑的那 19 颗对不对"。不复查就得把"缺 6 个符号"那句
+  # 这一栏要说的是"现在这台机器上跑的那几颗对不对"。不复查就得把"缺 6 个符号"那句
   # 留在最后一屏上当成结论 —— 而那已经是 40 秒前的状态了（界面和脚本都不许说这种话）。
   $stillOff = @()
   foreach ($b in $plugs) {
@@ -201,7 +201,7 @@ if ($plugs.Count -eq 0) {
             $installed.Count, $sameN, ($repN - $lockN), $missN)
   $note += ('对齐后再量：缺 ' + $reMiss + ' 个符号 / 布局陈旧 ' + $reStale + ' 颗' `
             + $(if ($stillOff.Count) { ' —— 还有 ' + $stillOff.Count + ' 颗没对上：' + ($stillOff -join ' ') } `
-                 else { '（19 颗哈希都就是刚编的那份）' }))
+                 else { '（装着的每一颗哈希都就是刚编的那份）' }))
   if ($extraIds.Count) { $note += ('；装机目录里多出、本机构建没有的：' + (($extraIds | ForEach-Object { $_.Name }) -join ' ')) }
   if ($lockN) { $note += ('；被占用没换成 ' + $lockN + ' 颗：' + ($locked -join ' ') + ' —— 这几颗还是老的，会崩不是加载失败') }
   if ($oldLeft) { $note += ('；另有 ' + $oldLeft + ' 个 .old.* 排队等下次启动删') }

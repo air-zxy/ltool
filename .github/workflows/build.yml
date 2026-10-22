@@ -369,11 +369,11 @@ jobs:
             installer/ltool-sdk-*.zip
           if-no-files-found: error
 
-      # 商店的那份清单和这 19 颗 dll **就是这次构建的产物**：和上面刚编出来的 ltoolcore.dll
+      # 商店的那份清单和这些插件 dll **就是这次构建的产物**：和上面刚编出来的 ltoolcore.dll
       # 同一个提交、同一次编译，所以商店给出去的插件和这个版本的主程序天生对得上。
       # （以前读的是插件仓库 main 上手工提交的 dist/：最后一次 10-16，core 之后一直没停，
       #  10-20 磁盘清理闪退 + 注册表/开机分析点不开都是从那来的。#91 治的就是这个。）
-      - name: 打插件商店清单（19 颗 dll + index，和 core 同一次构建）
+      - name: 打插件商店清单（每一颗 dll + index，和 core 同一次构建）
         shell: bash
         env:
           PYTHONUTF8: "1"
@@ -444,7 +444,7 @@ jobs:
           # 量的就是**将要发出去的那份文件**本身（上面那一栏量的是判断，这一行量的是产物）
           python tools/notes_history_leak_check.py --file release-notes.md
           echo "---- 说明开头 12 行 ----"; head -12 release-notes.md
-          # 资产 = 安装包 + SDK + **这次发版配套的商店**（清单 + 19 颗 dll）+ 一张校验表。
+          # 资产 = 安装包 + SDK + **这次发版配套的商店**（清单 + 每一颗 dll）+ 一张校验表。
           # 商店那边拼的就是 releases/download/<这个标签>/<文件名>，标签必须等于 "v"+版本号，
           # 上面那步「标签必须和安装包里的版本号对上」验的就是这件事。
           gh release create "$GITHUB_REF_NAME" installer/ltool-*-setup.exe \
@@ -452,7 +452,7 @@ jobs:
             build/Release/ltool-plugins/ltool-*.dll \
             --verify-tag --title "ltool $GITHUB_REF_NAME" --notes-file release-notes.md $extra
           got=$(gh release view "$GITHUB_REF_NAME" --json assets -q '.assets | length')
-          echo "INFO 这次 Release 的资产 $got 个（安装包 + SDK + 清单 + 19 颗 dll + sha256.txt）"
+          echo "INFO 这次 Release 的资产 $got 个（安装包 + SDK + 清单 + 每一颗插件 dll + sha256.txt）"
           # 说明里那张表点名的文件必须真的都在资产里 —— 写"看 sha256.txt"而资产里没有，就是假话。
           names=$(gh release view "$GITHUB_REF_NAME" --json assets -q '.assets[].name' | tr '\n' ' ')
           for n in sha256.txt plugins-index.json; do

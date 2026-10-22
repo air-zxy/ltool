@@ -1,14 +1,26 @@
 """发完版对着**公开那一面**复验三件事（不看 CI 日志，直接打 GitHub 的公开 URL）：
 1. Release 说明里有没有家目录/用户名 —— 用的就是发版说明那把同一颗图案；
-2. 商店那条链是不是真活了：releases/download/v1.4.0/plugins-index.json 要 200 且能解出 19 条；
-3. sha256.txt 里安装包那一行，和 Release 资产 API 报的 digest 对不对得上。
+2. 商店那条链是不是真活了：`releases/download/v<这一版>/plugins-index.json` 要 200，
+   且条目不少于**主仓库现在插件的颗数**（颗数现算 —— 写死 19 的那版，加一颗插件就变假红/假绿）；
+3. `sha256.txt` 里安装包那一行，和 Release 资产 API 报的 digest 对不对得上。
+
+    python tools/postrelease_check.py               # 量"HEAD 上最近那个 tag"那一版
+    python tools/postrelease_check.py --tag v1.4.1  # 点名量某一版
+    python tools/postrelease_check.py 已经下好的.json  # 离线：拿那份 release JSON，不发请求
+
+版本号以前钉死在 `v1.4.0`：发完 1.4.1 之后它还在复验上一版 —— 那是"绿了但量错了对象"，
+所以这里改成从 `git describe --tags` 问出来，不在这儿抄第二份。
 """
+import glob
 import importlib.util
 import json
 import os
 import subprocess
 import sys
 import time
+
+here = os.path.dirname(os.path.abspath(__file__))
+root = os.path.dirname(here)
 
 
 def get(url, tries=4):
@@ -26,30 +38,59 @@ def get(url, tries=4):
         time.sleep(2 + 2 * i)
     raise RuntimeError(last)
 
-here = os.path.dirname(os.path.abspath(__file__))
+
+def nearest_tag():
+    r = subprocess.run(['git', 'describe', '--tags', '--abbrev=0'], cwd=root,
+                       capture_output=True, text=True)
+    return (r.stdout or '').strip()
+
+
+def expected_plugins():
+    """主仓库现在有几颗插件：现算。颗数写死在这里，加一颗就要来改一次，
+    而忘了改的那一次它会拿着旧数字判"清单没问题"。"""
+    return len(glob.glob(os.path.join(root, 'plugins', '*', 'plugin.json')))
+
+
 spec = importlib.util.spec_from_file_location('mrn', os.path.join(here, 'make_release_notes.py'))
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
-rel = json.load(open(sys.argv[1], encoding='utf-8')) if len(sys.argv) > 1 else \
-    json.loads(get('https://api.github.com/repos/mateo-ki/ltool/releases/tags/v1.4.0'))
+argv = list(sys.argv[1:])
+tag = ''
+if '--tag' in argv:
+    i = argv.index('--tag')
+    tag = argv[i + 1]
+    del argv[i:i + 2]
+
+if argv:                                    # 离线：拿已经下好的那份 release JSON
+    rel = json.load(open(argv[0], encoding='utf-8'))
+    tag = tag or rel.get('tag_name', '')
+else:
+    tag = tag or nearest_tag()
+    if not tag:
+        print('PROBLEM 不知道要量哪一版（这里没有 tag，也没给 --tag）')
+        sys.exit(1)
+    rel = json.loads(get('https://api.github.com/repos/mateo-ki/ltool/releases/tags/' + tag))
+
+want = expected_plugins()
+print('量的是 %s 那一版；主仓库现在 %d 颗插件' % (tag or '（无名）', want))
 bad = 0
 
-# 1 说明
+# 1 说明里不许有家目录/用户名
 hits = m.USER_HOME_RE.findall(rel.get('body', '') or '')
 print('说明里带家目录的行=', len(hits))
 for h in hits[:3]:
     print('   残留:', h[:120])
 bad += len(hits)
 
-# 2 商店那条链
-url = 'https://github.com/mateo-ki/ltool/releases/download/v1.4.0/plugins-index.json'
+# 2 商店那条链真活了
+url = 'https://github.com/mateo-ki/ltool/releases/download/%s/plugins-index.json' % tag
 try:
     idx = json.loads(get(url))
     plugins = idx.get('plugins', idx if isinstance(idx, list) else [])
     print('商店清单：HTTP 200，条目=', len(plugins))
-    if len(plugins) < 19:
-        print('   PROBLEM 条目少于 19 颗')
+    if len(plugins) < want:
+        print('   PROBLEM 清单只有 %d 条，主仓库有 %d 颗' % (len(plugins), want))
         bad += 1
 except Exception as e:
     print('PROBLEM 商店那条链还是不通：', e)

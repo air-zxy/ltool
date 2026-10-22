@@ -264,7 +264,7 @@ def main():
     L.append('一共 **%d 个文件**。校验：`Get-FileHash <文件> -Algorithm SHA256`，或下 `sha256.txt` 对整批。' % len(full))
     L.append('')
     L.append('插件商店读的是 `releases/download/%s/plugins-index.json` —— '
-             '清单和这 19 颗 dll 都出自**编出这一版 core 的那同一次构建**，'
+             '清单和这批插件 dll 都出自**编出这一版 core 的那同一次构建**，'
              '所以"商店里那颗和这台机器的 core 对不上"这件事从源头没了（对不上也只会是被拒绝并说清，不是闪退）。' % tag)
     L.append('')
     L.append('---')

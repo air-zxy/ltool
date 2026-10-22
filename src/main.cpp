@@ -616,6 +616,7 @@ int main(int argc, char* argv[])
                                                          //    没沙箱 ⇒ 它往**还没搬**的数据目录播了默认 webs.json
             || a == QLatin1String("--linuxdotest")
             || a == QLatin1String("--linuxdonet") || a == QLatin1String("--cliptest")
+            || a == QLatin1String("--randtest")
             || a == QLatin1String("--startuptest")) {
             const QString sandbox = QDir::tempPath() + "/" + a.mid(2);
             QDir(sandbox).removeRecursively();
@@ -942,6 +943,12 @@ int main(int argc, char* argv[])
         return runPluginSelftest(QStringLiteral("clipboard"), "ltoolPluginSelftest",
                                  SelftestArg::None, 0, QString(), "clipboard");
 
+    // --randtest：「随机数生成」那一页的判据（区间内、数量对、不重复取满、区间不够就说不行
+    // 而不是静默少给、小数位数夹紧、字符集池子只算一份、UUID 形状与不撞 + 页面那八条）。
+    // 一次都不 show()；剪贴板那一支在 offscreen 是内存桩，那条判据自己标 SKIP。
+    if (args.contains("--randtest"))
+        return runPluginSelftest(QStringLiteral("random"));
+
     // --linuxdotest：「linux.do 盯帖」那一路的判据（解析/命中/去重/前缀拼法/配置夹紧/
     // 页面摆控件）。**一次网都不上、一个气泡都不弹** —— 真取回那条在 --linuxdonet。
     // 它跑在沙箱 APPDATA 里（上面那串名单），因为这一路要写 linuxdo/* 那一节。
@@ -988,7 +995,7 @@ int main(int argc, char* argv[])
                                               "startup", "user", "json", "base64", "shell",
                                               "record", "capture", "software", "downloads",
                                               "tasks", "grid", "language", "linuxdo",
-                                              "clipboard" };
+                                              "clipboard", "random" };
         const QDir dir(PluginHost::pluginsDir());
         std::printf("INFO 插件目录：%s\n", dir.absolutePath().toUtf8().constData());
         const auto& metas = PluginHost::scan();

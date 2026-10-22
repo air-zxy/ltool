@@ -118,7 +118,7 @@ def main():
         print(f'  -> {len(bad_layout)} 个公开头自 API {api} 之后改了成员或虚函数：'
               '老插件里的字段偏移/vtable 槽是按改之前摆的。'
               f'把 LTOOL_PLUGIN_API_VERSION 从 {api} 升到 {api + 1}，'
-              '同时重生成 SDK 快照、19 颗重编重发。')
+              '同时重生成 SDK 快照、每一颗插件重编重发。')
     return check_meta(api, len(bad_layout))
 
 
