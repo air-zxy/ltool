@@ -1902,3 +1902,14 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 顺带把 `--storenet` 那栏的等待认了新的短句：它以前只等「清单…」开头的状态行，而失败有缓存那句现在改成「网络没通…」开头 —— 不认它，这一栏在未发版那次只会白等 20 秒，而"页面上不许有 URL"那条判据就永远只在一条跑不到的成功路径上量（装饰性的绿）。现在正则读 `文本 + 悬停说明` 合起来那一份，"页面上那句不许有 http"读的是短的那一份。
 - 版本：**不升号**。core 仍在未发布的 1.5.0 里（这一档可以吸收同批功能），插件一颗没动（`plugin_version_gate` 认这个），API 仍 4。数据格式多了一个 `store/autoUpdateWhy` 键，但**老配置读得动**（没这个键就走"悬停说明拿回老 note"那条），不算不兼容。
 - 没做的一条，如实说：这轮**没装机**（他今天连推的这七笔都没装）。装完之后他屏幕上那两行才会变短 —— 现在装着的还是 11:54 那份（`1900d67`），它照旧显示整条原文。
+## 2026-10-23 晚 v1.5.0 发版（tag `v1.5.0` → `468f960`）
+
+- 打 tag 前六道闸在这棵树上重量一遍，全 0：theme（48 角色无重复）/ proxy（8 处出站）/ plugin_version（20 颗，NEEDS_BUMP=0、WENT_BACK=0，`random` 是新颗从 1.0.0 起算）/ core_abi（API 仍 4，`da1cd99` 以来 26 个公开头无布局漂移）/ `make_release_notes.py --check`（6 项）/ notes_history_leak（377 个提交目录，家目录命中 0）。
+- tag 推完的 remote 对账：`ls-remote` 报的是**注解 tag 对象** `37027ae`，它指向提交 `468f960`（`git rev-parse v1.5.0^{}` 才是提交那一头）。拿对象 sha 直接比 HEAD 会误判成"推错了个东西"。
+- CI run 39951821904：11 次轮询（约 8 分钟）到 `completed success`。Release id 421810352、非 draft 非预发、**24 个资产**（20 颗 dll + setup + sdk.zip + plugins-index.json + sha256.txt），比 v1.4.0 那次多 1 个 = 多的那颗是 `random`。
+- 公开面三查（`postrelease_check.py --tag v1.5.0`，`POSTRELEASE_BAD=0`）：Release 说明里带家目录的行 = 0；商店清单 HTTP 200 且条目 = 20，和**从那个 tag 数出来**的颗数一致；`sha256.txt` 23 行，每行 digest 与资产 API 逐字对上，且除 `sha256.txt` 自己以外没有资产漏列。
+- 我另外手算了脚本没量的那一层：20 条 `url` 全钉在 `releases/download/v1.5.0/`、`api` 全是 4、每条的 `sha256`/`bytes` 与资产 API 的 digest/size 一致、没有一条指向不存在的资产（`MANIFEST_FILE_NOT_IN_ASSETS=0`）。
+- **踩坑（已修）**：`postrelease_check.py` 在这台机上第 2 步必崩 —— 资产那一跳 302 到 CDN 主机，schannel 拿不到吊销服务器就整条 `rc=35 CRYPT_E_REVOCATION_OFFLINE`，直连和经 9980 代理都一样，而 `api.github.com` 那一跳没事 ⇒ 极容易被读成"那条链没活"。修法是 `get()` 在 Windows 上加 `--ssl-no-revoke`（只关吊销检查，证书链照验）。
+- 补完还崩了一次，那是**另一种**失败：`rc=28 github.com:443 连不上`（这台机的老毛病），原样重跑第 2 次整条绿。两种 rc 要分开读，别把 28 也当成"链没活"。
+- 版本：这一笔只动 `tools/postrelease_check.py` + 这份文档 ⇒ **不升号**。但 1.5.0 从此是**已发布**的号，而树里 `ltool.iss:6` 还写着它 —— 下一次动产品代码必须往前挪（1.5.1 / 1.6.0），不能拿 1.5.0 再出第二份产物。
+- 没做的两件事，如实说：① 这一版**没装机**（`deliver.ps1` 会杀他正在跑的实例，等他点头）；② 插件源码仓库 `ltool_plugin` 还差 5 个文件（`sync_plugins.py --check`：新放 0 / 改动 5 / 一致 106）—— `ads/AdsPage.cpp`、`ads/plugin.json`（1.0.1→1.0.2）与 `grid/GridBoard.h`、`grid/gridselftest.cpp`、`grid/plugin.json`（1.0.3→1.0.4）；`sdk/` 那份不用重铺（26 个公开头没动布局、API 仍 4）。那是往**另一个仓库**推，等他说"跟"。

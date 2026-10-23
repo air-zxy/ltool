@@ -27,10 +27,15 @@ def get(url, tries=4):
     """公开 URL 一律走 curl，不走 python 的 urllib。
     这台机上的 msys python 没有可信 CA 那份（`CERTIFICATE_VERIFY_FAILED: unable to get local
     issuer certificate`），而 GitHub 的 443 又时不时直接被掐（`远程主机强迫关闭了一个现有的连接`）——
-    两个都是环境的事，不是"那条链没活"。curl 自带 CA 包，所以拿它量，并且重试几次。"""
+    两个都是环境的事，不是"那条链没活"。curl 自带 CA 包，所以拿它量，并且重试几次。
+
+    Windows 上还要多一颗：资产那一跳会 302 到 CDN 主机，schannel 拿不到吊销服务器就整条
+    `rc=35 CRYPT_E_REVOCATION_OFFLINE` —— 直连和经代理都一样，而 api.github.com 那一跳没事，
+    所以很容易被读成"链没活"。只在 Windows 上关吊销检查（证书链本身照样验）。"""
+    revoke = ['--ssl-no-revoke'] if sys.platform == 'win32' else []
     last = ''
     for i in range(tries):
-        r = subprocess.run(['curl', '-sSL', '--max-time', '40', '-o', '-', url],
+        r = subprocess.run(['curl', '-sSL', '--max-time', '40'] + revoke + ['-o', '-', url],
                            capture_output=True, text=True, encoding='utf-8', errors='replace')
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout
