@@ -334,9 +334,25 @@ ToolsPage::ToolsPage(QWidget* parent)
     // 出口那颗和它们同款：autoRaise 的淡箭头在深色页眉里就是"找不到退出按钮"（他 2026-10-18 的原话）
     Theme::bind(m_back, kTopBtnQss);
 
+    // 「一键下载全部」：把商店里这台机器还没装的那几颗一次排进那条「一次只飞一颗」的队列。
+    // 为什么不摆到底下那行过滤里：这一颗管的范围是**整个商店**，跟着筛出来的那几张走，"全部"就名不副实。
+    m_bulk = new QPushButton(QStringLiteral("一键下载全部"), this);
+    m_bulk->setObjectName(QStringLiteral("storeBulk"));
+    m_bulk->setAccessibleName(QStringLiteral("一键下载全部"));
+    m_bulk->setCursor(Qt::PointingHandCursor);
+    m_bulk->setToolTip(QStringLiteral(
+        "把商店里这台机器还没装的那几颗一次排上队 —— 还是一次只飞一颗，一颗落地才接下一颗。\n"
+        "接口对不上的、条目用不了的那几颗不在里面。\n"
+        "第一下一颗都不动，只把「排几颗 · 大约多少」摆出来；再按一次才真排队。"));
+    Theme::bind(m_bulk, kTopBtnQss);
+    // 预留到最宽那一版（「确认这 12 颗」）：点下去只换字、不撑那一排 —— 他否过"一点就重新排"那一类。
+    m_bulk->setMinimumWidth(m_bulk->fontMetrics().horizontalAdvance(QStringLiteral("确认这 12 颗")) + 24);
+    connect(m_bulk, &QPushButton::clicked, this, [this] { onBulkClicked(); });
+
     head->addWidget(m_back);
     head->addWidget(m_heading);
     head->addStretch(1);
+    head->addWidget(m_bulk);
     head->addWidget(repoBtn);
     head->addWidget(refresh);
     lay->addLayout(head);
@@ -851,6 +867,151 @@ void ToolsPage::refreshStore()
     });
 }
 
+// ---- 「一键下载全部」----
+// 排哪几颗只认这一颗：整个商店里 State::Missing 的那些。
+// 为什么是静态纯函数：这条规则一旦长在"按下去"那一段里，离屏就没人量得到它到底排了谁 ——
+// #94（--storenet 四条红没人看见）就是同一个形状。
+QVector<PluginStore::Row> ToolsPage::bulkTargets(const QVector<PluginStore::Row>& all)
+{
+    QVector<PluginStore::Row> out;
+    for (const PluginStore::Row& r : all)
+        if (r.state == PluginStore::State::Missing)
+            out.append(r);
+    return out;
+}
+
+QString ToolsPage::bulkAskLine(int n, qint64 bytes, int unusable)
+{
+    QString line = QStringLiteral("第一下一颗都没动 · 再按一次就排 %1 颗（约 %2）")
+                       .arg(n).arg(PluginStore::humanSize(bytes));
+    if (unusable > 0)
+        line += QStringLiteral(" · 另有 %1 颗清单里有、这台机器用不了，不排在里面").arg(unusable);
+    return line + QStringLiteral(" · 还是一次只飞一颗，一颗落地才接下一颗");
+}
+
+QString ToolsPage::bulkEmptyLine(bool haveStore)
+{
+    if (!haveStore)
+        return QStringLiteral("一颗都排不了：这一面只有本机装着的那几个，商店那份清单还没拉下来 —— 先按「刷新清单」。");
+    return QStringLiteral("一颗都不用排：商店里那几颗，这台机器全装着了。");
+}
+
+QString ToolsPage::bulkDoneLine(int n, const QStringList& failed)
+{
+    QString line = QStringLiteral("一键那 %1 颗：成了 %2 颗，没成 %3 颗 · 装好的下次启动进卡片墙")
+                       .arg(n).arg(n - failed.size()).arg(failed.size());
+    if (!failed.isEmpty())
+        line += QStringLiteral("（没成的：%1 · 卡片上按「重试」）").arg(failed.join(QStringLiteral("、")));
+    return line;
+}
+
+QStringList ToolsPage::bulkMissed(const QStringList& ids, const QVector<PluginStore::Row>& now)
+{
+    // 「落没落地」问的是数据层现在的说法（那颗 dll 在不在目录里），不是"我数了几次 done 回调" ——
+    // 回调次数会把"下成了但哈希不对被扔掉"那一支算成成功。
+    QStringList missed;
+    for (const QString& id : ids) {
+        bool landed = false;
+        for (const PluginStore::Row& r : now) {
+            if (r.remote.id != id)
+                continue;
+            // Missing 才算没落地；清单外那条（LocalOnly）也说明文件真在盘上
+            if (r.state != PluginStore::State::Missing) {
+                landed = true;
+                break;
+            }
+        }
+        if (!landed)
+            missed << id;
+    }
+    return missed;
+}
+
+QString ToolsPage::storeLine() const
+{
+    return m_storeStatus ? m_storeStatus->text() : QString();
+}
+
+void ToolsPage::setBulkLabel(int confirmCount)
+{
+    if (!m_bulk)
+        return;
+    // 两版标签都是六个字（九颗以内）：点一下才把标题撑宽 = 那一排按钮跟着挪，是他否过的形状
+    m_bulk->setText(confirmCount > 0 ? QStringLiteral("确认这 %1 颗").arg(confirmCount)
+                                     : QStringLiteral("一键下载全部"));
+}
+
+void ToolsPage::onBulkClicked()
+{
+    if (!m_bulk || !m_storeStatus)
+        return;
+    if (installsBusy() > 0) {
+        // 上一批还在飞：一次只飞一颗是那条队列的规矩，这里不插队，也不起第二趟
+        m_bulkArmed = false;
+        setBulkLabel(0);
+        m_storeStatus->setText(QStringLiteral("上一批还在飞（在飞 %1 颗 · 排着 %2 颗）· 等它空了再按这一颗")
+                                   .arg(m_installing).arg(m_queue.size()));
+        return;
+    }
+    const QVector<PluginStore::Row> all = shopRows();
+    const QVector<PluginStore::Row> targets = bulkTargets(all);
+    if (targets.isEmpty()) {
+        m_bulkArmed = false;
+        setBulkLabel(0);
+        m_storeStatus->setText(bulkEmptyLine(m_haveStore));
+        return;
+    }
+    if (!m_bulkArmed) {
+        qint64 bytes = 0;
+        for (const PluginStore::Row& r : targets)
+            bytes += r.remote.bytes;
+        int unusable = 0;
+        for (const PluginStore::Row& r : all)
+            if (r.state == PluginStore::State::ApiMismatch || r.state == PluginStore::State::Blocked)
+                ++unusable;
+        m_bulkArmed = true;
+        setBulkLabel(targets.size());
+        m_storeStatus->setText(bulkAskLine(targets.size(), bytes, unusable));
+        Utils::log(QStringLiteral("store: 一键下载全部 第一下（还没排）：%1 颗，约 %2，挡在外面 %3 颗")
+                       .arg(targets.size()).arg(PluginStore::humanSize(bytes)).arg(unusable));
+        return;
+    }
+    // 第二下：排的是**此刻**重算的那一份。第一下到第二下之间他自己装了一颗、换了筛、
+    // 或清单跟着变了，都不该照着刚才屏幕上那个数字去排（那是上一秒的商店）。
+    m_bulkArmed = false;
+    setBulkLabel(0);
+    m_bulkIds.clear();
+    // 那一面墙上的卡片按"数据层给的那个 id"找回它自己的两颗控件 —— 认的是卡片上挂的那个属性，
+    // 不是 findChildren 的顺序（这一棵树里现在挂着好几张插件页，顺序不是界面顺序）。
+    const auto frames = findChildren<QFrame*>();
+    for (const PluginStore::Row& r : targets) {
+        QFrame* card = nullptr;
+        for (QFrame* f : frames) {
+            if (f->objectName() == QLatin1String("row") && f->property("ltoolId").toString() == r.remote.id) {
+                card = f;
+                break;
+            }
+        }
+        QPushButton* btn = card ? card->findChild<QPushButton*>(QStringLiteral("cardBtnPrimary")) : nullptr;
+        QLabel* state = nullptr;
+        if (card) {
+            const auto labels = card->findChildren<QLabel*>();
+            for (QLabel* l : labels) {
+                if (l->property("shopState").isValid()) {
+                    state = l;
+                    break;
+                }
+            }
+        }
+        m_bulkIds << r.remote.id;
+        if (btn)
+            btn->setEnabled(false);   // 被过滤挡在墙外的拿不到控件：传 nullptr，那条队列本来就允许"没地方写字、照样下"
+        installEntry(r.remote, btn, state);
+    }
+    m_storeStatus->setText(QStringLiteral("已排 %1 颗 · 一次只飞一颗，卡片上那一行逐颗报进度").arg(m_bulkIds.size()));
+    Utils::log(QStringLiteral("store: 一键下载全部 第二下：排了 %1 颗").arg(m_bulkIds.size()));
+}
+
 // 「装/更新」按下去先进这里：已经有一颗在飞就排队。
 // 为什么非要排队 —— 他连点九颗那次，九条下载 + 九次改名 + 中途 reload/重排叠在一起，
 // 最后崩在 scan() 里（Qt6Widgets，0xc0000005）。一次一颗把这堆叠态整个拿掉，
@@ -930,6 +1091,13 @@ void ToolsPage::finishInstalls()
     PluginHost::reload();
     ShellMenu::syncWithPlugin();     // 把「右键动作」装回来 = 右键里那几项也该跟着回来
     rebuildGrid();
+    if (m_bulkIds.isEmpty())
+        return;
+    const QStringList failed = bulkMissed(m_bulkIds, shopRows());
+    m_storeStatus->setText(bulkDoneLine(m_bulkIds.size(), failed));
+    Utils::log(QStringLiteral("store: 一键下载全部 收尾：排 %1 颗，没成 %2 颗（%3）")
+                   .arg(m_bulkIds.size()).arg(failed.size()).arg(failed.join(QStringLiteral("、"))));
+    m_bulkIds.clear();
 }
 
 bool ToolsPage::showTool(const QString& id, const QString& text)
@@ -968,6 +1136,10 @@ bool ToolsPage::showTool(const QString& id, const QString& text)
 
 void ToolsPage::rebuildGrid()
 {
+    // 那一面墙换了内容，「确认这 N 颗」里那个 N 就成了上一秒的商店 —— 就地收回那一次确认，
+    // 让他重新按第一下看新的数（拿旧数字排新的一份是"绿了但量错对象"的界面版）。
+    m_bulkArmed = false;
+    setBulkLabel(0);
     // 只换卡片那一格，已经点开过的插件页留在 stack 里不动（dll 不卸载，拆了也没意义）。
     //
     // 顺序是**先插新的、再摘旧的**。反过来写（先摘后插）会把上一张点开的插件页闪出来一次：

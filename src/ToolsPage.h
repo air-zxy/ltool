@@ -58,6 +58,28 @@ public:
     QString filterNote() const;   // 那一行"筛出几 / 共几"说了什么
     PluginStore::Shelf shelf() const { return m_shelf; }   // 现在这一档（全部/已装/未装）
 
+    // ---- 「一键下载全部」----
+    // 排哪几颗：**整个商店里没装的那几颗**，不受上面那行过滤影响（他拍的范围就是"全部"）。
+    // "装得了"那一判读的是 Row::entryUsable，这一颗不自己比 Api。
+    // 为什么抽成静态纯函数：这一条一旦长在点按钮那一段里，离屏就没人量得到它排了谁。
+    static QVector<PluginStore::Row> bulkTargets(const QVector<PluginStore::Row>& all);
+    // 第一下（还没排）那一行：要说清"一颗都还没动"、排几颗、大约多少、还有几颗被挡在外面。
+    static QString bulkAskLine(int n, qint64 bytes, int unusable);
+    // 一颗都排不了的时候那句实话（没拉清单 / 全装着了 —— 两种情况说的话不一样）。
+    static QString bulkEmptyLine(bool haveStore);
+    // 这一批飞完那一行：成了几颗、没成的点名。
+    static QString bulkDoneLine(int n, const QStringList& failed);
+    // 「这一批里哪几颗还没落地」—— 问的是数据层现在的说法（那颗 dll 在不在盘上），
+    // 不是"我数了几次回调"：回调次数会把"下成了但哈希不对被扔掉"那一支算成成功。
+    static QStringList bulkMissed(const QStringList& ids, const QVector<PluginStore::Row>& now);
+    QString storeLine() const;   // 商店那一行（清单/拉取/这一批）现在说了什么 —— 判据读这一颗
+    bool bulkArmed() const { return m_bulkArmed; }
+    // 现在有多少颗在飞 + 排着（含「一键」这一批和一张一张点的）：界面和判据都问这一颗。
+    int installsBusy() const { return m_installing + m_queue.size(); }
+    // 单独问"在飞"那一半：一键排下去时应该是 **1 颗在飞、其余排着** ——
+    // 他连点九颗那次崩的就是"九颗同时在飞"，只看合计数把这一类和"一颗飞完一颗接上"混成同一个数。
+    int inflightCount() const { return m_installing; }
+
 private:
     QVector<PluginStore::Row> shopRows() const;   // 这一面卡片的数据，唯一一条路
     QWidget* buildGrid();
@@ -88,6 +110,15 @@ private:
     QVector<PluginStore::Row> passedRows(const QVector<PluginStore::Row>& rows) const;
     bool passesShelf(const PluginStore::Row& r) const;
     QString filterDesc() const;   // 现在这套过滤的人话（"名字「x」 · 只看已装"）
+
+    // 「一键下载全部」按下去那一段：两段就地确认，第二下才把 bulkTargets() 那些颗
+    // 一颗一颗交给同一条 installEntry 队列（一次只飞一颗 —— 他连点九颗那次崩的就是并行）。
+    void onBulkClicked();
+    void setBulkLabel(int confirmCount);   // 标签在「一键下载全部」和「确认这 N 颗」之间换，字数对齐所以不撑版面
+
+    QPushButton* m_bulk = nullptr;
+    bool m_bulkArmed = false;
+    QStringList m_bulkIds;          // 这一批排了哪几颗（飞完那一行要按这个数"成了几颗"）
 
     QLineEdit* m_filter = nullptr;
     QLabel* m_filterNote = nullptr;

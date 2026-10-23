@@ -1606,6 +1606,225 @@ int main(int argc, char* argv[])
             check("最后清干净：那一面又是满墙", QStringLiteral("%1").arg(countCards()),
                   QStringLiteral("%1").arg(wantInst + wantMiss));
         }
+        // ---- 「一键下载全部」：两段就地确认 + 一次只飞一颗 ----
+        // 这一栏分两块：先在**没拉清单**的那一面上量"一颗都不许动"，
+        // 再写一份假清单（地址全是 .invalid，永远解析不出去）把"第二下真排队、还是一颗一颗飞、
+        // 全失败时那一行说成了几颗"量出来 —— 这一趟既不上外网、也不会往目录里落假 dll。
+        {
+            const auto bulkOf = [](ToolsPage* p) {
+                const auto btns = p->findChildren<QPushButton*>();
+                for (QPushButton* b : btns)
+                    if (b->accessibleName() == QString::fromUtf8("一键下载全部"))
+                        return b;
+                return static_cast<QPushButton*>(nullptr);
+            };
+            QPushButton* bulk = bulkOf(&wall);
+            has("那一颗「一键下载全部」在（按 accessibleName 认）", bulk != nullptr);
+            has("而且真的摆在页眉那一排布局里（不是只 new 出来）", bulk && laidOut.contains(bulk));
+            const QFontMetrics fmBulk(bulk ? bulk->font() : QFont());
+            check("两段标签的宽度都塞得进预留的那块（点下去只换字、不撑那一排）",
+                  QStringLiteral("%1/%2")
+                      .arg(fmBulk.horizontalAdvance(QStringLiteral("一键下载全部")) <= (bulk ? bulk->minimumWidth() - 24 : -1))
+                      .arg(fmBulk.horizontalAdvance(QStringLiteral("确认这 12 颗")) <= (bulk ? bulk->minimumWidth() - 24 : -1)),
+                  QStringLiteral("1/1"));
+
+            // 纯规则那五条：排谁、第一下怎么说、没得排怎么说、飞完怎么说
+            auto mkRow = [](const QString& id, PluginStore::State st, bool usable) {
+                PluginStore::Row r;
+                r.remote.id = id;
+                r.remote.name = id;
+                r.remote.file = QStringLiteral("ltool-%1.dll").arg(id);
+                r.remote.bytes = 4096;
+                r.state = st;
+                r.entryUsable = usable;
+                return r;
+            };
+            const QVector<PluginStore::Row> fake = {
+                mkRow(QStringLiteral("a"), PluginStore::State::Missing, true),
+                mkRow(QStringLiteral("b"), PluginStore::State::Missing, true),
+                mkRow(QStringLiteral("c"), PluginStore::State::Installed, true),
+                mkRow(QStringLiteral("d"), PluginStore::State::ApiMismatch, false),
+                mkRow(QStringLiteral("e"), PluginStore::State::Blocked, false),
+                mkRow(QStringLiteral("f"), PluginStore::State::LocalOnly, true),
+            };
+            check("排的就只是「没装的那几颗」（已装/清单外/装不了/条目坏的一颗都不算）",
+                  QStringLiteral("%1").arg(ToolsPage::bulkTargets(fake).size()), QStringLiteral("2"));
+            const QString ask = ToolsPage::bulkAskLine(3, 3 * 1024 * 1024, 2);
+            has("第一下那句说了四件事：一颗没动、排几颗、大约多少、还是一次一颗",
+                ask.contains(QStringLiteral("第一下一颗都没动"))
+                    && ask.contains(QStringLiteral("排 3 颗"))
+                    && ask.contains(QStringLiteral("约 3.00 MB"))
+                    && ask.contains(QStringLiteral("一次只飞一颗")));
+            has("没有装不了的那几颗时，就不提那句（不编一个数出来）",
+                !ToolsPage::bulkAskLine(1, 1024, 0).contains(QStringLiteral("用不了")));
+            has("装不了的那几颗要点名有几颗（这一面不硬排它们）",
+                ask.contains(QStringLiteral("另有 2 颗")));
+            has("一颗都排不了、是因为清单还没拉 —— 那句话要给出路",
+                ToolsPage::bulkEmptyLine(false).contains(QStringLiteral("刷新清单")));
+            has("一颗都排不了、是因为全装着了 —— 那句不许谎称「还没拉清单」",
+                ToolsPage::bulkEmptyLine(true).contains(QStringLiteral("全装着了"))
+                    && !ToolsPage::bulkEmptyLine(true).contains(QStringLiteral("刷新清单")));
+            const QStringList twoFail = { QStringLiteral("x"), QStringLiteral("y") };
+            has("飞完那一行报的是「成了几颗 / 没成几颗」，没成的要点名",
+                ToolsPage::bulkDoneLine(4, twoFail).contains(QStringLiteral("成了 2 颗"))
+                    && ToolsPage::bulkDoneLine(4, twoFail).contains(QStringLiteral("没成 2 颗"))
+                    && ToolsPage::bulkDoneLine(4, twoFail).contains(QStringLiteral("x、y")));
+            has("全成的时候不许拖一句空的「没成的：」",
+                !ToolsPage::bulkDoneLine(3, QStringList()).contains(QStringLiteral("没成的：")));
+
+            // 没拉清单那一面：第一下**一颗都不许排**，并且要说清为什么排不了
+            const int busyBefore = wall.installsBusy();
+            bulk->click();
+            QCoreApplication::processEvents();
+            check("没清单时点第一下：一颗都没排（队列和在飞都还是空）",
+                  QStringLiteral("%1").arg(wall.installsBusy() - busyBefore), QStringLiteral("0"));
+            has("没清单时那一行给的是出路，不是「排了 0 颗」这种废话",
+                wall.storeLine().contains(QStringLiteral("刷新清单")));
+            has("没清单时那颗按钮没进确认态（标签还是原话）",
+                bulk->text() == QString::fromUtf8("一键下载全部") && !wall.bulkArmed());
+
+            // ---- 下面那一栏要一份"清单已拉到"的商店页：假清单，地址全走 .invalid ----
+            // 为什么用 .invalid（和 --storeexit 那半颗假条目同一个写法）：这颗域名按 RFC 2606 永远不会被解析出去，
+            // 本机实测解它 31 ms 就失败 —— 换成 127.0.0.1 上没人听的端口，这台机每次连接要磨 2 秒，
+            // 两条 × 两个候选 × 两趟就是十几秒，一面旗为了证明"一次只飞一颗"不该吃那么多时间。
+            const QString cachePath = Utils::dataDir() + QStringLiteral("/plugins_cache.json");
+            QFile::remove(cachePath);                       // 先清掉上一轮可能留下的那一份
+            const QString zeros(64, QLatin1Char('0'));
+            const QString fakeIndex = QStringLiteral(
+                R"({"schema":1,"plugins":[)"
+                R"({"id":"fakewhole","name":"假的那颗整的","desc":"","file":"ltool-fakewhole.dll",)"
+                R"("url":"https://example.invalid/ltool-fakewhole.dll","sha256":"%1","bytes":2048,)"
+                R"("api":%2,"version":"9.9.9"},)"
+                R"({"id":"fakehalf","name":"假的那颗半的","desc":"","file":"ltool-fakehalf.dll",)"
+                R"("url":"https://example.invalid/ltool-fakehalf.dll","sha256":"%1","bytes":1024,)"
+                R"("api":%2,"version":"9.9.9"},)"
+                R"({"id":"fakeoldapi","name":"假的那颗旧接口","desc":"","file":"ltool-fakeoldapi.dll",)"
+                R"("url":"https://example.invalid/ltool-fakeoldapi.dll","sha256":"%1","bytes":512,)"
+                R"("api":3,"version":"9.9.9"}]})")
+                .arg(zeros).arg(LTOOL_PLUGIN_API_VERSION);
+            {
+                QDir().mkpath(Utils::dataDir());
+                QFile f(cachePath);
+                has("那份假清单写下去了（沙箱数据目录，绝对路径现算）",
+                    f.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                        && f.write(fakeIndex.toUtf8()) == fakeIndex.toUtf8().size());
+                // 不写这颗日期，构造函数会自己起那 100ms 的自动拉清单定时器 ——
+                // 它会中途把这一面重排掉，这一栏就成了看网络脸色的判据（--storeexit 那条注释里钉过同一件事）。
+                QSettings cfg(Utils::dataDir() + QStringLiteral("/config.ini"), QSettings::IniFormat);
+                cfg.setValue(QStringLiteral("store/lastFetchDate"),
+                             QDate::currentDate().toString(Qt::ISODate));
+                cfg.sync();
+            }
+            // 这一扇用**堆上的** ToolsPage：这一栏最后一刀是"在飞的途中把这扇窗关掉"
+            // （他中途关设置窗就是这件事），栈对象做不到半途关。
+            auto* batch = new ToolsPage;
+            batch->setAttribute(Qt::WA_DontShowOnScreen, true);
+            batch->resize(940, 720);
+            batch->show();
+            for (int i = 0; i < 20; ++i)
+                QCoreApplication::processEvents();
+            QPushButton* bulk2 = bulkOf(batch);
+            has("那一扇上那颗「一键下载全部」也在（假清单那一面）", bulk2 != nullptr);
+            if (!bulk2) {
+                // 这一栏剩下的全要用它，拿不到就点名红一条然后收手 ——
+                // 上一轮那条 rc=139 就是"判据判了缺控件、探针还继续 deref"换来的（任务 #133 那条规矩在这儿先用上）
+                has("拿不到那颗按钮：这一栏剩下的量不了，不许当成绿", false);
+            } else {
+                // 目录里那两颗假 dll 与它们留下的 .part：名字是这一栏自己造的，路径全部现算
+                const auto junkInDir = [] {
+                    QStringList out;
+                    const QDir d(PluginHost::pluginsDir());
+                    for (const QString& n : d.entryList(QDir::Files))
+                        if (n.startsWith(QStringLiteral("ltool-fake")))
+                            out << d.absoluteFilePath(n);
+                    return out;
+                };
+                const auto landedDlls = [] {
+                    QStringList out;
+                    const QDir d(PluginHost::pluginsDir());
+                    for (const QString& n : d.entryList(QDir::Files))
+                        if (n.startsWith(QStringLiteral("ltool-fake")) && !n.endsWith(QStringLiteral(".part")))
+                            out << n;
+                    return out;
+                };
+                check("那两条下载确实没落假 dll（此刻目录里 ltool-fake* 只有 .part 那两个）",
+                      QStringLiteral("%1").arg(landedDlls().size()), QStringLiteral("0"));
+                check("假清单那一面：能排的就是那 2 颗（旧接口那颗不在里面）",
+                      QStringLiteral("%1").arg(ToolsPage::bulkTargets(
+                          PluginStore::rows(PluginStore::parseIndex(fakeIndex.toUtf8(), nullptr))).size()),
+                      QStringLiteral("2"));
+                bulk2->click();
+                QCoreApplication::processEvents();
+                check("第一下之后：按钮进确认态，而队列里一颗都没排",
+                      QStringLiteral("%1/%2").arg(batch->bulkArmed() ? "armed" : "cold")
+                          .arg(batch->installsBusy()),
+                      QStringLiteral("armed/0"));
+                check("第一下那颗按钮上写的是「确认这 2 颗」（数字来自数据层现算）",
+                      bulk2->text(), QStringLiteral("确认这 2 颗"));
+                has("第一下那一行照实说：还没动一颗、排几颗、另有 1 颗用不了",
+                    batch->storeLine().contains(QStringLiteral("第一下一颗都没动"))
+                        && batch->storeLine().contains(QStringLiteral("排 2 颗"))
+                        && batch->storeLine().contains(QStringLiteral("另有 1 颗")));
+                // 确认态里那个数字是**上一秒的商店**：中间只要拆过一次墙（他点「刷新清单」、
+                // 或哪颗装完），那个数就作废，得重新按第一下看新的。
+                batch->rebuildGrid();
+                for (int i = 0; i < 10; ++i)
+                    QCoreApplication::processEvents();
+                has("进确认态之后拆一次墙：确认收回、标签回到原话（不许拿旧数字排新的一份）",
+                    !batch->bulkArmed() && bulk2->text() == QString::fromUtf8("一键下载全部"));
+                bulk2->click();
+                QCoreApplication::processEvents();
+                has("收回之后那颗按钮还活着：再按一次照样进确认态",
+                    batch->bulkArmed() && bulk2->text() == QString::fromUtf8("确认这 2 颗"));
+                bulk2->click();
+                QCoreApplication::processEvents();
+                check("第二下之后：只有一颗真在飞、另一颗排着（他连点九颗崩的那一类）",
+                      QStringLiteral("%1/%2").arg(batch->inflightCount()).arg(batch->installsBusy()),
+                      QStringLiteral("1/2"));
+                has("第二下那一行改口说已排几颗（不留在「一颗都没动」那句）",
+                    batch->storeLine().contains(QStringLiteral("已排 2 颗")));
+                // 「确实起来了」的证据是上面那颗 `inflightCount()==1`（飞行标记在下载发起前就挂了号），
+                // 不是数目录里的 .part —— 第二颗要等第一颗失败才开始，数文件就成了看 DNS 脸色。
+                // 一颗在飞、一颗排着的时候拆墙：那次闪退的同一条形状 —— 队列里存的是卡片上的控件，
+                // 墙拆了它们就该自己变 null（QPointer 兜着），下载照样走完、一颗都不许多起。
+                batch->rebuildGrid();
+                for (int i = 0; i < 10; ++i)
+                    QCoreApplication::processEvents();
+                check("在飞的时候拆一次墙：还是 1 颗在飞 + 1 颗排着（没多起一趟，也没把这一批弄丢）",
+                      QStringLiteral("%1/%2").arg(batch->inflightCount()).arg(batch->installsBusy()),
+                      QStringLiteral("1/2"));
+                // 「收尾那一行说成了几颗」抽成了纯函数：等那两条真失败 = 看 DNS 的脸色
+                // （本机实测同一条 4 秒和 12 秒都出现过，一面闸不该长成那样）。这里量那颗谓词本身。
+                QVector<PluginStore::Row> landedNow;
+                landedNow << mkRow(QStringLiteral("fakewhole"), PluginStore::State::Installed, true)
+                          << mkRow(QStringLiteral("fakehalf"), PluginStore::State::Missing, true);
+                const QStringList twoIds = { QStringLiteral("fakewhole"), QStringLiteral("fakehalf") };
+                check("收尾数的是数据层的说法：一颗落了地、一颗还在 Missing ⇒ 没成的就是那颗",
+                      QStringLiteral("%1").arg(ToolsPage::bulkMissed(twoIds, landedNow)
+                                                   .join(QStringLiteral(","))),
+                      QStringLiteral("fakehalf"));
+                has("收尾那一行按这个报「成了 1 颗，没成 1 颗」并且点名那颗",
+                    ToolsPage::bulkDoneLine(2, ToolsPage::bulkMissed(twoIds, landedNow))
+                        .contains(QStringLiteral("成了 1 颗"))
+                    && ToolsPage::bulkDoneLine(2, ToolsPage::bulkMissed(twoIds, landedNow))
+                           .contains(QStringLiteral("fakehalf")));
+                // 收这一栏：先**在飞的途中把这扇窗关掉**（那两条下载跟着 parent 一起没 ——
+                // 这就是他中途关设置窗那一条路），再删自己造的那几份东西。
+                delete batch;
+                for (int i = 0; i < 10; ++i) {
+                    QThread::msleep(20);
+                    QCoreApplication::processEvents();
+                }
+                // 这一刀自己没有"绿"可报：它的证据是**整趟跑下来 rc=0**（真崩就在这两句之间死掉，
+                // 缓冲的 stdout 一起没 —— 上一轮那条 rc=139 见过这个形状）。写一条永远真不了的判据是自欺。
+                std::printf("INFO 在飞的途中把商店那扇窗关掉了（两颗：一颗在飞、一颗排着）—— 这一趟没崩就是它的证据\n");
+                QFile::remove(cachePath);
+                for (const QString& p : junkInDir())
+                    QFile::remove(p);
+                check("这一栏自己留下的东西清干净了（假清单 + .part 一个都不留在插件目录里）",
+                      QStringLiteral("%1").arg(junkInDir().size()), QStringLiteral("0"));
+            }
+        }
         // ---- 整扇商店页关掉那一趟（他真正的形状：页挂在 `ToolsPage` 那棵树上，一关全没）----
         // 上面 delete 的是单张页；这里是**一扇窗里点开过的页一起没**。
         // 一颗一棵树：`createPage(tree)` 之后那张页的命就归这棵树，删掉树 = 关掉那扇窗。
