@@ -165,7 +165,13 @@ bool autoUpdateDue();         // 今天还没跑过（跑过就把 store/autoUpd
 // 挑出这一趟要换的：只认 State::Update。抽成纯函数是为了「新插件不许自动装」这条
 // 边界能在离屏判据里钉住 —— 它一旦写进联网那段就没人测得到了。
 QVector<Entry> autoUpdateTargets(const QVector<Row>& all);
-QString autoUpdateNote();     // 上次跑完留给界面看的那句话；没跑过是空串
+QString autoUpdateNote();     // 上次跑完留给界面看的那句话（**一句短话**，不带 URL/HTTP 码）；没跑过是空串
+// 那句短话背后的全文（哪条 URL、走的镜像还是直连、原始错误）。商店页把它挂在同一行的悬停说明上，
+// 落盘时同时进日志 —— 他 2026-10-23 那句是「别把这些摆到页面上」，不是「别记」。
+QString autoUpdateWhy();
+// 把"存在配置里的那条 note"过一刀成页面上那句短话（纯函数，离屏钉得住）：
+// 老版本存的是带 URL / HTTP 码的整条原文，读的时候也不能让它上页面 —— 原文走悬停说明和日志。
+QString autoBrief(const QString& stored);
 // 那句 note 怎么拼（纯函数，离屏钉得住）：成了几颗、哪几颗没成、清单是从哪条拿到的。
 // 「下次启动用新的」是实话的一半：文件当场就换掉了，但这个进程还加载着老的那颗。
 QString autoUpdateSummary(const QStringList& ok, const QStringList& bad, const QString& src);

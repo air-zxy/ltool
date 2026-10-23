@@ -384,9 +384,11 @@ ToolsPage::ToolsPage(QWidget* parent)
     m_storeStatus->setObjectName(QStringLiteral("tip"));
     m_storeStatus->setWordWrap(true);
     if (m_haveStore) {
-        m_storeStatus->setText(QStringLiteral("已载入本地清单缓存（共 %1 条插件）· 每天自动检查更新一次").arg(m_lastEntries.size()));
+        setStoreLine(QStringLiteral("已载入本地清单缓存（共 %1 条插件）· 每天自动检查更新一次")
+                         .arg(m_lastEntries.size()),
+                     QStringLiteral("这份缓存来自本机 plugins_cache.json · 清单地址 %1").arg(PluginStore::indexUrl()));
     } else {
-        m_storeStatus->setText(QStringLiteral(
+        setStoreLine(QStringLiteral(
             "这一面列的是本机 `ltool-plugins\\` 里装着的那几个。点右上「刷新清单」，仓库里能装的也进这同一面。"));
     }
     lay->addWidget(m_storeStatus);
@@ -395,7 +397,7 @@ ToolsPage::ToolsPage(QWidget* parent)
     m_autoNote = new QLabel(this);
     m_autoNote->setObjectName(QStringLiteral("tip"));
     m_autoNote->setWordWrap(true);
-    m_autoNote->setText(autoUpdateLine());
+    setAutoNote();
     lay->addWidget(m_autoNote);
 
     // ---- 过滤那一行：常驻在两行说明之后、那一面墙之前 ----
@@ -824,17 +826,17 @@ void ToolsPage::refreshStore()
         return;
     m_storeBusy = true;
     const QString url = PluginStore::indexUrl();
-    m_storeStatus->setText(QStringLiteral("正在拉清单：%1").arg(url));
+    setStoreLine(QStringLiteral("正在拉清单…"), url);
 
     // 镜像 → 本地代理 → 直连，逐条试（那条顺序只在 PluginStore::fetch 里写一遍，两段联网共用）
     PluginStore::fetch(url, this, {}, {}, {}, [this, url](const PluginStore::Fetched& got) {
         m_storeBusy = false;
-        if (m_autoNote)
-            m_autoNote->setText(autoUpdateLine());
+        setAutoNote();
         if (!got.ok) {
             if (!m_lastEntries.isEmpty()) {
-                m_storeStatus->setText(QStringLiteral("网络拉取未成功：%1 —— 当前展示本地缓存清单（共 %2 条）")
-                                           .arg(got.err).arg(m_lastEntries.size()));
+                setStoreLine(QStringLiteral("网络没通，先看本地缓存那 %1 条").arg(m_lastEntries.size()),
+                             QStringLiteral("网络拉取未成功：%1 —— 当前展示本地缓存清单（共 %2 条）")
+                                 .arg(got.err).arg(m_lastEntries.size()));
                 rebuildGrid();
                 Utils::log(QStringLiteral("store: 拉清单失败 %1，使用本地缓存").arg(got.err));
                 return;
@@ -842,8 +844,9 @@ void ToolsPage::refreshStore()
             m_haveStore = false;
             m_lastEntries.clear();
             m_lastProblems.clear();
-            m_storeStatus->setText(QStringLiteral("清单没拉到：%1 —— 这一面退回本机装着的那几个，它们照常能用")
-                                       .arg(got.err));
+            setStoreLine(QStringLiteral("清单没拉到，这一面退回本机装着的那几个，它们照常能用"),
+                         QStringLiteral("清单没拉到：%1 —— 这一面退回本机装着的那几个，它们照常能用")
+                             .arg(got.err));
             rebuildGrid();
             Utils::log(QStringLiteral("store: 拉清单失败 %1 url=%2").arg(got.err, url));
             return;
@@ -863,17 +866,22 @@ void ToolsPage::refreshStore()
                 ++canInstall;
         }
         const int outside = PluginStore::localOnly(entries).size();
-        QString line = QStringLiteral("清单 %1 条（%2 · 走的是 %3，一共试了 %4 次）· 这一面 %5 张卡"
-                                      " · 能装或可更新 %6 · 拒收 %7 · 清单外 %8"
-                                      " —— 装了的点正文是打开，没装的点正文是装")
-                          .arg(entries.size()).arg(url, got.via).arg(got.tries).arg(all.size())
-                          .arg(canInstall).arg(problems.size()).arg(outside);
+        // 页面上那句只报数（几张卡、几颗能装、几颗拒收、几张在清单外）；
+        // 那条 URL、走的哪一档、试了几次、拒收的是谁 —— 全在悬停说明和下面那行日志里。
+        const QString brief = QStringLiteral("清单 %1 条 · 这一面 %2 张卡 · 能装或可更新 %3 · 拒收 %4 · 清单外 %5"
+                                             " —— 装了的点正文是打开，没装的点正文是装")
+                                  .arg(entries.size()).arg(all.size()).arg(canInstall)
+                                  .arg(problems.size()).arg(outside);
+        QString full = QStringLiteral("清单 %1 条（%2 · 走的是 %3，一共试了 %4 次）· 这一面 %5 张卡"
+                                      " · 能装或可更新 %6 · 拒收 %7 · 清单外 %8")
+                           .arg(entries.size()).arg(url, got.via).arg(got.tries).arg(all.size())
+                           .arg(canInstall).arg(problems.size()).arg(outside);
         if (!problems.isEmpty())
-            line += QStringLiteral("（拒收：%1）").arg(problems.join(QStringLiteral("；")));
-        m_storeStatus->setText(line);
+            full += QStringLiteral("（拒收：%1）").arg(problems.join(QStringLiteral("；")));
+        setStoreLine(brief, full);
         rebuildGrid();
-        Utils::log(QStringLiteral("store: 清单 %1 条（%2 拿到），卡片 %3 张，能装 %4，拒收 %5，清单外 %6")
-                       .arg(entries.size()).arg(got.via).arg(all.size()).arg(canInstall)
+        Utils::log(QStringLiteral("store: 清单 %1 条（%2 拿到 · %3），卡片 %4 张，能装 %5，拒收 %6，清单外 %7")
+                       .arg(entries.size()).arg(got.via, url).arg(all.size()).arg(canInstall)
                        .arg(problems.size()).arg(outside));
     });
 }
@@ -943,6 +951,29 @@ QString ToolsPage::storeLine() const
     return m_storeStatus ? m_storeStatus->text() : QString();
 }
 
+QString ToolsPage::storeLineWhy() const
+{
+    return m_storeStatus ? m_storeStatus->toolTip() : QString();
+}
+
+void ToolsPage::setStoreLine(const QString& brief, const QString& full)
+{
+    if (!m_storeStatus)
+        return;
+    m_storeStatus->setText(brief);
+    // 没给全文就把悬停说明清掉：上一句留下的 URL/错误码挂在下一句短话上，
+    // 看着就像"这句短话背后就是那次失败"（读的是上一轮的状态，不是这一轮的）。
+    m_storeStatus->setToolTip(full);
+}
+
+void ToolsPage::setAutoNote()
+{
+    if (!m_autoNote)
+        return;
+    m_autoNote->setText(autoUpdateLine());
+    m_autoNote->setToolTip(PluginStore::autoUpdateWhy());
+}
+
 void ToolsPage::setBulkLabel(int confirmCount)
 {
     if (!m_bulk)
@@ -960,7 +991,7 @@ void ToolsPage::onBulkClicked()
         // 上一批还在飞：一次只飞一颗是那条队列的规矩，这里不插队，也不起第二趟
         m_bulkArmed = false;
         setBulkLabel(0);
-        m_storeStatus->setText(QStringLiteral("上一批还在飞（在飞 %1 颗 · 排着 %2 颗）· 等它空了再按这一颗")
+        setStoreLine(QStringLiteral("上一批还在飞（在飞 %1 颗 · 排着 %2 颗）· 等它空了再按这一颗")
                                    .arg(m_installing).arg(m_queue.size()));
         return;
     }
@@ -969,7 +1000,7 @@ void ToolsPage::onBulkClicked()
     if (targets.isEmpty()) {
         m_bulkArmed = false;
         setBulkLabel(0);
-        m_storeStatus->setText(bulkEmptyLine(m_haveStore));
+        setStoreLine(bulkEmptyLine(m_haveStore));
         return;
     }
     if (!m_bulkArmed) {
@@ -982,7 +1013,7 @@ void ToolsPage::onBulkClicked()
                 ++unusable;
         m_bulkArmed = true;
         setBulkLabel(targets.size());
-        m_storeStatus->setText(bulkAskLine(targets.size(), bytes, unusable));
+        setStoreLine(bulkAskLine(targets.size(), bytes, unusable));
         Utils::log(QStringLiteral("store: 一键下载全部 第一下（还没排）：%1 颗，约 %2，挡在外面 %3 颗")
                        .arg(targets.size()).arg(PluginStore::humanSize(bytes)).arg(unusable));
         return;
@@ -1019,7 +1050,7 @@ void ToolsPage::onBulkClicked()
             btn->setEnabled(false);   // 被过滤挡在墙外的拿不到控件：传 nullptr，那条队列本来就允许"没地方写字、照样下"
         installEntry(r.remote, btn, state);
     }
-    m_storeStatus->setText(QStringLiteral("已排 %1 颗 · 一次只飞一颗，卡片上那一行逐颗报进度").arg(m_bulkIds.size()));
+    setStoreLine(QStringLiteral("已排 %1 颗 · 一次只飞一颗，卡片上那一行逐颗报进度").arg(m_bulkIds.size()));
     Utils::log(QStringLiteral("store: 一键下载全部 第二下：排了 %1 颗").arg(m_bulkIds.size()));
 }
 
@@ -1105,7 +1136,7 @@ void ToolsPage::finishInstalls()
     if (m_bulkIds.isEmpty())
         return;
     const QStringList failed = bulkMissed(m_bulkIds, shopRows());
-    m_storeStatus->setText(bulkDoneLine(m_bulkIds.size(), failed));
+    setStoreLine(bulkDoneLine(m_bulkIds.size(), failed));
     Utils::log(QStringLiteral("store: 一键下载全部 收尾：排 %1 颗，没成 %2 颗（%3）")
                    .arg(m_bulkIds.size()).arg(failed.size()).arg(failed.join(QStringLiteral("、"))));
     m_bulkIds.clear();

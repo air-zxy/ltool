@@ -73,6 +73,8 @@ public:
     // 不是"我数了几次回调"：回调次数会把"下成了但哈希不对被扔掉"那一支算成成功。
     static QStringList bulkMissed(const QStringList& ids, const QVector<PluginStore::Row>& now);
     QString storeLine() const;   // 商店那一行（清单/拉取/这一批）现在说了什么 —— 判据读这一颗
+    // 同一行的悬停说明：URL、HTTP 码、走的哪条镜像、拒收明细都在这一份里（页面上那句是短的）。
+    QString storeLineWhy() const;
     bool bulkArmed() const { return m_bulkArmed; }
     // 现在有多少颗在飞 + 排着（含「一键」这一批和一张一张点的）：界面和判据都问这一颗。
     int installsBusy() const { return m_installing + m_queue.size(); }
@@ -99,6 +101,12 @@ private:
     void runInstall(const PluginStore::Entry& e, QPushButton* btn, QLabel* state);   // 真开一条下载
     void startNextInstall();   // 队列里还有就接着装，装完了才重排卡片墙
     void backToGrid();         // 回到那一面卡片墙：按钮 / Esc / 重排之后共用这一条
+
+    // 商店顶部那一行的唯一出口（2026-10-23 他那句「不要放到插件详情页面」拍的是 A 档）：
+    // 页面上只留一句短话，全文（URL / HTTP 码 / 走的哪条镜像 / 拒收明细）挂到悬停说明，
+    // 并在动作那一步各自进日志 —— "别摆到页面上"不是"别记"，所以两份都得有话说。
+    void setStoreLine(const QString& brief, const QString& full = QString());
+    void setAutoNote();        // 自动更新那一行同一个规矩：短话进文本，全文进悬停说明
 
     // 过滤框改字时走这一条：正看着一张插件页的话**不打断**（先记下，返回商店才重排那一面墙），
     // 在墙上的当场重排。绕开这一层的写法（直接 rebuildGrid）会把人从点开的那张页里拽出来。

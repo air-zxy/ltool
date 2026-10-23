@@ -1763,8 +1763,18 @@ int main(int argc, char* argv[])
                       QStringLiteral("%1").arg(ToolsPage::bulkTargets(
                           PluginStore::rows(PluginStore::parseIndex(fakeIndex.toUtf8(), nullptr))).size()),
                       QStringLiteral("2"));
+                // 悬停说明那一份也要有数：它由"这一面刚建起来"那一句挂上，被后面任何一句短话接管时
+                // 必须收掉 —— 挂着不放就是把上一次失败的原因配到这一句没头没尾的短话上。
+                const QString tipBefore = batch->storeLineWhy();
+                has("这一面刚建起来：那句短话带着悬停说明（缓存是哪份、清单地址）",
+                    tipBefore.contains(QStringLiteral("plugins_cache.json"))
+                        && tipBefore.contains(QStringLiteral("http")));
                 bulk2->click();
                 QCoreApplication::processEvents();
+                has("短话接管那一行之后，上一句的悬停说明收掉了（不留着上一次的）",
+                    batch->storeLineWhy().isEmpty());
+                has("页面上那句短话里不许出现 URL / HTTP 码（那是悬停说明和日志的活）",
+                    !batch->storeLine().contains(QStringLiteral("http")));
                 check("第一下之后：按钮进确认态，而队列里一颗都没排",
                       QStringLiteral("%1/%2").arg(batch->bulkArmed() ? "armed" : "cold")
                           .arg(batch->installsBusy()),
@@ -5014,10 +5024,47 @@ int main(int argc, char* argv[])
             check("真换了东西的那句才说「已落盘」；一颗都没动的那句不许说（那是假话）",
                   okNote.contains(QStringLiteral("已落盘")) && mix.contains(QStringLiteral("已落盘"))
                       && !idle.contains(QStringLiteral("已落盘")) ? "yes" : "no", "yes");
-            check("三种说法都把「清单是从哪条拿到的」带出来（走的是镜像还是直连，他要能查）",
+            check("三种说法都把「清单几条」带上；哪条链拿到的（URL/镜像/试了几次）在 why 那份里",
                   okNote.contains(QStringLiteral("清单 19 条")) && mix.contains(QStringLiteral("清单 19 条"))
                       && idle.contains(QStringLiteral("清单 19 条")) ? "yes" : "no", "yes");
+            // 页面上那句短话 / 悬停说明里那份全文，是 2026-10-23 他拍的一刀：
+            // 「不要放到插件详情页面」+ 选的是「页上留一句短话，全文进日志」。
+            // 这三条量的是 autoBrief 那颗谓词（读老配置时也走它），不是"我有没有记得写短的"。
+            check("短话那半句不许带 URL / HTTP 码（老格式那条整条原文带 http 的也一样）",
+                  !PluginStore::autoBrief(QStringLiteral(
+                      "没有要换的（网络没成（Error transferring https://x/y - 404）），拿本地缓存试"))
+                       .contains(QStringLiteral("http"))
+                      ? "yes" : "no", "yes");
+            check("干净的 note 原样过，不许多切一刀（切了就等于这条在改一句本来没毛病的话）",
+                  PluginStore::autoBrief(QStringLiteral("没有要换的（清单 19 条 · 已落盘）")),
+                  QStringLiteral("没有要换的（清单 19 条 · 已落盘）"));
+            check("老格式那条没有括号的失败句：宁可退成一句固定短话，也不把原文推上页面",
+                  PluginStore::autoBrief(QStringLiteral(
+                      "今天没跑成：Error transferring https://x/y - server replied 404，本地也没有缓存清单"))
+                      .contains(QStringLiteral("原文在悬停说明里"))
+                      ? "yes" : "no", "yes");
+            check("被切掉的原文一个字都不丢：没写 why 时，悬停说明拿回那条老 note",
+                  (cfg.setValue(QStringLiteral("store/autoUpdateNote"),
+                                QStringLiteral("没有要换的（网络没成（HTTP 0，走的是 https://x/y））")),
+                   cfg.sync(),
+                   ToolsPage::autoUpdateLine().contains(QStringLiteral("没有要换的"))
+                       && !ToolsPage::autoUpdateLine().contains(QStringLiteral("http"))
+                       && PluginStore::autoUpdateWhy().contains(QStringLiteral("HTTP 0")))
+                      ? "yes" : "no", "yes");
+            check("写了 why 之后，note 是短的、why 是那条链（两份各管各的，不是一句拆两半）",
+                  (cfg.setValue(QStringLiteral("store/autoUpdateNote"), QStringLiteral("清单 19 条")),
+                   cfg.setValue(QStringLiteral("store/autoUpdateWhy"),
+                                QStringLiteral("清单 19 条，走的是 gh-proxy.com，一共试了 2 次")),
+                   cfg.sync(),
+                   PluginStore::autoUpdateNote().endsWith(QStringLiteral("清单 19 条"))
+                       && PluginStore::autoUpdateWhy().contains(QStringLiteral("gh-proxy.com")))
+                      ? "yes" : "no", "yes");
 
+            // 上面那两条各写了一次 note/why，这一条问的是"从来没跑过"—— 不清场就是读上一句留下的值
+            // （第一次跑就是它把这条判红的，那条红是真的）。
+            cfg.remove(QStringLiteral("store/autoUpdateNote"));
+            cfg.remove(QStringLiteral("store/autoUpdateWhy"));
+            cfg.sync();
             check("没跑过时商店那一行说「今天这一趟还没跑」，不许留一行空白",
                   ToolsPage::autoUpdateLine().contains(QStringLiteral("还没跑")) ? "yes" : "no", "yes");
             cfg.setValue(QStringLiteral("store/autoUpdateNote"),
@@ -5034,7 +5081,9 @@ int main(int argc, char* argv[])
                   ToolsPage::autoUpdateLine().contains(QStringLiteral("没开")) ? "yes" : "no", "yes");
             // 收尾：清掉这一节留下的状态。留着的话，下次有人在这后面加判据会读到"上一查询留下的值"。
             for (const QString& k : {QStringLiteral("store/autoUpdate"), QStringLiteral("store/autoUpdateDate"),
-                                     QStringLiteral("store/autoUpdateNote"), QStringLiteral("store/autoUpdateAt")})
+                                     QStringLiteral("store/autoUpdateNote"),
+                                     QStringLiteral("store/autoUpdateWhy"),
+                                     QStringLiteral("store/autoUpdateAt")})
                 cfg.remove(k);
             cfg.sync();
         }
@@ -5802,21 +5851,33 @@ int main(int argc, char* argv[])
                 QThread::msleep(50);
                 status = nullptr;
                 for (QLabel* l : page.findChildren<QLabel*>()) {
-                    if (l->text().startsWith(QStringLiteral("清单"))) {
+                    // 「网络没通…」是拉失败但本地有缓存时页面上那句短的（2026-10-23 那一刀之后）。
+                    // 不认它的话，这一栏在未发版那次只会白等 20 秒，而"页面上不许有 URL"那条
+                    // 判据就永远只在一条跑不到的成功路径上量 —— 那是装饰性的绿。
+                    const QString t = l->text();
+                    if (t.startsWith(QStringLiteral("清单")) || t.startsWith(QStringLiteral("网络没通"))) {
                         status = l;
                         break;
                     }
                 }
                 st = status ? status->text() : QString();
-                if (st.startsWith(QStringLiteral("清单 ")) || st.startsWith(QStringLiteral("清单没拉到")))
+                if (st.startsWith(QStringLiteral("清单 ")) || st.startsWith(QStringLiteral("清单没拉到"))
+                    || st.startsWith(QStringLiteral("网络没通")))
                     break;
             }
             drain();
             std::printf("INFO 状态行：%s\n", st.toUtf8().constData());
+            // 2026-10-23 那一刀之后，页面上那句只剩数，URL / 走的哪一档 / 试了几次挂在悬停说明上。
+            // 所以这一格的"说清"是两句合起来说的 —— 少一句都算没说清，判据读合起来那一份。
+            const QString tip = status ? status->toolTip() : QString();
+            std::printf("INFO 悬停说明：%s\n", tip.toUtf8().constData());
+            const QString both = st + QStringLiteral(" · ") + tip;
+            check("页面上那一句不许带 URL / HTTP 码（全文只该在悬停说明和日志里）",
+                  st.contains(QStringLiteral("http")) ? "no" : "yes", "yes");
             const QRegularExpression re(QStringLiteral(
                 "清单 (\\d+) 条（(.+?) · 走的是 (.+?)，一共试了 (\\d+) 次）· 这一面 (\\d+) 张卡"
                 " · 能装或可更新 (\\d+) · 拒收 (\\d+) · 清单外 (\\d+)"));
-            const auto m = re.match(st);
+            const auto m = re.match(both);
             check("拉到了就在状态行把数说清（没拉到会走另一句，不当成通过）", m.hasMatch(), st.left(70));
             if (!m.hasMatch()) {
                 // 这一句别说漏：下面那一大段"逐张卡片核对状态词↔按钮↔正文可点"全挂在 hasMatch 里。

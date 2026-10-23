@@ -838,11 +838,13 @@ QVector<Entry> g_autoQueue;
 QStringList g_autoOk;
 QStringList g_autoBad;
 QString g_autoSrc;
+QString g_autoWhy;            // 那句短话背后的全文（进日志 + 悬停说明，不进页面那一行）
 std::function<void(const QString&)> g_autoFinish;
 
-void writeAutoNote(const QString& note)
+void writeAutoNote(const QString& note, const QString& why)
 {
     autoCfg().setValue(QStringLiteral("store/autoUpdateNote"), note);
+    autoCfg().setValue(QStringLiteral("store/autoUpdateWhy"), why);
     autoCfg().setValue(QStringLiteral("store/autoUpdateAt"),
                        QDateTime::currentDateTime().toString(Qt::ISODate));
 }
@@ -851,8 +853,9 @@ void autoStep(QObject* owner)
 {
     if (g_autoQueue.isEmpty()) {
         const QString note = autoUpdateSummary(g_autoOk, g_autoBad, g_autoSrc);
-        writeAutoNote(note);
-        Utils::log(QStringLiteral("autoupdate: %1").arg(note));
+        writeAutoNote(note, g_autoWhy);
+        // 日志是"全文"那一份的落点：页面上那句是短的，查的时候得在这儿看到 URL / 原始错误。
+        Utils::log(QStringLiteral("autoupdate: %1 · %2").arg(note, g_autoWhy));
         if (g_autoFinish)
             g_autoFinish(note);
         g_autoFinish = nullptr;
@@ -918,15 +921,36 @@ QString autoUpdateSummary(const QStringList& ok, const QStringList& bad, const Q
     return s;
 }
 
+QString autoBrief(const QString& stored)
+{
+    // 1.5.0 之前，note 里存的是**整条原文**（带 URL 和 HTTP 码那种）。他这次说的是别把它摆在页面上，
+    // 所以读的时候也要过这一刀 —— 不然那行要一直难看到下一次自动更新跑完（最快也是明天）。
+    // 切法：整条里只要出现过 http，就把第一个「（」之后的都当成"那是原文，不是给人看的那半句"。
+    // 剩下的还是带 http（老格式里那种没有括号的失败句）⇒ 宁可退成一句固定的短话，也不把原文推上页面。
+    if (!stored.contains(QStringLiteral("http"), Qt::CaseInsensitive))
+        return stored;
+    const int k = stored.indexOf(QStringLiteral("（"));
+    if (k > 0)
+        return stored.left(k).trimmed();
+    return QStringLiteral("上次那一趟没成（原文在悬停说明里）");
+}
+
 QString autoUpdateNote()
 {
-    const QString what = autoCfg().value(QStringLiteral("store/autoUpdateNote")).toString();
+    const QString what = autoBrief(autoCfg().value(QStringLiteral("store/autoUpdateNote")).toString());
     if (what.isEmpty())
         return QString();
     const QDateTime when = QDateTime::fromString(
         autoCfg().value(QStringLiteral("store/autoUpdateAt")).toString(), Qt::ISODate);
     return when.isValid() ? QStringLiteral("%1 · %2").arg(when.toString(QStringLiteral("MM-dd hh:mm")), what)
                           : what;
+}
+
+QString autoUpdateWhy()
+{
+    const QString why = autoCfg().value(QStringLiteral("store/autoUpdateWhy")).toString();
+    // 没有单独的 why 就是老格式：那时全文就存在 note 里，悬停说明把它接回来，一个字都不丢。
+    return why.isEmpty() ? autoCfg().value(QStringLiteral("store/autoUpdateNote")).toString() : why;
 }
 
 void runDailyUpdate(QObject* parent, const std::function<void(const QString&)>& onDone)
@@ -949,18 +973,24 @@ void runDailyUpdate(QObject* parent, const std::function<void(const QString&)>& 
               QStringList problems;
               QVector<Entry> entries;
               QString src;
+              QString why;
               if (got.ok) {
                   saveCachedIndex(got.body);
                   entries = parseIndex(got.body, &problems);
-                  src = QStringLiteral("清单 %1 条，走的是 %2").arg(entries.size()).arg(got.via);
+                  src = QStringLiteral("清单 %1 条").arg(entries.size());
+                  why = QStringLiteral("清单 %1 条，走的是 %2，一共试了 %3 次")
+                            .arg(entries.size()).arg(got.via).arg(got.tries);
               } else if (const QByteArray cached = loadCachedIndex(); !cached.isEmpty()) {
                   entries = parseIndex(cached, &problems);
-                  src = QStringLiteral("网络没成（%1），拿本地缓存那 %2 条清单试").arg(got.err)
+                  // 页面上那句只说"网络没通、用的是缓存"；哪条链、什么错、几秒超时都进 why（日志 + 悬停）。
+                  src = QStringLiteral("网络没通，用的本地缓存");
+                  why = QStringLiteral("网络没成（%1），拿本地缓存那 %2 条清单试").arg(got.err)
                             .arg(entries.size());
               } else {
-                  const QString note = QStringLiteral("今天没跑成：%1，本地也没有缓存清单").arg(got.err);
-                  writeAutoNote(note);
-                  Utils::log(QStringLiteral("autoupdate: %1").arg(note));
+                  const QString note = QStringLiteral("今天没跑成，本地也没有缓存清单");
+                  const QString why2 = QStringLiteral("今天没跑成：%1，本地也没有缓存清单").arg(got.err);
+                  writeAutoNote(note, why2);
+                  Utils::log(QStringLiteral("autoupdate: %1 · %2").arg(note, why2));
                   onDone(note);
                   return;
               }
@@ -968,6 +998,7 @@ void runDailyUpdate(QObject* parent, const std::function<void(const QString&)>& 
               g_autoOk.clear();
               g_autoBad.clear();
               g_autoSrc = src;
+              g_autoWhy = why;
               g_autoFinish = onDone;
               Utils::log(QStringLiteral("autoupdate: 开始（%1 条清单里挑出 %2 颗要换）")
                              .arg(entries.size()).arg(g_autoQueue.size()));
