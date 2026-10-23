@@ -65,6 +65,26 @@ QString stateWord(PluginStore::State s)
     return QStringLiteral("条目不能用");
 }
 
+bool countsAsInstalled(State s, bool queuedRemove)
+{
+    using S = PluginStore::State;
+    // 盘上有这颗 dll 就算"已装"——包括被禁的（<file>.off 还在）和排进待删的（还没删成）。
+    // Missing/ApiMismatch/Blocked 三档盘上没有：前者是"能装"，后两者是"这台机器装不了/条目坏了"。
+    switch (s) {
+    case S::Installed:
+    case S::Update:
+    case S::Different:
+    case S::LocalOnly:
+    case S::Disabled:
+        return true;
+    case S::Missing:
+    case S::ApiMismatch:
+    case S::Blocked:
+        break;
+    }
+    return queuedRemove;   // 排进待删表而状态还是 Missing 的话（卸到一半重扫），文件在盘上就算在
+}
+
 QByteArray loadCachedIndex()
 {
     QFile f(Utils::dataDir() + QStringLiteral("/plugins_cache.json"));

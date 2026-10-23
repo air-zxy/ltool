@@ -19,6 +19,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QMessageBox>
 #include <QPointer>
@@ -370,6 +371,64 @@ ToolsPage::ToolsPage(QWidget* parent)
     m_autoNote->setText(autoUpdateLine());
     lay->addWidget(m_autoNote);
 
+    // ---- 过滤那一行：常驻在两行说明之后、那一面墙之前 ----
+    // 不"点了才出现"：点一下才新插一块东西，是他否过的那类表现（10-18/10-21 各一次）。
+    // 两维各管一维，是"与"的关系：名字（只比显示名）+ 安装状态（全部/已装/未装）。
+    // 状态的判据不在这里 —— 在 PluginStore::countsAsInstalled()，卡片那句话也读它，两份不许各算各的。
+    auto* filterRow = new QHBoxLayout;
+    filterRow->setSpacing(8);
+    m_filter = new QLineEdit(this);
+    m_filter->setObjectName(QStringLiteral("storeFilter"));
+    m_filter->setPlaceholderText(QStringLiteral("按插件名称筛（只比名字，不比关键词）"));
+    m_filter->setClearButtonEnabled(true);
+    m_filter->setAccessibleName(QStringLiteral("按插件名称筛插件"));
+    const char* const kFilterQss =
+        "QLineEdit {"
+        "  background: @field;"
+        "  border: 1px solid @borderHi;"
+        "  border-radius: 7px;"
+        "  color: @editText;"
+        "  padding: 4px 8px;"
+        "  min-height: 26px;"
+        "  font-size: 9pt;"
+        "}"
+        "QLineEdit:focus { border-color: @accent; }";
+    Theme::bind(m_filter, kFilterQss);
+    const char* const kChipQss =
+        "QPushButton {"
+        "  background: @button;"
+        "  border: 1px solid @borderHi;"
+        "  color: @text;"
+        "  border-radius: 7px;"
+        "  font-size: 9pt;"
+        "  padding: 4px 12px;"
+        "  min-height: 26px;"
+        "}"
+        "QPushButton:hover { background: @buttonUp; border-color: @borderHiUp; }"
+        "QPushButton:checked { background: @accent; border-color: @accentUp; color: @onAccent; }";
+    static const char* const kShelfWords[3] = { "全部", "已装", "未装" };
+    for (int i = 0; i < 3; ++i) {
+        auto* b = new QPushButton(QString::fromUtf8(kShelfWords[i]), this);
+        b->setCheckable(true);
+        b->setChecked(i == 0);   // 默认「全部」
+        b->setCursor(Qt::PointingHandCursor);
+        b->setAccessibleName(QStringLiteral("只看%1的插件").arg(QString::fromUtf8(kShelfWords[i])));
+        Theme::bind(b, kChipQss);
+        const PluginStore::Shelf s = static_cast<PluginStore::Shelf>(i);
+        connect(b, &QPushButton::clicked, this, [this, s] { applyShelf(s); });
+        m_shelfBtn[i] = b;
+        filterRow->addWidget(b);
+    }
+    filterRow->insertWidget(0, m_filter, 1);
+    lay->addLayout(filterRow);
+
+    // 筛出来几句话：0 命中、筛掉了几张、改了但还没重排 —— 三种情况都得有话说（常驻，不是临时弹一下）
+    m_filterNote = new QLabel(this);
+    m_filterNote->setObjectName(QStringLiteral("tip"));
+    m_filterNote->setWordWrap(true);
+    lay->addWidget(m_filterNote);
+    connect(m_filter, &QLineEdit::textChanged, this, [this](const QString& t) { applyFilter(t); });
+
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(buildGrid());     // 0 = 那一面卡片，插件页往后追加
     lay->addWidget(m_stack, 1);
@@ -406,6 +465,101 @@ QVector<PluginStore::Row> ToolsPage::shopRows() const
     return out;
 }
 
+bool ToolsPage::nameMatches(const QString& name, const QString& query)
+{
+    const QString q = query.trimmed();
+    if (q.isEmpty())
+        return true;                                        // 没筛 = 全通过，不是全挡住
+    return name.trimmed().contains(q, Qt::CaseInsensitive); // 只比显示名：描述和关键词一概不算
+}
+
+bool ToolsPage::passesShelf(const PluginStore::Row& r) const
+{
+    if (m_shelf == PluginStore::Shelf::All)
+        return true;
+    // "算不算已装"这一判只在 PluginStore::countsAsInstalled 那一份里，界面不重算
+    const bool inst = PluginStore::countsAsInstalled(r.state, r.queuedRemove);
+    return m_shelf == PluginStore::Shelf::Installed ? inst : !inst;
+}
+
+QVector<PluginStore::Row> ToolsPage::passedRows(const QVector<PluginStore::Row>& rows) const
+{
+    QVector<PluginStore::Row> out;
+    for (const PluginStore::Row& r : rows)
+        if (nameMatches(r.remote.name, m_filterText) && passesShelf(r))
+            out.append(r);
+    return out;
+}
+
+QString ToolsPage::filterDesc() const
+{
+    QStringList parts;
+    const QString q = m_filterText.trimmed();
+    if (!q.isEmpty())
+        parts << QStringLiteral("名字「%1」").arg(q);
+    if (m_shelf == PluginStore::Shelf::Installed)
+        parts << QStringLiteral("只看已装");
+    else if (m_shelf == PluginStore::Shelf::Missing)
+        parts << QStringLiteral("只看未装");
+    return parts.isEmpty() ? QStringLiteral("没筛") : parts.join(QStringLiteral(" · "));
+}
+
+QString ToolsPage::filterText() const
+{
+    return m_filterText;
+}
+
+QString ToolsPage::filterNote() const
+{
+    return m_filterNote ? m_filterNote->text() : QString();
+}
+
+void ToolsPage::updateFilterNote(int shown, int total, bool pending)
+{
+    if (!m_filterNote)
+        return;
+    const QString desc = filterDesc();
+    QString line;
+    if (total == 0)
+        line = QStringLiteral("这一面还没东西可筛。");
+    else if (desc == QLatin1String("没筛"))
+        line = QStringLiteral("没筛：这一面 %1 张全列着。").arg(total);
+    else
+        line = QStringLiteral("筛出 %1 / 共 %2 张（%3）%4")
+                   .arg(shown).arg(total).arg(desc,
+                        shown == 0 ? QStringLiteral(" · 上面那一面现在没有可列的卡，清掉过滤就回来")
+                                   : QString());
+    if (pending)
+        line += QStringLiteral(" · 你现在正看着一张页，返回商店时才重排这一面");
+    m_filterNote->setText(line);
+}
+
+void ToolsPage::applyFilter(const QString& text)
+{
+    m_filterText = text;
+    // "现在是不是正看着一张页"只准问 isHidden()：离屏这扇窗从没真 show 过，
+    // isVisible() 对它的每一个孩子都是 false（第一版就是这么判成"没在看页"，当场把人拽回墙）。
+    if (m_back && !m_back->isHidden()) {
+        // 正看着一张插件页：不许把人拽回卡片墙（他报过"商店自己跳到了那张页"那一类）。
+        // 先把欠着重排记下来，那一句"挡住几张"照实更新 —— 数的是同一颗 passedRows。
+        m_filterDirty = true;
+        const QVector<PluginStore::Row> all = shopRows();
+        updateFilterNote(passedRows(all).size(), all.size(), true);
+        return;
+    }
+    m_filterDirty = false;
+    rebuildGrid();
+}
+
+void ToolsPage::applyShelf(PluginStore::Shelf s)
+{
+    m_shelf = s;
+    for (int i = 0; i < 3; ++i)
+        if (m_shelfBtn[i])
+            m_shelfBtn[i]->setChecked(static_cast<PluginStore::Shelf>(i) == s);
+    applyFilter(m_filterText);      // 换档走同一条：同一个"要不要打断"的规矩，不另开一份
+}
+
 QWidget* ToolsPage::buildGrid()
 {
     auto* page = new QWidget(this);
@@ -413,8 +567,8 @@ QWidget* ToolsPage::buildGrid()
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(8);
 
-    const QVector<PluginStore::Row> rows = shopRows();
-    if (rows.isEmpty()) {
+    const QVector<PluginStore::Row> all = shopRows();
+    if (all.isEmpty()) {
         auto* empty = new QLabel(QStringLiteral(
             "插件目录 %1 里一个 dll 都没有，清单也没拉到 —— 这一面没东西可列。"
             "重装一次 ltool，或者点「刷新清单」。").arg(PluginHost::pluginsDir()), page);
@@ -422,6 +576,21 @@ QWidget* ToolsPage::buildGrid()
         empty->setWordWrap(true);
         lay->addWidget(empty);
         lay->addStretch(1);
+        updateFilterNote(0, 0, false);
+        return page;
+    }
+
+    const QVector<PluginStore::Row> rows = passedRows(all);
+    if (rows.isEmpty()) {
+        // 0 命中也要有话说，并且要说清是被哪一维挡的、怎么回去（不能让人对着一面白墙猜）
+        auto* none = new QLabel(QStringLiteral(
+            "没有同时满足「%1」的插件 —— 这一面 %2 张全被挡着。清掉过滤框右边那个 ✕、"
+            "或把上面那三档按回「全部」就回来了。").arg(filterDesc(), all.size()), page);
+        none->setObjectName(QStringLiteral("tip"));
+        none->setWordWrap(true);
+        lay->addWidget(none);
+        lay->addStretch(1);
+        updateFilterNote(0, all.size(), false);
         return page;
     }
 
@@ -433,6 +602,7 @@ QWidget* ToolsPage::buildGrid()
     }
     lay->addLayout(grid);
     lay->addStretch(1);
+    updateFilterNote(rows.size(), all.size(), false);
 
     auto* scroll = new QScrollArea(this);
     scroll->setObjectName(QStringLiteral("toolsScroll"));
@@ -817,12 +987,14 @@ void ToolsPage::rebuildGrid()
     // 复现不了）。每重排一次就把工作集和格子数写进日志：下次炸之前那几行能分出
     // "每次重排都长一点"（= 有东西没释放）和"某一下突然长"（= 那一下真去干了重活）。
     Utils::log(QStringLiteral("store: 重排卡片墙（卡片 %1 张 / stack %2 格 / 摘掉的那格=%3 / 工作集 %4 MB）")
-                   .arg(findChildren<QFrame*>(QStringLiteral("row")).size())
+                   // 数**新那一格里的**卡：整座 ToolsPage 找 "row" 会把剪贴板那张页的卡片也算进来
+                   //（它们的 objectName 也叫 row —— 今天日志里那个"卡片 40 张"就是这么来的）
+                   .arg(grid->findChildren<QFrame*>(QStringLiteral("row")).size())
                    .arg(m_stack->count())
                    // 这半句是 2026-10-22 加的：这一行按写法**永远该摘的是卡片墙**（第 0 格），
-                   // 而插件页往后追加。哪天真摘到一张插件页，缓存里那份裸指针就成了悬空
-                   //（`PluginHost::g_pages` 和各壳里的 `m_page` 都不知道自己被删了）——
-                   // 有这一格才分得清"崩"和"没崩但删错了东西"。
+                   // 而插件页往后追加。哪天真摘到一张插件页，那一格就是"页的命被别人拿走"的形状 ——
+                   // 现在 `g_pages` 和各壳里的 `m_page` 都是 QPointer（10-22 那次 b64 闪退之后），
+                   // 崩是不会崩了，但那句"缓存发了一张已释放的页"的老故事得有证据能看出来。
                    .arg(old ? QString::fromLatin1(old->metaObject()->className())
                             : QStringLiteral("无"))
                    .arg(Platform::workingSetMB()));
@@ -834,6 +1006,12 @@ void ToolsPage::backToGrid()
     m_stack->setCurrentIndex(0);
     m_back->setVisible(false);
     m_heading->setText(QStringLiteral("插件商店"));
+    if (m_filterDirty) {
+        // 改过滤那一下人正在看一张页，重排欠着没做；回到墙上的这一步补上。
+        // 先清标记再重排：rebuildGrid() 末尾会再回一次这里，不清就递归。
+        m_filterDirty = false;
+        rebuildGrid();
+    }
 }
 
 void ToolsPage::keyPressEvent(QKeyEvent* e)

@@ -8,6 +8,7 @@
 #include "PluginStore.h"     // 一张列表：每张卡片就是一个条目，带状态和那颗按钮
 
 class QLabel;
+class QLineEdit;
 class QKeyEvent;
 class QPushButton;
 class QStackedWidget;
@@ -49,6 +50,14 @@ public:
     // static：判据要能不造一整扇商店页就问这一行说了什么（它不读任何成员）。
     static QString autoUpdateLine();
 
+    // 「按名称筛这一面墙」那颗谓词：**只比名字**，不比描述、也不比关键词。
+    // 为什么是静态纯函数：这一条规则要逐条钉（大小写、中文、首尾空格、空查询=全通过、
+    // 关键词不该命中），而界面上每一次筛都读它 —— 筛的规则不许有第二份实现。
+    static bool nameMatches(const QString& name, const QString& query);
+    QString filterText() const;   // 过滤框现在是什么（判据读这一颗，不读控件像素）
+    QString filterNote() const;   // 那一行"筛出几 / 共几"说了什么
+    PluginStore::Shelf shelf() const { return m_shelf; }   // 现在这一档（全部/已装/未装）
+
 private:
     QVector<PluginStore::Row> shopRows() const;   // 这一面卡片的数据，唯一一条路
     QWidget* buildGrid();
@@ -68,6 +77,24 @@ private:
     void runInstall(const PluginStore::Entry& e, QPushButton* btn, QLabel* state);   // 真开一条下载
     void startNextInstall();   // 队列里还有就接着装，装完了才重排卡片墙
     void backToGrid();         // 回到那一面卡片墙：按钮 / Esc / 重排之后共用这一条
+
+    // 过滤框改字时走这一条：正看着一张插件页的话**不打断**（先记下，返回商店才重排那一面墙），
+    // 在墙上的当场重排。绕开这一层的写法（直接 rebuildGrid）会把人从点开的那张页里拽出来。
+    void applyFilter(const QString& text);
+    void applyShelf(PluginStore::Shelf s);   // 换"全部/已装/未装"那一档：和 applyFilter 同一个规矩
+    void updateFilterNote(int shown, int total, bool pending);
+    // 两维（名字 ∧ 安装状态）"与"起来只在这里问一次：那一面墙用它筛，
+    // 改了但还没重排时那句"挡住几张"也用它数 —— 两处各筛一遍迟早会给出不同的数。
+    QVector<PluginStore::Row> passedRows(const QVector<PluginStore::Row>& rows) const;
+    bool passesShelf(const PluginStore::Row& r) const;
+    QString filterDesc() const;   // 现在这套过滤的人话（"名字「x」 · 只看已装"）
+
+    QLineEdit* m_filter = nullptr;
+    QLabel* m_filterNote = nullptr;
+    QPushButton* m_shelfBtn[3] = {};   // 按 PluginStore::Shelf 的下标摆：全部 / 已装 / 未装
+    QString m_filterText;      // 过滤框里现在那句（唯一一份：buildGrid 读它，不读控件）
+    PluginStore::Shelf m_shelf = PluginStore::Shelf::All;
+    bool m_filterDirty = false;   // 记着"改了过滤但还没重排"（正看着一张页时的那一段）
 
 protected:
     void keyPressEvent(QKeyEvent* e) override;   // Esc = 从点开的那张页回到卡片墙

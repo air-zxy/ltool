@@ -50,6 +50,13 @@ enum class State {
 // 界面只问这一个谓词，别自己再去比 api（比第二处就会和这里说法不一）。
 bool installable(const Entry& e);
 
+// 商店页那三档「全部 / 已装 / 未装」的依据。判的是**这台机器盘上有没有这颗 dll**，
+// 不是"能不能装"：已禁用（改名成 .off，文件还在）和排进待删表（文件此刻还在盘上，
+// Windows 不放行）都算已装 —— 归错一边，那一档报的颗数就是假话。
+// 这一颗是界面和判据共用的唯一一份；卡片上那句状态话术另由 stateWord() 写，两者不许各算各的。
+enum class Shelf { All, Installed, Missing };
+bool countsAsInstalled(State s, bool queuedRemove);
+
 // 商店那一面显示一行用的东西：远端条目 + 本地比出来的状态 + 给人看的那句话
 struct Row {
     Entry remote;

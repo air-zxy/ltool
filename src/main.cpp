@@ -324,6 +324,18 @@ int runFwProbe(const QStringList& args)
 //        （不是"有没有失败"的 0/1），调用方要在事件循环结束后拿它当进程退出码。
 enum class SelftestArg { None, Ms, MsAndText, Text };
 
+    // 按 accessibleName 认控件：findChild<T*>() 的顺序是对象树顺序，这一墙里现在挂着好几张
+    // 插件页，它们的工具栏里也有 QToolButton —— 猜错一颗就是"判据替人按下了一次真动作"。
+    template <class T>
+    static T* findChildByAccessible(QWidget* root, const QString& name)
+    {
+        const auto kids = root->findChildren<T*>();
+        for (T* w : kids)
+            if (w->accessibleName() == name)
+                return w;
+        return nullptr;
+    }
+
 int runPluginSelftest(const QString& id, const char* symbol = "ltoolPluginSelftest",
                       SelftestArg arg = SelftestArg::None, int ms = 0,
                       const QString& text = QString(), const char* flag = nullptr,
@@ -1439,37 +1451,195 @@ int main(int argc, char* argv[])
             check(QStringLiteral("第 %1 次拆墙之后再逐颗直达：一颗没崩").arg(round).toUtf8().constData(),
                   QStringLiteral("%1/%2").arg(back).arg(hitTotal), QStringLiteral("%1/%1").arg(hitTotal));
         }
+        // ---- 商店页那两维过滤：名字（只比显示名）+ 安装状态（全部/已装/未装）----
+        // 放最后：前面那几栏都按"满墙 20 张"在数，这里开始会改那一面墙的内容。
+        {
+            check("筛的规则①：空查询 = 全通过（不是全挡住）",
+                  ToolsPage::nameMatches(QStringLiteral("Base64 编解码"), QString()) ? "yes" : "no", "yes");
+            check("筛的规则②：大小写不敏感（base64 命中「Base64 编解码」）",
+                  ToolsPage::nameMatches(QStringLiteral("Base64 编解码"), QStringLiteral("base64"))
+                      ? "yes" : "no", "yes");
+            check("筛的规则③：两边首尾空格都当没看见",
+                  ToolsPage::nameMatches(QStringLiteral("  剪贴板 "), QStringLiteral("  剪贴  "))
+                      ? "yes" : "no", "yes");
+            // 这两条是"只比名字"这句话的证据：关键词和 id 一概不算（哪天要放宽，这两条会红，得明着改）
+            check("筛的规则④：关键词不算（「宫格」筛不出「图片排版」）",
+                  ToolsPage::nameMatches(QStringLiteral("图片排版"), QStringLiteral("宫格"))
+                      ? "yes" : "no", "no");
+            check("筛的规则⑤：id 不算（「b64」筛不出「Base64 编解码」）",
+                  ToolsPage::nameMatches(QStringLiteral("Base64 编解码"), QStringLiteral("b64"))
+                      ? "yes" : "no", "no");
+            // 「算不算已装」那一颗（界面和这里读同一份）：五档算、三档不算、待删那一档按盘上说
+            const QString instWord = QStringLiteral("%1%2%3%4%5")
+                .arg(PluginStore::countsAsInstalled(PluginStore::State::Installed, false) ? 1 : 0)
+                .arg(PluginStore::countsAsInstalled(PluginStore::State::Update, false) ? 1 : 0)
+                .arg(PluginStore::countsAsInstalled(PluginStore::State::Different, false) ? 1 : 0)
+                .arg(PluginStore::countsAsInstalled(PluginStore::State::LocalOnly, false) ? 1 : 0)
+                .arg(PluginStore::countsAsInstalled(PluginStore::State::Disabled, false) ? 1 : 0);
+            check("状态①：已装/可更新/与商店不同/清单外/已禁用 都算「已装」（盘上都有它）",
+                  instWord, QStringLiteral("11111"));
+            const QString missWord = QStringLiteral("%1%2%3")
+                .arg(PluginStore::countsAsInstalled(PluginStore::State::Missing, false) ? 1 : 0)
+                .arg(PluginStore::countsAsInstalled(PluginStore::State::ApiMismatch, false) ? 1 : 0)
+                .arg(PluginStore::countsAsInstalled(PluginStore::State::Blocked, false) ? 1 : 0);
+            check("状态②：能装/装不了/条目不能用 算「未装」", missWord, QStringLiteral("000"));
+            check("状态③：排进待删表而状态已是 Missing 的那条 —— 文件还在盘上，就算已装",
+                  PluginStore::countsAsInstalled(PluginStore::State::Missing, true) ? "yes" : "no", "yes");
+
+            // 上面那几栏留下的是"正看着一张插件页"的状态（直达测完没回去），而那一状态下改过滤
+            // 按设计**不重排**（不打断人）。所以这一栏第一件事是按「返回商店」回到墙上再测。
+            if (auto* backBtn = findChildByAccessible<QToolButton>(&wall, QStringLiteral("返回商店")))
+                backBtn->click();
+            QCoreApplication::processEvents();
+            // 过滤框按 accessibleName 认：这一墙里现在挂着好几张插件页，findChild 的顺序不是界面顺序
+            QLineEdit* filterBox = nullptr;
+            for (QLineEdit* e : wall.findChildren<QLineEdit*>())
+                if (e->accessibleName() == QString::fromUtf8("按插件名称筛插件"))
+                    filterBox = e;
+            has("商店页：那颗名称过滤框在（按 accessibleName 认，不靠 findChild 的顺序）",
+                filterBox != nullptr);
+            auto chipsOf = [&wall](const QString& word) -> QPushButton* {
+                const auto btns = wall.findChildren<QPushButton*>();
+                for (QPushButton* b : btns)
+                    if (b->text() == word)
+                        return b;
+                return nullptr;
+            };
+            QPushButton* chipAll = chipsOf(QStringLiteral("全部"));
+            QPushButton* chipInst = chipsOf(QStringLiteral("已装"));
+            QPushButton* chipMiss = chipsOf(QStringLiteral("未装"));
+            check("商店页：三档都在（全部/已装/未装），且默认「全部」亮着",
+                  QStringLiteral("%1%2%3/%4").arg(chipAll != nullptr).arg(chipInst != nullptr)
+                      .arg(chipMiss != nullptr).arg(chipAll && chipAll->isChecked() ? 1 : 0),
+                  QStringLiteral("111/1"));
+            has("商店页：过滤框和那三档真的摆在布局里（不是只 new 出来）",
+                filterBox && laidOut.contains(filterBox));
+
+            // 那一面墙自己的 stack：findChild 会先撞上插件页里嵌套的那些，所以要按 parent 认
+            const auto wallStack = [&wall]() -> QStackedWidget* {
+                for (QStackedWidget* s : wall.findChildren<QStackedWidget*>())
+                    if (s->parent() == &wall)
+                        return s;
+                return nullptr;
+            };
+            // 数卡片只数**当前那一格**里的。老那一格是 deleteLater 掉的，而 processEvents()
+            // 不处理 DeferredDelete（要 sendPostedEvents 才落地）—— 上一版就是这么数到 20 张假数。
+            const auto countCards = [&wallStack]() {
+                QCoreApplication::processEvents();
+                QStackedWidget* st = wallStack();
+                QWidget* gridPage = st ? st->widget(0) : nullptr;
+                if (!gridPage)
+                    return 0;
+                auto* sc = qobject_cast<QScrollArea*>(gridPage);
+                QWidget* host = sc && sc->widget() ? sc->widget() : gridPage;
+                int n = 0;
+                for (QFrame* c : host->findChildren<QFrame*>())
+                    if (c->objectName() == QLatin1String("row"))
+                        ++n;
+                return n;
+            };
+            const auto localRows = PluginStore::localRows(QString());
+            int wantInst = 0, wantMiss = 0;
+            for (const PluginStore::Row& r : localRows) {
+                if (PluginStore::countsAsInstalled(r.state, r.queuedRemove))
+                    ++wantInst;
+                else
+                    ++wantMiss;
+            }
+            check("筛之前那一面是满的（卡片数 = 清单颗数，且已装 + 未装 = 全部）",
+                  QStringLiteral("%1/%2").arg(countCards()).arg(wantInst + wantMiss),
+                  QStringLiteral("%1/%1").arg(wantInst + wantMiss));
+            chipInst->click();
+            check("点「已装」：墙上的卡片数 = 数据层现算的已装颗数（不是界面自己再数一遍）",
+                  QStringLiteral("%1").arg(countCards()), QStringLiteral("%1").arg(wantInst));
+            has("点「已装」之后，那一行说了「筛出 N / 共 M」这句实话",
+                wall.filterNote().contains(QStringLiteral("已装"))
+                    && wall.filterNote().contains(QStringLiteral("共 %1 张").arg(wantInst + wantMiss)));
+            chipMiss->click();
+            check("点「未装」：两档相加 = 全部（没有一颗被漏在两边之外）",
+                  QStringLiteral("%1").arg(countCards() + wantInst),
+                  QStringLiteral("%1").arg(wantInst + wantMiss));
+            chipAll->click();
+            filterBox->setText(QStringLiteral("随机"));
+            check("名字筛「随机」：只剩那一张卡", QStringLiteral("%1").arg(countCards()), QStringLiteral("1"));
+            chipMiss->click();
+            check("两维是「与」：名字命中而状态不命中的那张也不许留下",
+                  QStringLiteral("%1").arg(countCards()), QStringLiteral("0"));
+            has("0 命中时那一行改口说「上面没有可列的卡」（不让人对着白墙猜）",
+                wall.filterNote().contains(QStringLiteral("没有可列的卡")));
+            chipAll->click();
+            filterBox->setText(QStringLiteral("这个串不可能有"));
+            check("纯名字筛一个不存在的串：0 张", QStringLiteral("%1").arg(countCards()), QStringLiteral("0"));
+            has("墙上那一句说清是被哪一维挡的、怎么回去",
+                [&wall]() {
+                    const auto labels = wall.findChildren<QLabel*>();
+                    for (const QLabel* l : labels)
+                        if (l->text().contains(QStringLiteral("没有同时满足")))
+                            return l->text().contains(QStringLiteral("✕")) && l->text().contains(QStringLiteral("全部"));
+                    return false;
+                }());
+            filterBox->clear();
+            check("清掉过滤：那一面回到满墙", QStringLiteral("%1").arg(countCards()),
+                  QStringLiteral("%1").arg(wantInst + wantMiss));
+            filterBox->setText(QStringLiteral("剪贴"));
+            wall.rebuildGrid();                 // 拆一次墙（禁用/装完一颗走的也是这条）
+            check("过滤串活得过「拆墙重排」（不是重排一下就忘了自己筛过什么）",
+                  QStringLiteral("%1").arg(countCards()), QStringLiteral("1"));
+            check("重排之后那一行还在说筛出的数",
+                  wall.filterNote().contains(QStringLiteral("筛出 1")) ? "yes" : "no", "yes");
+
+            // 正看着一张页时改过滤：不许把人拽回卡片墙，重排欠着，返回那一步才补
+            has("打开一张插件页（下面那三条要用它验「不打断」这一件事）", wall.showTool(QStringLiteral("json")));
+            QWidget* openedPage = PluginHost::page(QStringLiteral("json"), nullptr, nullptr);
+            filterBox->setText(QStringLiteral("zzz不可能"));
+            QCoreApplication::processEvents();
+            check("改过滤时正看着一张页：当前那一格还是这张页（没被跳回商店）",
+                  wallStack() && wallStack()->currentWidget() == openedPage ? "yes" : "no", "yes");
+            has("那一行照实说「返回商店时才重排这一面」（不装成已经生效）",
+                wall.filterNote().contains(QStringLiteral("返回商店")));
+            if (auto* back = wall.findChild<QToolButton*>())
+                back->click();
+            QCoreApplication::processEvents();
+            check("返回商店之后，欠着的那一次重排补上了（这一面 0 张）",
+                  QStringLiteral("%1").arg(countCards()), QStringLiteral("0"));
+            filterBox->clear();
+            check("最后清干净：那一面又是满墙", QStringLiteral("%1").arg(countCards()),
+                  QStringLiteral("%1").arg(wantInst + wantMiss));
+        }
         // ---- 整扇商店页关掉那一趟（他真正的形状：页挂在 `ToolsPage` 那棵树上，一关全没）----
         // 上面 delete 的是单张页；这里是**一扇窗里点开过的页一起没**。
-        // 另开一扇（不 show，离屏内自生自灭），逐颗直达，然后把这扇窗删掉。
-        {
-            ToolsPage* other = new ToolsPage;
-            int inTree = 0;
-            for (const QString& id : hitIds)
-                if (other->showTool(id))
-                    ++inTree;
-            check("第二扇商店页也能逐颗直达",
-                  QStringLiteral("%1/%2").arg(inTree).arg(hitTotal), QStringLiteral("%1/%1").arg(hitTotal));
-            delete other;                          // 关掉那扇窗：这一批页跟着那棵树一起没
+        // 一颗一棵树：`createPage(tree)` 之后那张页的命就归这棵树，删掉树 = 关掉那扇窗。
+        // 这里刻意**不刷 `DeferredDelete`**：判据手上还有一批"拆墙拆下来的旧卡片"排在待删表里，
+        // 半路把它们真删掉会把别处还在用的控件一起带走（今天就在这一句上稳定崩了一轮，
+        // 现象是 `sendPostedEvents(DeferredDelete)` 一进来就死在下一颗插件的建页上）。
+        int safe = 0;
+        for (const QString& id : hitIds) {
+            {
+                // 产品那条路，一步都不绕：开一扇商店窗 → 点开这张页（页就挂在这扇窗的树上）→ 关掉这扇窗。
+                ToolsPage* one = new ToolsPage;
+                const bool shown = one->showTool(id);
+                if (!shown)
+                    std::printf("INFO %s：这扇窗里没能点开（这一趟就没搭起来）\n", id.toUtf8().constData());
+                delete one;
+                for (int i = 0; i < 5; ++i)
+                    QCoreApplication::processEvents();
+            }
             // 顺序是**先递文本、再要页**：`page()` 会把壳里那颗 `m_page` 顶成新造的那张，
             // 那样"往已经没掉的页上写字"这一支就永远量不到了 —— 量不到不等于没有。
-            int safe = 0;
-            for (const QString& id : hitIds) {
-                const bool refused = !PluginHost::feed(id, QStringLiteral("123"));
-                QString err;
-                QWidget* w = PluginHost::page(id, nullptr, &err);
-                QPointer<QWidget> wGuard(w);
-                const bool usable = w != nullptr && !wGuard.isNull();
-                if (refused && usable)
-                    ++safe;
-                check((id + "：那扇窗关掉之后 递文本不接 / 再要一张用得动").toUtf8().constData(),
-                      QStringLiteral("%1/%2").arg(refused ? QStringLiteral("refused") : QStringLiteral("fed"))
-                          .arg(usable ? QStringLiteral("usable") : QStringLiteral("none")),
-                      QStringLiteral("refused/usable"));
-            }
-            check("每颗插件都过了「整扇窗关掉后再拿」这一趟",
-                  QStringLiteral("%1/%2").arg(safe).arg(hitTotal), QStringLiteral("%1/%1").arg(hitTotal));
+            const bool refused = !PluginHost::feed(id, QStringLiteral("123"));
+            QString err;
+            QWidget* w = PluginHost::page(id, nullptr, &err);
+            QPointer<QWidget> wGuard(w);
+            const bool usable = w != nullptr && !wGuard.isNull();
+            if (refused && usable)
+                ++safe;
+            check((id + "：那扇窗关掉之后 递文本不接 / 再要一张用得动").toUtf8().constData(),
+                  QStringLiteral("%1/%2").arg(refused ? QStringLiteral("refused") : QStringLiteral("fed"))
+                      .arg(usable ? QStringLiteral("usable") : QStringLiteral("none")),
+                  QStringLiteral("refused/usable"));
         }
+        check("每颗插件都过了「那扇商店窗关掉后再拿」这一趟",
+              QStringLiteral("%1/%2").arg(safe).arg(hitTotal), QStringLiteral("%1/%1").arg(hitTotal));
         std::printf("INFO 三趟按颗铺开的闪退判据：%d 颗插件，各过了「页被单删」「拆墙后再直达 ×2」「整扇窗关掉后再拿」\n",
                     evictTotal);
         std::printf("plugintest: 失败 %d 项\n", bad);
