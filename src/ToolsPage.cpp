@@ -345,8 +345,19 @@ ToolsPage::ToolsPage(QWidget* parent)
         "接口对不上的、条目用不了的那几颗不在里面。\n"
         "第一下一颗都不动，只把「排几颗 · 大约多少」摆出来；再按一次才真排队。"));
     Theme::bind(m_bulk, kTopBtnQss);
-    // 预留到最宽那一版（「确认这 12 颗」）：点下去只换字、不撑那一排 —— 他否过"一点就重新排"那一类。
-    m_bulk->setMinimumWidth(m_bulk->fontMetrics().horizontalAdvance(QStringLiteral("确认这 12 颗")) + 24);
+    // 预留到两版标签里**最宽的那一版**：点下去只换字、不撑页眉那一排（他否过"一点就重新排"）。
+    // 宽度拿 `sizeHint()` 量，不按"几个字 × 一个字宽"估 —— 本机 `windows` 平台实测
+    // 「一键下载全部」比「确认这 12 颗」宽（前者六个纯汉字，后者夹了数字和空格），
+    // 上一版只按后者留，基线那一版装不下 ⇒ 一点就把旁边两颗按钮挤走。
+    {
+        m_bulk->ensurePolished();
+        const QString baseText = m_bulk->text();
+        int widest = m_bulk->sizeHint().width();
+        m_bulk->setText(QStringLiteral("确认这 12 颗"));
+        widest = qMax(widest, m_bulk->sizeHint().width());
+        m_bulk->setText(baseText);
+        m_bulk->setMinimumWidth(widest);
+    }
     connect(m_bulk, &QPushButton::clicked, this, [this] { onBulkClicked(); });
 
     head->addWidget(m_back);

@@ -1621,12 +1621,22 @@ int main(int argc, char* argv[])
             QPushButton* bulk = bulkOf(&wall);
             has("那一颗「一键下载全部」在（按 accessibleName 认）", bulk != nullptr);
             has("而且真的摆在页眉那一排布局里（不是只 new 出来）", bulk && laidOut.contains(bulk));
-            const QFontMetrics fmBulk(bulk ? bulk->font() : QFont());
-            check("两段标签的宽度都塞得进预留的那块（点下去只换字、不撑那一排）",
-                  QStringLiteral("%1/%2")
-                      .arg(fmBulk.horizontalAdvance(QStringLiteral("一键下载全部")) <= (bulk ? bulk->minimumWidth() - 24 : -1))
-                      .arg(fmBulk.horizontalAdvance(QStringLiteral("确认这 12 颗")) <= (bulk ? bulk->minimumWidth() - 24 : -1)),
+            // 不许按"几个字 × 一个字宽"估：上一版就是这么留的，本机 `windows` 平台真字体下
+            // 基线那句「一键下载全部」装不下（CI 跑 offscreen，字体度量不一样，它看不见）。
+            // 这里量的是产品自己那颗 `sizeHint()` —— 两版标签各自该占多宽，都得塞进预留的那块。
+            const int baseHint = bulk ? bulk->sizeHint().width() : -1;
+            const QString keepText = bulk ? bulk->text() : QString();
+            if (bulk)
+                bulk->setText(QStringLiteral("确认这 12 颗"));
+            const int armedHint = bulk ? bulk->sizeHint().width() : -1;
+            if (bulk)
+                bulk->setText(keepText);
+            check("两版标签都塞得进预留的那块（点下去只换字、不挤旁边那一排按钮）",
+                  QStringLiteral("%1/%2").arg(baseHint <= (bulk ? bulk->minimumWidth() : -1))
+                      .arg(armedHint <= (bulk ? bulk->minimumWidth() : -1)),
                   QStringLiteral("1/1"));
+            has("换字之后那颗按钮上的话原样还回来（探针自己借道试宽度，不许把状态留下）",
+                bulk && bulk->text() == QString::fromUtf8("一键下载全部"));
 
             // 纯规则那五条：排谁、第一下怎么说、没得排怎么说、飞完怎么说
             auto mkRow = [](const QString& id, PluginStore::State st, bool usable) {
