@@ -61,6 +61,16 @@ public:
     void addAllowTitle(const QString& t);
     bool allowed(const QString& title, const QString& process) const;
 
+    // ---- 「从正在跑的进程里挑一个忽略」那一条路要的两颗纯函数（都静态，判据钉得住）----
+    // 一个映像名（`WeChat.exe`）→ 名单里该写的那一行（小写、去掉 `.exe`）。
+    // 这一条规整法原来只长在 `AdsPage::allowSelected()` 里那句一行代码上，
+    // 现在"右键放行这一颗"和"从进程列表里挑一颗"两处都要用 —— 两处各写一遍迟早会不一样。
+    static QString allowProcFor(const QString& imageName);
+    // 挑中的这颗是不是**已经被名单盖住了**：匹配是"进程名包含片段"，
+    // 所以名单里任何一条是它子串的非空片段都已经放行它 —— 回那条片段，没盖住回空串。
+    // 空片段不算（`allowed()` 那侧本来就跳过空串），拿空串去"盖住一切"是这一判最容易写的错。
+    static QString coveredByAllowProc(const QStringList& patterns, const QString& imageName);
+
     Verdict verdictOf(const Hit& h) const;
     static QString verdictText(Verdict v);
 

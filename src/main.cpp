@@ -1987,6 +1987,52 @@ int main(int argc, char* argv[])
                   QStringLiteral("1/1"));
         }
 #endif
+        // ---- 「广告弹窗」那颗「从正在跑的进程里挑一个放行」：两颗纯函数 + 那份进程列表 ----
+        {
+            check("allowProcFor：映像名规整成名单里那一行（小写、去掉 .exe、没后缀的原样）",
+                  QStringLiteral("%1|%2|%3|%4")
+                      .arg(AdBlocker::allowProcFor(QStringLiteral("WeChat.exe")),
+                           AdBlocker::allowProcFor(QStringLiteral("DingTalk.EXE")),
+                           AdBlocker::allowProcFor(QStringLiteral("bar")),
+                           AdBlocker::allowProcFor(QString())),
+                  QStringLiteral("wechat|dingtalk|bar|"));
+            const QStringList list = { QStringLiteral("chrome"), QStringLiteral("DingTalk") };
+            check("自己就是名单里那一条 ⇒ 说「本来就在」，不许再加一遍",
+                  AdBlocker::coveredByAllowProc(list, QStringLiteral("chrome.exe")),
+                  QStringLiteral("chrome"));
+            check("被更短的片段盖住也算盖住（那一侧的匹配就是「进程名包含片段」）",
+                  AdBlocker::coveredByAllowProc(list, QStringLiteral("dingtalk.exe")),
+                  QStringLiteral("DingTalk"));
+            check("没盖住的那颗回空串（否则界面上那句「本来就在」是假的）",
+                  AdBlocker::coveredByAllowProc(list, QStringLiteral("Notepad.exe")).isEmpty()
+                      ? QStringLiteral("yes") : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+            // 原来这里钉的是"名单里那行空的不能盖住一切"，但反向验打不动它（去掉那句跳过，
+            // 函数回的还是空串、调用方照样当"没盖住"）—— 那是一条量不到东西的装饰性绿，
+            // 而且那个输入真到不了这儿（存进名单前 `linesToPatterns` 就把空行丢了）。
+            // 换成一条打得动的：**包含的方向**不能反（比这颗更长的片段盖不住它）。
+            check("名单里那条比这颗更长 ⇒ 不算盖住（「进程名包含片段」这个方向不能反）",
+                  AdBlocker::coveredByAllowProc({ QStringLiteral("wechat.exe") },
+                                                QStringLiteral("WeChat.exe")).isEmpty()
+                      ? QStringLiteral("yes") : QStringLiteral("no"),
+                  QStringLiteral("yes"));
+            const QStringList names = Platform::runningImageNames();
+            QSet<QString> lower;
+            int dirty = 0;
+            for (const QString& n : names) {
+                lower.insert(n.toLower());
+                if (n.trimmed().isEmpty() || n.contains(QLatin1Char('/')) || n.contains(QLatin1Char('\\')))
+                    ++dirty;      // 那张表只该有映像名：混进路径或空行，界面就变成看不懂的一栏
+            }
+            std::printf("INFO 这台机上此刻列出的进程：%d 颗（去重后 %d 个名字；带路径或空的 %d 个）\n",
+                        int(names.size()), int(lower.size()), dirty);
+            check("runningImageNames 在这台机器上列得出来，而且名字里没有空串和路径",
+                  QStringLiteral("%1/%2").arg(!names.isEmpty()).arg(dirty == 0),
+                  QStringLiteral("1/1"));
+            check("同一个 exe 跑好几份只占一行（判据量的就是「去重」这件事本身）",
+                  QStringLiteral("%1/%2").arg(lower.size()).arg(names.size()),
+                  QStringLiteral("%1/%1").arg(names.size()));
+        }
         // ---- 整扇商店页关掉那一趟（他真正的形状：页挂在 `ToolsPage` 那棵树上，一关全没）----
         // 上面 delete 的是单张页；这里是**一扇窗里点开过的页一起没**。
         // 一颗一棵树：`createPage(tree)` 之后那张页的命就归这棵树，删掉树 = 关掉那扇窗。

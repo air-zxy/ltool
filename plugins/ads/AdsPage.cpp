@@ -10,11 +10,14 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
+
+#include "platform/ProcInfo.h"
 
 #include <windows.h>
 
@@ -319,8 +322,8 @@ void AdsPage::allowSelected()
         return;
     const AdBlocker::Hit& h = m_hits[row];
     auto& ab = AdBlocker::instance();
-    const QString procBase = h.process.toLower().remove(QLatin1String(".exe"));
-    ab.addAllowProc(procBase);
+    // 规整法只有一份（`allowProcFor`）：这条"右键放行"和「从正在跑的进程里挑一个」得写成同一个样子
+    ab.addAllowProc(AdBlocker::allowProcFor(h.process));
     ab.addAllowTitle(h.title);
     QMessageBox::information(this, "ltool",
         QString("已放行 “%1”，它的窗口以后不会再被自动关闭。\n"
@@ -341,18 +344,95 @@ void AdsPage::editRules()
     lay->addWidget(new QLabel("一行一个片段；标题按“包含”匹配（中文原样），进程名按不区分大小写匹配（不含 .exe 也行）。"
                               "白名单优先：命中白名单的窗口无论拦截图怎么写都不会被动。"));
     auto* cols = new QHBoxLayout;
-    auto mk = [&](const QString& title, const QStringList& init) {
+    // boxOut 那一格是给「忽略的进程」那一栏底下挂按钮用的（其余三栏传 nullptr）
+    auto mk = [&](const QString& title, const QStringList& init, QVBoxLayout** boxOut) {
         auto* box = new QVBoxLayout;
         box->addWidget(new QLabel(title));
         auto* ed = new QPlainTextEdit(init.join(QLatin1Char('\n')));
         box->addWidget(ed);
         cols->addLayout(box);
+        if (boxOut)
+            *boxOut = box;
         return ed;
     };
-    auto* procEd = mk("进程名片段", ab.procPatterns());
-    auto* titleEd = mk("窗口标题片段", ab.titlePatterns());
-    auto* apEd = mk("忽略的进程", ab.allowProcPatterns());
-    auto* atEd = mk("忽略的标题", ab.allowTitlePatterns());
+    QVBoxLayout* allowProcBox = nullptr;
+    auto* procEd = mk("进程名片段", ab.procPatterns(), nullptr);
+    auto* titleEd = mk("窗口标题片段", ab.titlePatterns(), nullptr);
+    auto* apEd = mk("忽略的进程", ab.allowProcPatterns(), &allowProcBox);
+    auto* atEd = mk("忽略的标题", ab.allowTitlePatterns(), nullptr);
+
+    // 「从正在跑的进程里挑一个」：他不用记得那颗进程叫什么、也不用手打（打错一个字就白放行）。
+    // 加进去只是写进上面那一栏（这里还是草稿），按「保存」才落地 —— 和这个框其余四栏同一个规矩。
+    auto* pickBtn = new QPushButton("从正在跑的进程里挑一个…", &dlg);
+    pickBtn->setToolTip("列出此刻正在跑的进程，挑一个加进左边那栏「忽略的进程」。\n"
+                        "加完还要按下面的「保存」才生效（这个框里改的都没落地之前只是草稿）。");
+    allowProcBox->addWidget(pickBtn);
+    auto* pickNote = new QLabel(QString(), &dlg);      // 常驻一行：刚加了哪颗 / 本来就在 / 列不出进程
+    pickNote->setWordWrap(true);
+    allowProcBox->addWidget(pickNote);
+
+    const auto openPicker = [&] {
+        const QStringList names = Platform::runningImageNames();
+        QDialog d(&dlg);
+        d.setWindowTitle("正在跑的进程 — 挑一颗放行");
+        d.resize(430, 560);
+        auto* dLay = new QVBoxLayout(&d);
+        auto* filter = new QLineEdit;
+        filter->setPlaceholderText("筛进程名…");
+        filter->setClearButtonEnabled(true);
+        auto* list = new QListWidget;
+        list->setSelectionMode(QAbstractItemView::SingleSelection);
+        for (const QString& n : names)
+            list->addItem(n);
+        dLay->addWidget(filter);
+        dLay->addWidget(list, 1);
+        auto* dNote = new QLabel(names.isEmpty()
+                                     ? QString("这台机器列不出进程（不是「没有进程在跑」）—— 先照上面那句手打。")
+                                     : QString("双击一行，或选中后按「加进去」。可以连着挑几颗，看完按「完成」。"),
+                                 &d);
+        dNote->setWordWrap(true);
+        dLay->addWidget(dNote);
+        auto* dBtns = new QHBoxLayout;
+        dBtns->addStretch(1);
+        auto* add = new QPushButton("加进去", &d);
+        add->setObjectName("primary");
+        auto* done = new QPushButton("完成", &d);
+        dBtns->addWidget(add);
+        dBtns->addWidget(done);
+        dLay->addLayout(dBtns);
+        // 筛是**藏行**，不是重建列表（重建会把选中项和滚动位置一起丢掉）
+        QObject::connect(filter, &QLineEdit::textChanged, &d, [list, filter] {
+            const QString q = filter->text().trimmed();
+            for (int i = 0; i < list->count(); ++i)
+                list->item(i)->setHidden(!q.isEmpty()
+                                         && !list->item(i)->text().contains(q, Qt::CaseInsensitive));
+        });
+        const auto addChosen = [&] {
+            QListWidgetItem* it = list->currentItem();
+            if (!it || it->isHidden()) {
+                dNote->setText("没选一颗（先点一行，或双击它）。");
+                return;
+            }
+            const QString name = it->text();
+            const QString cover = AdBlocker::coveredByAllowProc(linesToPatterns(apEd->toPlainText()), name);
+            if (!cover.isEmpty()) {
+                dNote->setText(QString("%1 本来就在名单里了（被「%2」盖着），没再加。")
+                                   .arg(name, cover));
+                return;
+            }
+            const QString line = AdBlocker::allowProcFor(name);
+            const QString now = apEd->toPlainText().trimmed();
+            apEd->setPlainText(now.isEmpty() ? line : now + QLatin1Char('\n') + line);
+            dNote->setText(QString("已加进「忽略的进程」：%1 —— 按下面「保存」才生效。").arg(line));
+            pickNote->setText(QString("刚加了 %1 颗（还没保存）。").arg(line));
+        };
+        QObject::connect(add, &QPushButton::clicked, &d, addChosen);
+        QObject::connect(list, &QListWidget::itemDoubleClicked, &d,
+                         [&] { addChosen(); });
+        QObject::connect(done, &QPushButton::clicked, &d, &QDialog::accept);
+        d.exec();
+    };
+    QObject::connect(pickBtn, &QPushButton::clicked, &dlg, [&] { openPicker(); });
     lay->addLayout(cols, 1);
     auto* btns = new QHBoxLayout;
     auto* reset = new QPushButton("恢复默认名单", &dlg);

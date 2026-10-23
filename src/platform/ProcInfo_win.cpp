@@ -2,6 +2,8 @@
 
 #include "Utils.h"
 
+#include <QSet>
+
 #include <windows.h>
 #include <tlhelp32.h>
 #include <psapi.h>
@@ -49,6 +51,28 @@ bool trimWorkingSet()
     Utils::log(QString("trim working set: %1 (剩 %2MB)").arg(ok ? "ok" : QString("failed err %1").arg(GetLastError()))
                    .arg(workingSetMB()));
     return ok != FALSE;
+}
+
+QStringList runningImageNames()
+{
+    QStringList out;
+    QSet<QString> seen;
+    if (const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0); snap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W ent{};
+        ent.dwSize = sizeof(ent);
+        if (Process32FirstW(snap, &ent)) {
+            do {
+                const QString name = QString::fromWCharArray(ent.szExeFile);
+                if (name.isEmpty() || seen.contains(name.toLower()))
+                    continue;      // 同一个 exe 跑好几分（浏览器、IM 都这样），表里只要一行
+                seen.insert(name.toLower());
+                out << name;
+            } while (Process32NextW(snap, &ent));
+        }
+        CloseHandle(snap);
+    }
+    out.sort(Qt::CaseInsensitive);
+    return out;
 }
 
 } // namespace Platform

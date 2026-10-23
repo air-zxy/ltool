@@ -292,6 +292,26 @@ void AdBlocker::addAllowTitle(const QString& t)
     save();
 }
 
+QString AdBlocker::allowProcFor(const QString& imageName)
+{
+    return imageName.toLower().remove(QLatin1String(".exe"));
+}
+
+QString AdBlocker::coveredByAllowProc(const QStringList& patterns, const QString& imageName)
+{
+    const QString one = allowProcFor(imageName);
+    if (one.isEmpty())
+        return {};
+    for (const QString& pat : patterns) {
+        const QString p = pat.trimmed().toLower();
+        if (p.isEmpty())
+            continue;                       // 空片段不算盖住（`allowed()` 那侧也跳过它）
+        if (one.contains(p, Qt::CaseInsensitive))
+            return pat.trimmed();
+    }
+    return {};
+}
+
 AdBlocker::Verdict AdBlocker::verdictOf(const Hit& h) const
 {
     if (allowed(h.title, h.process))

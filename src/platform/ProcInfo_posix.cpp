@@ -86,4 +86,12 @@ bool trimWorkingSet()
     return false;
 }
 
+QStringList runningImageNames()
+{
+    // 这一颗在 POSIX 上**还没写**（不是"做不到"：读 /proc/<pid>/exe 是可行的），
+    // 所以返回空。界面上那颗按钮拿到空表要照实说"这台机器列不出进程"，
+    // 不许摆一张空列表骗人以为"没东西可忽略"。
+    return {};
+}
+
 } // namespace Platform
