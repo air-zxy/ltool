@@ -15,6 +15,10 @@
 #include <QPluginLoader>
 #include <QWidget>
 
+#ifdef Q_OS_WIN
+#include <windows.h>        // SEH：LONG / PEXCEPTION_POINTERS / GetExceptionInformation
+#endif
+
 namespace {
 
 QVector<PluginHost::Meta> g_metas;
@@ -165,6 +169,77 @@ LToolPlugin* plugin(const QString& id)
     return nullptr;
 }
 
+// 只有这一颗真的跨进插件的代码。它自己**不能有任何需要析构的局部对象**
+// （MSVC：函数里有 __try 又放着要析构的对象 = C2712），所以参数全是指针、结果也走指针。
+#ifdef Q_OS_WIN
+
+static LONG pageSehFilter(PEXCEPTION_POINTERS ep, SehHit* hit)
+{
+    hit->code = ep->ExceptionRecord->ExceptionCode;
+    hit->addr = ep->ExceptionRecord->ExceptionAddress;
+    return EXCEPTION_EXECUTE_HANDLER;     // 一律接住：这条边界上"往上传"就是让整个程序陪着它死
+}
+
+static bool runCreatePageSeh(LToolPlugin* p, QWidget* parent, QWidget** out, SehHit* hit)
+{
+    *out = nullptr;
+    hit->code = 0;
+    hit->addr = nullptr;
+    bool cameBack = false;
+    __try {
+        *out = p->createPage(parent);
+        cameBack = true;
+    } __except (pageSehFilter(GetExceptionInformation(), hit)) {
+        cameBack = false;
+    }
+    return cameBack;
+}
+
+#else
+
+// Linux/macOS 上没有 SEH：那一边是信号（SIGSEGV），在这条边界里接它要 sigsetjmp，
+// 而"从信号里继续跑"比 Windows 上的 AV 恢复更不可靠 —— 先**如实不装**这一层，
+// 别写一个看起来像守卫、其实什么都挡不住的空壳。移植那一档要真做，走进程隔离那条路。
+static bool runCreatePageSeh(LToolPlugin* p, QWidget* parent, QWidget** out, SehHit* hit)
+{
+    *out = nullptr;
+    hit->code = 0;
+    hit->addr = nullptr;
+    *out = p->createPage(parent);
+    return true;
+}
+
+#endif
+
+QWidget* buildPage(LToolPlugin* p, const QString& id, QWidget* parent, QString* err)
+{
+    // 进来先清一次：这一颗的契约是「给出页了就没有原因」。不清的话调用方复用同一个 QString 时，
+    // 上一趟失败留下的那句会跟着这一趟成功一起被念出来 —— 那是"读上一轮留下的状态"那一类假话。
+    if (err)
+        err->clear();
+    if (!p) {
+        if (err)
+            *err = QStringLiteral("插件 %1 没实例化出来（看日志 plugin: 那几行）").arg(id);
+        return nullptr;
+    }
+    QWidget* w = nullptr;
+    SehHit hit;
+    if (!runCreatePageSeh(p, parent, &w, &hit)) {
+        // 这句是要给界面看的：哪颗插件、哪一类异常、落在哪条指令 —— 只说"打不开"等于没说
+        const QString why = QStringLiteral("%1 建页时撞在异常 0x%2（指令地址 %3）· 这一趟没给你页，程序没跟着死")
+                                .arg(id)
+                                .arg(QString::number(hit.code, 16).toUpper())
+                                .arg(reinterpret_cast<quintptr>(hit.addr), 0, 16);
+        if (err)
+            *err = why;
+        Utils::log(QStringLiteral("plugin: %1").arg(why));
+        return nullptr;
+    }
+    if (!w && err)
+        *err = QStringLiteral("插件 %1 的 createPage 返回了空").arg(id);
+    return w;
+}
+
 QWidget* page(const QString& id, QWidget* parent, QString* err)
 {
     if (g_pages.contains(id)) {
@@ -178,12 +253,9 @@ QWidget* page(const QString& id, QWidget* parent, QString* err)
             *err = QStringLiteral("插件 %1 没能加载（看日志 plugin: 那几行）").arg(id);
         return nullptr;
     }
-    QWidget* w = p->createPage(parent);
-    if (!w) {
-        if (err)
-            *err = QStringLiteral("插件 %1 的 createPage 返回了空").arg(id);
-        return nullptr;
-    }
+    QWidget* w = buildPage(p, id, parent, err);
+    if (!w)
+        return nullptr;      // 原因已经在 err 里（撞异常 / 它自己返回空，是两句话说头）
     g_pages.insert(id, w);
     Utils::log(QStringLiteral("plugin: 建页 %1").arg(id));
     return w;

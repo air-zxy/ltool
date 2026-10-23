@@ -43,6 +43,20 @@ bool isDisabled(const QString& id);
 QWidget* page(const QString& id, QWidget* parent, QString* err);   // 懒创建 + 缓存
 LToolPlugin* plugin(const QString& id);
 
+// ---- 建页那一条边界的 SEH 外壳（2026-10-23）----
+// 插件里读/写坏内存（`0xc0000005` 那一类 —— 2026-10-22 那次「b64 会闪退」就是这一类）
+// 不该把整个程序一起带走。**跨进插件代码只在这一颗**，判据也走这一颗
+// （拿一颗故意崩的接口进去 ⇒ 谁把这层外壳从 `page()` 里摘掉，这一趟就当场死给它看）。
+// 买到的是什么要说清：**窗口不消失 + 异常码和地址进日志**，不是"这个 bug 被关住了" ——
+// 掉进访问违例时那一趟已经碰过坏内存，后面是带着未知损伤继续跑；
+// 半建出来的那张页我们不当成好页缓存，界面上照实说一句（`ToolsPage` 那一行本来就会说原因）。
+struct SehHit {
+    unsigned long code = 0;     // 异常码：0xC0000005 = 访问违例，0xC00000FD = 栈溢出
+    void* addr = nullptr;       // 落在哪条指令上（能喂 pe_rva.py 去问它旁边是哪个导出）
+};
+// 真的进插件那一趟；返回 nullptr = 没给出页（撞了异常，或它自己返回空），原因写进 err。
+QWidget* buildPage(LToolPlugin* p, const QString& id, QWidget* parent, QString* err);
+
 // 把一段文本递给那个工具的页（搜索框/剪贴板的"在工具里打开这段"）。
 // 页早建好缓存着，所以这里只是转手；插件没接住返回 false，调用方照常把页面打开。
 bool feed(const QString& id, const QString& text);

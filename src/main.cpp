@@ -1825,6 +1825,68 @@ int main(int argc, char* argv[])
                       QStringLiteral("%1").arg(junkInDir().size()), QStringLiteral("0"));
             }
         }
+        // ---- 建页那一条边界的 SEH 外壳（2026-10-23）：插件里读坏内存不该把整个程序带走 ----
+        // 这颗接口只为这条边界存在：它不进目录、商店列不出来、也不会有第二处调用它。
+        // 只在 Windows 上量：非 Win 那边这层守卫如实不装（见 PluginHost.cpp 里那句注释），
+        // 拿一颗故意崩的接口去喂它 = 判据自己把进程撞死，那不是"红"，那是假红。
+#ifdef Q_OS_WIN
+        {
+            // 撞的那颗：建页时写坏内存（0xc0000005）—— 和 10-22 那次「b64 会闪退」同一类
+            struct Boom : LToolPlugin {
+                int apiVersion() const override { return LTOOL_PLUGIN_API_VERSION; }
+                QString id() const override { return QStringLiteral("boomprobe"); }
+                QString name() const override { return QStringLiteral("故意撞一下的那颗"); }
+                QWidget* createPage(QWidget*) override
+                {
+                    volatile int* p = nullptr;
+                    *p = 7;
+                    return nullptr;
+                }
+            } boom;
+            // 好的那颗：页交给传进来的那棵树（判据自己造的页，判据自己收走）
+            struct Good : LToolPlugin {
+                int apiVersion() const override { return LTOOL_PLUGIN_API_VERSION; }
+                QString id() const override { return QStringLiteral("goodprobe"); }
+                QString name() const override { return QStringLiteral("正常给一张页的那颗"); }
+                QWidget* createPage(QWidget* parent) override { return new QWidget(parent); }
+            } good;
+            // 空页那颗：接口自己说不干（这一支的说法和"撞异常"是两句话，得各钉一条）
+            struct None : LToolPlugin {
+                int apiVersion() const override { return LTOOL_PLUGIN_API_VERSION; }
+                QString id() const override { return QStringLiteral("noneprobe"); }
+                QString name() const override { return QStringLiteral("不给页的那颗"); }
+                QWidget* createPage(QWidget*) override { return nullptr; }
+            } none;
+            QString err;
+            QWidget* got = PluginHost::buildPage(&boom, QStringLiteral("boomprobe"), nullptr, &err);
+            // 下面这几句能打完，本身就是"程序没跟着死"的证据（真没接住，这里就到不了了）
+            check("撞异常的接口进得去也出得来：没给页（半建那张也没当成好页缓存）",
+                  QStringLiteral("%1").arg(got == nullptr ? "null" : "widget"), QStringLiteral("null"));
+            has("那句原因里带着异常码（0xC0000005 = 访问违例）", err.contains(QStringLiteral("0xC0000005")));
+            has("那句原因点名是哪颗插件撞的（界面上那一行要能说清）", err.contains(QStringLiteral("boomprobe")));
+            std::printf("INFO 撞一次之后界面拿到的那句话：%s\n", err.toUtf8().constData());
+            // 正常那一支：外壳放行，且页的命跟着传进去的那棵树走 ——
+            // 上一版这里图省事直接拿真插件（json）走了一遍，结果那颗壳里的 `m_page` 被我这张
+            // 没进缓存的页顶掉了，后面"整扇窗关掉后再拿"那一条当场变红（判据自己弄坏被测对象）。
+            QWidget* host = new QWidget;
+            QWidget* p1 = PluginHost::buildPage(&good, QStringLiteral("goodprobe"), host, &err);
+            check("接口正常给出页那一支：外壳放行、并且没说任何错话",
+                  QStringLiteral("%1/%2").arg(p1 != nullptr ? "page" : "null").arg(err.isEmpty() ? "quiet" : "said"),
+                  QStringLiteral("page/quiet"));
+            check("那张页的命在传进来的那棵树上（不是宿主偷偷留一份）",
+                  QStringLiteral("%1").arg(p1 && p1->parent() == host ? 1 : 0), QStringLiteral("1"));
+            delete host;                 // 关掉那扇"窗"：页跟着没，判据不留自己造的东西在场上
+            QWidget* p2 = PluginHost::buildPage(&none, QStringLiteral("noneprobe"), nullptr, &err);
+            check("接口自己说不干（返回空）那一支：也不给页，但说的是另一句话",
+                  QStringLiteral("%1").arg(p2 == nullptr), QStringLiteral("1"));
+            has("那一支的说法里点着那颗的名字、并且不带异常码（两种病因不许混成一句）",
+                err.contains(QStringLiteral("noneprobe")) && !err.contains(QStringLiteral("0x")));
+            QWidget* nada = PluginHost::buildPage(nullptr, QStringLiteral("nada"), nullptr, &err);
+            check("接口没实例化出来那一支：照样不给页、并且说清是哪颗",
+                  QStringLiteral("%1").arg(nada == nullptr), QStringLiteral("1"));
+            has("那一支的说法里点着那颗的名字", err.contains(QStringLiteral("nada")));
+        }
+#endif
         // ---- 整扇商店页关掉那一趟（他真正的形状：页挂在 `ToolsPage` 那棵树上，一关全没）----
         // 上面 delete 的是单张页；这里是**一扇窗里点开过的页一起没**。
         // 一颗一棵树：`createPage(tree)` 之后那张页的命就归这棵树，删掉树 = 关掉那扇窗。
