@@ -151,12 +151,23 @@ LToolPlugin* plugin(const QString& id)
             delete loader;
             return nullptr;
         }
-        // 元数据里写的 Api 只是"声明"，实例自己报的才算数（两边不一致就是插件自己乱写）
-        if (p->apiVersion() != LTOOL_PLUGIN_API_VERSION) {
+        // 元数据里写的 Api 只是"声明"，实例自己报的才算数（两边不一致就是插件自己乱写）。
+        // 这一问也是跨进 dll 的第一脚：那颗坏 dll 往往就是在这里（或建页那一脚）撞的，
+        // 所以问法走 `apiVersionInto` 那层壳 —— 撞了就拒了它并说清，不陪着死。
+        int api = 0;
+        QString apiWhy;
+        if (!apiVersionInto(p, m.id, &api, &apiWhy)) {
+            g_loadErrors.insert(m.id, apiWhy);
+            Utils::log(QStringLiteral("plugin: %1").arg(apiWhy));
+            loader->unload();
+            delete loader;
+            return nullptr;
+        }
+        if (api != LTOOL_PLUGIN_API_VERSION) {
             g_loadErrors.insert(m.id, QStringLiteral("运行时报 API %1，主程序是 %2")
-                                              .arg(p->apiVersion()).arg(LTOOL_PLUGIN_API_VERSION));
+                                              .arg(api).arg(LTOOL_PLUGIN_API_VERSION));
             Utils::log(QStringLiteral("plugin: %1 运行时报 API %2，主程序是 %3，不加载")
-                           .arg(id).arg(p->apiVersion()).arg(LTOOL_PLUGIN_API_VERSION));
+                           .arg(id).arg(api).arg(LTOOL_PLUGIN_API_VERSION));
             loader->unload();
             delete loader;
             return nullptr;
@@ -169,27 +180,54 @@ LToolPlugin* plugin(const QString& id)
     return nullptr;
 }
 
-// 只有这一颗真的跨进插件的代码。它自己**不能有任何需要析构的局部对象**
-// （MSVC：函数里有 __try 又放着要析构的对象 = C2712），所以参数全是指针、结果也走指针。
+// ---- 全仓库唯一的一份 __try 壳：六种"跨进插件"的调用都从这一颗过 ----
+// 壳函数自己**不能有任何需要析构的局部对象**（MSVC：函数里有 __try 又放着要析构的对象 = C2712），
+// 所以进出的东西全是指针，参数按引用递进来（引用不是"本帧要析构的对象"），
+// QString 的拼接全部留在出壳之后做 —— 异常展开里再分配大对象，第二次崩会把线索一起吃掉。
+namespace {
+
+struct Cross
+{
+    LToolPlugin* p;
+    QWidget* parent;
+    const QString* s;
+    const QStringList* args;
+    void (*fn)();
+    void* out;          // QWidget** / bool* / int* / QStringList*
+    int kind;           // 0 建页 · 1 递文本 · 2 执行动作 · 3 后台激活 · 4 实例自报 API · 5 自报接哪些动作
+};
+
+void crossCall(const Cross& c)
+{
+    switch (c.kind) {
+    case 0: *static_cast<QWidget**>(c.out) = c.p->createPage(c.parent); break;
+    case 1: *static_cast<bool*>(c.out) = c.p->feedText(*c.s); break;
+    case 2: *static_cast<bool*>(c.out) = c.p->invoke(*c.s, *c.args); break;
+    case 3: c.fn(); break;
+    case 4: *static_cast<int*>(c.out) = c.p->apiVersion(); break;
+    case 5: *static_cast<QStringList*>(c.out) = c.p->actions(); break;
+    default: break;
+    }
+}
+
 #ifdef Q_OS_WIN
 
-static LONG pageSehFilter(PEXCEPTION_POINTERS ep, SehHit* hit)
+LONG sehRecord(PEXCEPTION_POINTERS ep, SehHit* hit)
 {
     hit->code = ep->ExceptionRecord->ExceptionCode;
     hit->addr = ep->ExceptionRecord->ExceptionAddress;
-    return EXCEPTION_EXECUTE_HANDLER;     // 一律接住：这条边界上"往上传"就是让整个程序陪着它死
+    return EXCEPTION_EXECUTE_HANDLER;     // 一律接住：这些边界上"往上传"就是让整个程序陪着它死
 }
 
-static bool runCreatePageSeh(LToolPlugin* p, QWidget* parent, QWidget** out, SehHit* hit)
+bool crossSeh(const Cross& c, SehHit* hit)
 {
-    *out = nullptr;
     hit->code = 0;
     hit->addr = nullptr;
     bool cameBack = false;
     __try {
-        *out = p->createPage(parent);
+        crossCall(c);
         cameBack = true;
-    } __except (pageSehFilter(GetExceptionInformation(), hit)) {
+    } __except (sehRecord(GetExceptionInformation(), hit)) {
         cameBack = false;
     }
     return cameBack;
@@ -197,19 +235,54 @@ static bool runCreatePageSeh(LToolPlugin* p, QWidget* parent, QWidget** out, Seh
 
 #else
 
-// Linux/macOS 上没有 SEH：那一边是信号（SIGSEGV），在这条边界里接它要 sigsetjmp，
+// Linux/macOS 上没有 SEH：那一边是信号（SIGSEGV），在这里接它要 `sigsetjmp`，
 // 而"从信号里继续跑"比 Windows 上的 AV 恢复更不可靠 —— 先**如实不装**这一层，
 // 别写一个看起来像守卫、其实什么都挡不住的空壳。移植那一档要真做，走进程隔离那条路。
-static bool runCreatePageSeh(LToolPlugin* p, QWidget* parent, QWidget** out, SehHit* hit)
+bool crossSeh(const Cross& c, SehHit* hit)
 {
-    *out = nullptr;
     hit->code = 0;
     hit->addr = nullptr;
-    *out = p->createPage(parent);
+    crossCall(c);
     return true;
 }
 
 #endif
+
+Cross crossPage(LToolPlugin* p, QWidget* parent, QWidget** out)
+{
+    return Cross{ p, parent, nullptr, nullptr, nullptr, out, 0 };
+}
+Cross crossFeed(LToolPlugin* p, const QString& text, bool* out)
+{
+    return Cross{ p, nullptr, &text, nullptr, nullptr, out, 1 };
+}
+Cross crossInvoke(LToolPlugin* p, const QString& action, const QStringList& args, bool* out)
+{
+    return Cross{ p, nullptr, &action, &args, nullptr, out, 2 };
+}
+Cross crossActivate(void (*fn)())
+{
+    return Cross{ nullptr, nullptr, nullptr, nullptr, fn, nullptr, 3 };
+}
+Cross crossApi(LToolPlugin* p, int* out)
+{
+    return Cross{ p, nullptr, nullptr, nullptr, nullptr, out, 4 };
+}
+Cross crossActions(LToolPlugin* p, QStringList* out)
+{
+    return Cross{ p, nullptr, nullptr, nullptr, nullptr, out, 5 };
+}
+
+// 那几句"给人看的原因"只有一份写法：哪颗、在哪条边界、异常码、落在哪条指令上。
+QString sehWhy(const QString& id, const QString& what, const SehHit& hit)
+{
+    return QStringLiteral("%1 %2时撞在异常 0x%3（指令地址 %4）· 这一趟没干成，程序没跟着死")
+        .arg(id, what)
+        .arg(QString::number(hit.code, 16).toUpper())
+        .arg(reinterpret_cast<quintptr>(hit.addr), 0, 16);
+}
+
+} // namespace
 
 QWidget* buildPage(LToolPlugin* p, const QString& id, QWidget* parent, QString* err)
 {
@@ -224,12 +297,10 @@ QWidget* buildPage(LToolPlugin* p, const QString& id, QWidget* parent, QString* 
     }
     QWidget* w = nullptr;
     SehHit hit;
-    if (!runCreatePageSeh(p, parent, &w, &hit)) {
-        // 这句是要给界面看的：哪颗插件、哪一类异常、落在哪条指令 —— 只说"打不开"等于没说
-        const QString why = QStringLiteral("%1 建页时撞在异常 0x%2（指令地址 %3）· 这一趟没给你页，程序没跟着死")
-                                .arg(id)
-                                .arg(QString::number(hit.code, 16).toUpper())
-                                .arg(reinterpret_cast<quintptr>(hit.addr), 0, 16);
+    const Cross c = crossPage(p, parent, &w);
+    if (!crossSeh(c, &hit)) {
+        // 这句是要给界面看的：哪颗插件、在哪条边界、哪一类异常、落在哪条指令 —— 只说"打不开"等于没说
+        const QString why = sehWhy(id, QStringLiteral("建页"), hit);
         if (err)
             *err = why;
         Utils::log(QStringLiteral("plugin: %1").arg(why));
@@ -238,6 +309,86 @@ QWidget* buildPage(LToolPlugin* p, const QString& id, QWidget* parent, QString* 
     if (!w && err)
         *err = QStringLiteral("插件 %1 的 createPage 返回了空").arg(id);
     return w;
+}
+
+bool feedInto(LToolPlugin* p, const QString& id, const QString& text, bool* accepted, QString* why)
+{
+    if (why)
+        why->clear();
+    if (!p || !accepted)
+        return false;        // 口子不对：不算撞，也不许把脏话写进 why（调用方按"没接住"处理）
+    *accepted = false;
+    SehHit hit;
+    const Cross c = crossFeed(p, text, accepted);
+    if (crossSeh(c, &hit))
+        return true;
+    if (why)
+        *why = sehWhy(id, QStringLiteral("递文本"), hit);
+    return false;
+}
+
+bool invokeInto(LToolPlugin* p, const QString& id, const QString& action, const QStringList& args,
+                bool* didIt, QString* why)
+{
+    if (why)
+        why->clear();
+    if (!p || !didIt)
+        return false;
+    *didIt = false;
+    SehHit hit;
+    const Cross c = crossInvoke(p, action, args, didIt);
+    if (crossSeh(c, &hit))
+        return true;
+    if (why)
+        *why = sehWhy(id, QStringLiteral("执行动作「%1」").arg(action), hit);
+    return false;
+}
+
+bool activateInto(const QString& id, void (*fn)(), QString* why)
+{
+    if (why)
+        why->clear();
+    if (!fn)
+        return false;
+    SehHit hit;
+    const Cross c = crossActivate(fn);
+    if (crossSeh(c, &hit))
+        return true;
+    if (why)
+        *why = sehWhy(id, QStringLiteral("后台激活"), hit);
+    return false;
+}
+
+bool apiVersionInto(LToolPlugin* p, const QString& id, int* api, QString* why)
+{
+    if (why)
+        why->clear();
+    if (!p || !api)
+        return false;
+    *api = 0;
+    SehHit hit;
+    const Cross c = crossApi(p, api);
+    if (crossSeh(c, &hit))
+        return true;
+    if (why)
+        *why = sehWhy(id, QStringLiteral("自报 API 版本"), hit);
+    return false;
+}
+
+bool actionsInto(LToolPlugin* p, const QString& id, QStringList* actions, QString* why)
+{
+    if (why)
+        why->clear();
+    if (!p || !actions)
+        return false;
+    actions->clear();
+    SehHit hit;
+    const Cross c = crossActions(p, actions);
+    if (crossSeh(c, &hit))
+        return true;
+    if (why)
+        *why = sehWhy(id, QStringLiteral("自报接哪些动作"), hit);
+    return false;
 }
 
 QWidget* page(const QString& id, QWidget* parent, QString* err)
@@ -299,7 +450,16 @@ bool isDisabled(const QString& id)
 bool feed(const QString& id, const QString& text)
 {
     LToolPlugin* p = plugin(id);
-    return p && p->feedText(text);
+    if (!p)
+        return false;
+    bool accepted = false;
+    QString why;
+    if (!feedInto(p, id, text, &accepted, &why)) {
+        // 它崩了 ≠ 它没接住：这句要单独写日志，界面上那句还归调用方（"这段没进去"）
+        Utils::log(QStringLiteral("plugin: %1").arg(why));
+        return false;
+    }
+    return accepted;
 }
 
 QString actionOwner(const QString& action)
@@ -344,12 +504,29 @@ bool invoke(const QString& action, const QStringList& args, QString* who)
         LToolPlugin* p = plugin(m.id);       // 起不来它自己已经把原因写进日志
         if (!p)
             continue;
-        if (!p->actions().contains(action)) {
+        QStringList own;
+        QString why;
+        if (!actionsInto(p, m.id, &own, &why)) {
+            // 连"你接哪些动作"都问崩了：这一家跳过，但 `who` 要给出去 ——
+            // 否则"按了 F1 什么都没发生"那条最难查的形状又回来了
+            Utils::log(QStringLiteral("plugin: %1").arg(why));
+            if (who)
+                *who = m.id;
+            continue;
+        }
+        if (!own.contains(action)) {
             Utils::log(QStringLiteral("plugin: %1 元数据说接 %2，实例自己不认（不路由给它）")
                            .arg(m.id, action));
             continue;
         }
-        if (p->invoke(action, args)) {
+        bool didIt = false;
+        if (!invokeInto(p, m.id, action, args, &didIt, &why)) {
+            Utils::log(QStringLiteral("plugin: %1").arg(why));
+            if (who)
+                *who = m.id;
+            continue;
+        }
+        if (didIt) {
             if (who)
                 *who = m.id;
             Utils::log(QStringLiteral("plugin: 动作 %1 → %2（参数 %3）")
@@ -404,7 +581,13 @@ int startBackground()
                                       "它后台的活儿没跑起来").arg(m.id));
             continue;
         }
-        fn();
+        QString why;
+        if (!activateInto(m.id, fn, &why)) {
+            // 它自己起了后台的活儿、结果撞在异常里：这句必须点名，不能悄悄少一个后台功能，
+            // 也不能把它算成"起来了"（started 那个数是要给日志看的）
+            Utils::log(QStringLiteral("plugin: %1").arg(why));
+            continue;
+        }
         ++started;
         Utils::log(QStringLiteral("plugin: 激活 %1（它自己起了后台的活儿）").arg(m.id));
     }

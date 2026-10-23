@@ -1886,6 +1886,96 @@ int main(int argc, char* argv[])
                   QStringLiteral("%1").arg(nada == nullptr), QStringLiteral("1"));
             has("那一支的说法里点着那颗的名字", err.contains(QStringLiteral("nada")));
         }
+        {
+            // 同一层壳现在也罩着另外几条边界：递文本、执行动作、自报接哪些动作、自报 API、后台激活。
+            // 判据直接调的就是那五颗 `*Into` —— 它们是产品**唯一**跨进插件的地方
+            // （`feed()` / `invoke()` / `plugin()` / `startBackground()` 各自只调它们一次）。
+            struct BoomAll : LToolPlugin {
+                int apiVersion() const override { volatile int* z = nullptr; *z = 7; return 0; }
+                QString id() const override { return QStringLiteral("boomall"); }
+                QString name() const override { return QStringLiteral("条条都撞的那颗"); }
+                QWidget* createPage(QWidget*) override { volatile int* z = nullptr; *z = 7; return nullptr; }
+                bool feedText(const QString&) override { volatile int* z = nullptr; *z = 7; return true; }
+                QStringList actions() const override { volatile int* z = nullptr; *z = 7; return {}; }
+                bool invoke(const QString&, const QStringList&) override { volatile int* z = nullptr; *z = 7; return true; }
+            } boomAll;
+            struct OkAll : LToolPlugin {
+                int apiVersion() const override { return LTOOL_PLUGIN_API_VERSION; }
+                QString id() const override { return QStringLiteral("okall"); }
+                QString name() const override { return QStringLiteral("条条都答得上的那颗"); }
+                QWidget* createPage(QWidget* parent) override { return new QWidget(parent); }
+                bool feedText(const QString& t) override { return !t.isEmpty(); }
+                QStringList actions() const override { return { QStringLiteral("probe-action") }; }
+                bool invoke(const QString& a, const QStringList&) override
+                {
+                    return a == QLatin1String("probe-action");
+                }
+            } okAll;
+            QString why;
+            bool ans = true;
+            PluginHost::feedInto(&boomAll, QStringLiteral("boomall"), QStringLiteral("那段文本"), &ans, &why);
+            check("递文本撞了：回不来，而且没把「撞」算成「它接住了」",
+                  QStringLiteral("%1/%2").arg(why.contains(QStringLiteral("0xC0000005")) &&
+                                              why.contains(QStringLiteral("递文本")) ? 1 : 0).arg(ans),
+                  QStringLiteral("1/0"));
+            ans = true;
+            const bool feedOk = PluginHost::feedInto(&okAll, QStringLiteral("okall"),
+                                                     QStringLiteral("那段文本"), &ans, &why);
+            check("递文本没撞：答案照原样递出来（真插件答「是」就是「是」，外壳不改口）",
+                  QStringLiteral("%1/%2/%3").arg(feedOk).arg(ans).arg(why.isEmpty() ? 1 : 0),
+                  QStringLiteral("1/1/1"));
+            ans = true;
+            PluginHost::invokeInto(&boomAll, QStringLiteral("boomall"), QStringLiteral("probe-action"),
+                                   QStringList(), &ans, &why);
+            check("执行动作撞了：回不来、那句话点名是「执行动作」这一条边界",
+                  QStringLiteral("%1/%2").arg(why.contains(QStringLiteral("执行动作")) &&
+                                              why.contains(QStringLiteral("probe-action")) ? 1 : 0).arg(ans),
+                  QStringLiteral("1/0"));
+            ans = true;
+            const bool invOk = PluginHost::invokeInto(&okAll, QStringLiteral("okall"),
+                                                      QStringLiteral("probe-action"), QStringList(), &ans, &why);
+            check("执行动作没撞：它答的「干成了」原样递回来",
+                  QStringLiteral("%1/%2/%3").arg(invOk).arg(ans).arg(why.isEmpty() ? 1 : 0),
+                  QStringLiteral("1/1/1"));
+            QStringList acts = { QStringLiteral("脏的没清") };
+            check("自报动作撞了：回不来，并且那份列表没留下一半",
+                  QStringLiteral("%1").arg(PluginHost::actionsInto(&boomAll, QStringLiteral("boomall"),
+                                                                   &acts, &why)
+                                              ? 1 : 0),
+                  QStringLiteral("0"));
+            check("撞之前那份列表先清干净（不许把调用方留下的旧数据当成它报的）",
+                  QStringLiteral("%1").arg(acts.isEmpty() ? 1 : 0), QStringLiteral("1"));
+            acts.clear();
+            const bool actsOk = PluginHost::actionsInto(&okAll, QStringLiteral("okall"), &acts, &why);
+            check("自报动作没撞：它报的那份就是那份",
+                  QStringLiteral("%1/%2").arg(actsOk ? 1 : 0)
+                      .arg(acts == QStringList({ QStringLiteral("probe-action") }) ? 1 : 0),
+                  QStringLiteral("1/1"));
+            int api = 999;
+            const bool apiCrash = PluginHost::apiVersionInto(&boomAll, QStringLiteral("boomall"), &api, &why);
+            check("装载时那一问（实例自报 API）撞了：回不来，api 没留下脏数",
+                  QStringLiteral("%1/%2").arg(apiCrash).arg(api == 0),
+                  QStringLiteral("0/1"));
+            api = 0;
+            const bool apiOk = PluginHost::apiVersionInto(&okAll, QStringLiteral("okall"), &api, &why);
+            check("装载时那一问没撞：报上来的就是它自己那版（主程序拿这个数判装不装）",
+                  QStringLiteral("%1/%2").arg(apiOk).arg(api == LTOOL_PLUGIN_API_VERSION),
+                  QStringLiteral("1/1"));
+            void (*bangFn)() = [] { volatile int* z = nullptr; *z = 7; };
+            void (*noopFn)() = [] {};
+            const bool actCrash = PluginHost::activateInto(QStringLiteral("linuxdo"), bangFn, &why);
+            const QString activateWhy = why;      // 留着当证据打出来（后面那句会把它清掉）
+            check("后台激活撞了：回不来，那句话点名是「后台激活」这一条边界",
+                  QStringLiteral("%1/%2").arg(actCrash).arg(why.contains(QStringLiteral("后台激活"))),
+                  QStringLiteral("0/1"));
+            std::printf("INFO 后台激活撞那一下，日志/界面拿到的那句话：%s\n",
+                        activateWhy.toUtf8().constData());
+            why.clear();
+            const bool actOk = PluginHost::activateInto(QStringLiteral("okall"), noopFn, &why);
+            check("后台激活没撞：回得来就不留原因（`startBackground()` 那个数只算真起来的）",
+                  QStringLiteral("%1/%2").arg(actOk).arg(why.isEmpty() ? 1 : 0),
+                  QStringLiteral("1/1"));
+        }
 #endif
         // ---- 整扇商店页关掉那一趟（他真正的形状：页挂在 `ToolsPage` 那棵树上，一关全没）----
         // 上面 delete 的是单张页；这里是**一扇窗里点开过的页一起没**。

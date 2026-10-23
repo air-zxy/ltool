@@ -57,6 +57,25 @@ struct SehHit {
 // 真的进插件那一趟；返回 nullptr = 没给出页（撞了异常，或它自己返回空），原因写进 err。
 QWidget* buildPage(LToolPlugin* p, const QString& id, QWidget* parent, QString* err);
 
+// ---- 剩下几条边界用的是同一层外壳（2026-10-23 下午，接 `buildPage` 那条往后铺）----
+// 规矩和建页那条一样：**每条边界只有一个真的跨进插件的函数**，`feed()` / `invoke()` /
+// `startBackground()` / `plugin()` 只做"找到那颗接口，再交给这一颗"；判据调的也是这同一颗函数，
+// 不是另写一个近似的外壳 —— 谁把调用从这层里挪出去，判据就当场死给它看。
+// 返回值说的是**这一趟回没回来**（false = 撞在异常里，`why` 是给人看的那句话），
+// 插件自己答"是/否"走 `accepted` / `didIt` —— 两种"否"必须分得开：
+// 界面上"它接了但没干成"和"它崩了"是两句话。`why` 也照 `buildPage` 的规矩：进来先 clear，
+// 回得来就不留原因（不清的话调用方复用同一个 QString 会把上一趟的失败念成这一趟的）。
+bool feedInto(LToolPlugin* p, const QString& id, const QString& text, bool* accepted, QString* why);
+bool invokeInto(LToolPlugin* p, const QString& id, const QString& action, const QStringList& args,
+                bool* didIt, QString* why);
+// 后台那颗挂的是 extern "C" 的 `ltoolPluginActivate`（不是虚函数 —— 动 vtable 等于把 API 推到 5）。
+// `startBackground()` 唯一的活儿就是把这个函数指针递进来。
+bool activateInto(const QString& id, void (*fn)(), QString* why);
+// 装载那一步要问实例自己报的 API（10-22 那批"名字对得上、一用就崩"就死在这一类调用上），
+// 和路由前那句"你接不接这个动作" —— 这两颗也是跨边界的，一并走同一层壳。
+bool apiVersionInto(LToolPlugin* p, const QString& id, int* api, QString* why);
+bool actionsInto(LToolPlugin* p, const QString& id, QStringList* actions, QString* why);
+
 // 把一段文本递给那个工具的页（搜索框/剪贴板的"在工具里打开这段"）。
 // 页早建好缓存着，所以这里只是转手；插件没接住返回 false，调用方照常把页面打开。
 bool feed(const QString& id, const QString& text);
