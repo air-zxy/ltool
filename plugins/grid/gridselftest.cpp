@@ -174,14 +174,42 @@ extern "C" Q_DECL_EXPORT int ltoolPluginSelftest()
     page.board()->setFixedSize(300, 300);        // 四宫：留白 8、缝 8 → 每格 138 见方
     page.board()->ensurePolished();
     const QImage shot = page.board()->grab().toImage();
-    check("板上预览也是中间那块（左边不是红）", shot.pixelColor(13, 77).name(QColor::HexRgb),
+    // grab 回来的是**设备像素**：逻辑坐标要乘 devicePixelRatio 才落在同一个点上。
+    // 本机 windows 平台给的不是 1（offscreen 是 1），上一版拿逻辑坐标直接读 → 读到的位置随缩放/字体漂。
+    const auto shotColor = [&shot](int lx, int ly) {
+        const qreal dpr = shot.devicePixelRatio();
+        const int dx = qRound(lx * dpr);
+        const int dy = qRound(ly * dpr);
+        if (dx < 0 || dy < 0 || dx >= shot.width() || dy >= shot.height())
+            return QColor(0, 0, 0);   // 越界就当"没画到"，别拿一个不存在的点当证据
+        return shot.pixelColor(dx, dy);
+    };
+    check("板上预览也是中间那块（左边不是红）", shotColor(13, 77).name(QColor::HexRgb),
           QStringLiteral("#1ec81e"));
-    check("板上预览也是中间那块（右边不是蓝）", shot.pixelColor(141, 77).name(QColor::HexRgb),
+    check("板上预览也是中间那块（右边不是蓝）", shotColor(141, 77).name(QColor::HexRgb),
           QStringLiteral("#1ec81e"));
-    // 这条是探针自己的体检：离屏 grab 万一画出来是张空图，上面两条会"一起绿"骗人。
-    // ✕ 那颗角标是深色半透明底，压在绿图上一定比图本身暗。
+    // 这条是探针自己的体检：grab 万一画出来是张空图，上面两条会"一起绿"骗人。
+    // ✕ 那颗角标是深色半透明底，压在绿图上一定比图本身暗 —— 但**底上面还有那个白的 ✕**，
+    // 所以只准数整块矩形里有几个暗点/几个亮点，不许赌某一个像素（本机就是赌在字的那一笔上红的）。
+    const QRect badge = GridBoard::closeRect(page.board()->cellRect(0));
+    const int refGreen = shotColor(77, 77).green();
+    int darkDots = 0, brightDots = 0, badgeDots = 0;
+    for (int y = badge.top() + 3; y <= badge.bottom() - 3; ++y) {
+        for (int x = badge.left() + 3; x <= badge.right() - 3; ++x) {
+            const QColor c = shotColor(x, y);
+            ++badgeDots;
+            if (c.green() < refGreen)
+                ++darkDots;
+            if (c.green() > refGreen)
+                ++brightDots;
+        }
+    }
+    std::printf("INFO 板上 grab=%dx%d dpr=%g · 角标矩形=(%d,%d %dx%d) · 里面 %d 个点：比图暗 %d、比图亮 %d（图上那一块 G=%d）\n",
+                shot.width(), shot.height(), shot.devicePixelRatio(),
+                badge.x(), badge.y(), badge.width(), badge.height(),
+                badgeDots, darkDots, brightDots, refGreen);
     check("板上的角标真的画出来了（grab 不是空图）",
-          shot.pixelColor(130, 23).green() < shot.pixelColor(77, 77).green() ? "yes" : "no", "yes");
+          darkDots >= 40 ? "yes" : "no", "yes");
     page.board()->setMinimumSize(320, 320);
     page.board()->setMaximumSize(QSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX));
 

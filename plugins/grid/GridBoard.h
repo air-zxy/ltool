@@ -37,6 +37,7 @@ public:
     int cols() const;                           // 四宫 2 列，六宫/九宫 3 列
     int rows() const;
     QRect cellRect(int i) const;                // 第 i 格的矩形（正方形，整块居中）—— 判据也量它
+    static QRect closeRect(const QRect& cell);  // 右上角那颗 ✕：命中的和画的是同一块矩形，判据量它就不用重算几何
     bool acceptsMime(const QMimeData* data) const;   // 拖进来的东西收不收（判据也走这条）
     int droppedCount() const { return m_dropped; }  // 一共往里放过几张（含被拒的）
     int rejectedCount() const { return m_rejected; }
@@ -57,7 +58,6 @@ protected:
 
 private:
     int cellAt(const QPoint& p) const;          // -1 = 不在任何格子上
-    static QRect closeRect(const QRect& cell);  // 格子右上角那颗 ✕ 的命中区
     static bool isImageFile(const QString& f);
     QPixmap previewAt(int i, const QRect& cell);
     QRect gridGeom() const;                     // 整个格子区的矩形（含间距）
