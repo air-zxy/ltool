@@ -244,7 +244,9 @@ void FileIndexer::reindexAsync(bool forceDeep)
         timer.start();
 
         QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
-        const bool deepEnabled = cfg.value("index/deep", true).toBool();
+        // 裸 --smoke（无沙箱）时用环境开关跳过深扫，不落盘改用户配置（见 main.cpp runSmokeTest）
+        const bool deepEnabled = qEnvironmentVariableIsSet("LTOOL_SMOKE_SKIP_DEEP")
+            ? false : cfg.value("index/deep", true).toBool();
 
         // 1) 深索引：映射磁盘上的快照（不占私有内存），启动立即可搜
         bool haveCache = false;
@@ -403,11 +405,14 @@ bool FileIndexer::mapSnapshot()
         return false;
     }
 
-    m_mapFile = file;
-    m_mapObj = mapObj;
-    m_mapView = view;
-    m_mapSize = sz.QuadPart;
-    m_base = base;
+    {
+        QWriteLocker lock(&m_lock);
+        m_mapFile = file;
+        m_mapObj = mapObj;
+        m_mapView = view;
+        m_mapSize = sz.QuadPart;
+        m_base = base;
+    }
     loadUsnState();
     return true;
 }
@@ -612,11 +617,15 @@ void FileIndexer::rebuildDeepAll()
     f.write(out);
     f.commit();
 
-    // 重映射文件并重置增量
-    unmapSnapshot();
-    if (!mapSnapshot()) {
-        // 映射失败（极少）：从内存副本回退为普通结构不可行，直接标记无快照
-        Utils::log("deep index: snapshot written but remap failed");
+    // 重映射文件并重置增量（写锁保护：搜索线程可能正遍历旧映射视图）
+    {
+        QWriteLocker lock(&m_lock);
+        unmapSnapshot();
+        m_add.clear();
+        m_addArena.clear();
+        m_removed.clear();
+        if (!mapSnapshot())
+            Utils::log("deep index: snapshot written but remap failed");
     }
     saveUsnState();
 }
@@ -690,11 +699,17 @@ FileIndexer::DeepStatus FileIndexer::incrementalDeep()
         }
 
         const HANDLE volHandle = vol.vol;
+        // 两段式：先无锁收集（含磁盘 IO），再短临界区统一提交，
+        // 避免与搜索线程（读锁遍历 m_add/m_addArena）产生数据竞争
+        struct PendingAdd { FileDeepEntry e; QByteArray path; };
+        QVector<PendingAdd> pendingAdds;
+        QVector<quint64> pendingDels;
+
         for (const UsnIndex::RawChange& c : changes) {
             const bool isDir = (c.attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
             if (c.reason & (USN_REASON_FILE_CREATE | USN_REASON_RENAME_NEW_NAME)) {
                 if (isDir && (c.reason & USN_REASON_RENAME_NEW_NAME))
-                    return DeepStatus::NeedRebuild; // 目录改名 → 整棵子树路径失效
+                    return DeepStatus::NeedRebuild; // 目录改名 → 整棵子树路径失效（尚无共享变更，安全）
                 if (shouldSkip(c.name) || c.name.startsWith('$') || c.name == ".")
                     continue;
                 // 父目录路径：优先用 OpenFileById（不依赖任何内存索引）
@@ -714,26 +729,37 @@ FileIndexer::DeepStatus FileIndexer::incrementalDeep()
                     ? parentPath + c.name : parentPath + "/" + c.name;
                 FileDeepEntry e;
                 const QByteArray u8 = full.toUtf8();
-                e.offset = quint32(m_addArena.size());
-                m_addArena.append(u8);
-                e.len = quint32(m_addArena.size() - e.offset);
+                e.offset = 0; // 提交时在增量 arena 里定位
+                e.len = quint32(u8.size());
                 e.nameStart = e.len - quint32(c.name.toUtf8().size());
                 e.isDir = isDir ? 1 : 0;
                 e.frn = c.frn;
-                m_add.append(e);
-                ++changed;
+                pendingAdds.append({e, u8});
             }
             if (c.reason & (USN_REASON_FILE_DELETE | USN_REASON_RENAME_OLD_NAME)) {
+                pendingDels.append(c.frn);
+            }
+        }
+
+        if (!pendingAdds.isEmpty() || !pendingDels.isEmpty()) {
+            QWriteLocker lock(&m_lock);
+            for (const PendingAdd& pa : pendingAdds) {
+                FileDeepEntry e = pa.e;
+                e.offset = quint32(m_addArena.size());
+                m_addArena.append(pa.path);
+                m_add.append(e);
+            }
+            for (quint64 frn : pendingDels) {
                 // 删除 = 墓碑（基础快照按 frn 跳过）；增量新增的条目直接移除
                 for (int i = m_add.size() - 1; i >= 0; --i) {
-                    if (m_add[i].frn == c.frn) {
+                    if (m_add[i].frn == frn) {
                         m_add.removeAt(i);
                         break;
                     }
                 }
-                m_removed.insert(c.frn);
-                ++changed;
+                m_removed.insert(frn);
             }
+            changed += int(pendingAdds.size() + pendingDels.size());
         }
         cur->nextUsn = j.nextUsn;
         Q_UNUSED(changed);

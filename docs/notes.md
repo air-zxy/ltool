@@ -1913,3 +1913,15 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - 补完还崩了一次，那是**另一种**失败：`rc=28 github.com:443 连不上`（这台机的老毛病），原样重跑第 2 次整条绿。两种 rc 要分开读，别把 28 也当成"链没活"。
 - 版本：这一笔只动 `tools/postrelease_check.py` + 这份文档 ⇒ **不升号**。但 1.5.0 从此是**已发布**的号，而树里 `ltool.iss:6` 还写着它 —— 下一次动产品代码必须往前挪（1.5.1 / 1.6.0），不能拿 1.5.0 再出第二份产物。
 - 没做的两件事，如实说：① 这一版**没装机**（`deliver.ps1` 会杀他正在跑的实例，等他点头）；② 插件源码仓库 `ltool_plugin` 还差 5 个文件（`sync_plugins.py --check`：新放 0 / 改动 5 / 一致 106）—— `ads/AdsPage.cpp`、`ads/plugin.json`（1.0.1→1.0.2）与 `grid/GridBoard.h`、`grid/gridselftest.cpp`、`grid/plugin.json`（1.0.3→1.0.4）；`sdk/` 那份不用重铺（26 个公开头没动布局、API 仍 4）。那是往**另一个仓库**推，等他说"跟"。
+
+## 2026-10-25 下午：1.5.1 的料齐了（未 tag，等点头）
+
+- **两笔产品修复（v1.5.0 之后树里的全部产品差异，`git diff v1.5.0 --stat` = FileIndexer.cpp + main.cpp）**：
+  1. **FileIndexer 两个并发崩溃窗口**：全量重建收尾的 unmap/remap、USN 增量对 m_add/m_addArena/m_removed 的追加，原先都在无锁状态下和搜索线程（读锁遍历同一批数据）赛跑 —— 重建窗口期打字搜索，最坏访问已解除映射的视图（访问违例）。改法：增量先无锁收集（含 OpenFileById 那些磁盘 IO）、短写锁一次性提交；remap 整段拿写锁。实测重建进行中持续搜索不崩。
+  2. **`--smoke` 落盘改用户配置**（10-23 记录里"等他拍"的那条，本机实测又中招一次）：非管理员裸跑会把真实数据目录的 `index/deep` 写成 false。改法：只有 LTOOL_DATA_DIR 沙箱里才许落这个键；裸 --smoke 用进程内环境变量 LTOOL_SMOKE_SKIP_DEEP 跳深扫、一行配置不写。1.5.1 装出來裸跑验证：`data/config.ini` 压根没被创建。他机器上被写坏的 deep 已恢复 true（快照 335MB 还在，重启后会增量接上）。
+- **六道闸全 0**（theme 48 角色 / proxy 8 处 / plugin_version 20 颗 NEEDS_BUMP=0 / core_abi API 4 / release-notes 6 项 / notes_history 388 行 0 家目录）。
+- **安装包**：`installer/ltool-1.5.1-setup.exe`（23,468,680 B）。装到临时目录验过内容物：装出的 ltool.exe 与 build/Release 那份 **md5 一致**（69a243e2…）——加这道是因为今天撞见"安装器静默退出 0 但 exe 根本没换"（旧实例占用、重启管理器挂起替换，`OVERWRITE_OK` 全是假绿）。
+- **删了一份违规产物**：今天 13:51 有人（我）在本机重出过一份 `ltool-1.5.0-setup.exe` —— 1.5.0 是已发布的号，不能有第二份产物，已删；那份从未离开本机。
+- **如实记一笔事故**：部署竞态修复时用 `robocopy /E` 把 build\Release\data\ 一起盖进了 D:\software\ltool\data\，吞了他的 config.ini（21KB→21B）和 webs.json。从 %APPDATA% 的迁移前副本恢复（config 21,595B、webs 4,286B 含全部自定义关键字、deep=true），他的插件（linuxdo/开机启动分析等）重载正常。**仍丢的**：10-21 16:12 迁移之后到 10-25 之间他在 data\config.ini 里改过的设置（商店地址版本号等）、data\log.txt 历史。教训：往安装目录复制必须排除 data\。
+- **树里的账**：产品两笔 + 版本号 1.5.0→1.5.1 + 本份文档；build/verify 下三颗未跟踪脚本（crashscan/pngcost/startapps）不是这轮的，没动。
+- **没做的，等他拍**：tag `v1.5.1`、push、CI、GitHub Release（商店那 20 颗 dll + sdk.zip + plugins-index.json 由 CI 出）；`ltool_plugin` 仓库还差的 5 个文件（10-23 记的那笔）也没跟。装机这轮已经装了当前构建（他机器上跑着的就是这两笔修复），但不是走 deliver.ps1。

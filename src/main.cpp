@@ -220,14 +220,24 @@ int runSmokeTest()
                      p.id.toUtf8().constData(), okCount, size_t(p.items.size()));
     }
 
-    // 无管理员权限（如 CI 干净环境）无法使用 USN，避免全盘深扫描耗时数分钟触发超时
-    UsnIndex::VolumeHandle vol;
-    if (!vol.open(QStringLiteral("C:/"))) {
-        QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
-        cfg.setValue(QStringLiteral("index/deep"), false);
-        cfg.sync();
-    } else {
-        vol.close();
+    // 无管理员权限（如 CI 干净环境）无法使用 USN，避免全盘深扫描耗时数分钟触发超时。
+    // 2026-10-25：这里改过真实用户配置 —— smoke 拿默认数据目录跑时把用户的
+    // index/deep 直接写成 false（本机实测中招）。只有跑在 LTOOL_DATA_DIR 沙箱里
+    // （带 --xxx 自测旗标那种）才允许落这个开关；裸 --smoke 只在内存里跳过深扫。
+    {
+        UsnIndex::VolumeHandle vol;
+        const bool hasUsn = vol.open(QStringLiteral("C:/"));
+        if (hasUsn)
+            vol.close();
+        if (!hasUsn && qEnvironmentVariableIsSet("LTOOL_DATA_DIR")) {
+            QSettings cfg(Utils::dataDir() + "/config.ini", QSettings::IniFormat);
+            cfg.setValue(QStringLiteral("index/deep"), false);
+            cfg.sync();
+        }
+        // 裸 --smoke（没沙箱）：不写配置，只把本次运行的深扫跳掉 ——
+        // 通过临时环境变量让 FileIndexer 读到 false 而不落盘。
+        if (!hasUsn && !qEnvironmentVariableIsSet("LTOOL_DATA_DIR"))
+            qputenv("LTOOL_SMOKE_SKIP_DEEP", "1");
     }
 
     FileIndexer::instance().reindexAsync(false); // 与生产一致：增量优先
