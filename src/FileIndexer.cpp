@@ -249,9 +249,12 @@ void FileIndexer::reindexAsync(bool forceDeep)
             ? false : cfg.value("index/deep", true).toBool();
 
         // 1) 深索引：映射磁盘上的快照（不占私有内存），启动立即可搜
+        // （mapSnapshot 自身不持锁，调用方负责 —— 搜索线程此刻可能已在读旧映射）
         bool haveCache = false;
-        if (deepEnabled)
+        if (deepEnabled) {
+            QWriteLocker lock(&m_lock);
             haveCache = mapSnapshot();
+        }
 
         // 2) 快索引全量
         QVector<FileEntry> quick;
@@ -405,14 +408,14 @@ bool FileIndexer::mapSnapshot()
         return false;
     }
 
-    {
-        QWriteLocker lock(&m_lock);
-        m_mapFile = file;
-        m_mapObj = mapObj;
-        m_mapView = view;
-        m_mapSize = sz.QuadPart;
-        m_base = base;
-    }
+    // 调用方必须已持 m_lock 写锁（rebuildDeepAll 的重映射块 / reindexAsync 的首映射块）——
+    // 这里再拿一次就是同一把非递归 QReadWriteLock 的嵌套写锁，当场死锁
+    //（2026-10-25 --storeexit 挂死就是它：CI 那趟 v1.5.1 也是这条红）。
+    m_mapFile = file;
+    m_mapObj = mapObj;
+    m_mapView = view;
+    m_mapSize = sz.QuadPart;
+    m_base = base;
     loadUsnState();
     return true;
 }
