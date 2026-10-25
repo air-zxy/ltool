@@ -1925,3 +1925,11 @@ depth=3               ; 往里找几层（0=只看目录本身，最多 6）
 - **如实记一笔事故**：部署竞态修复时用 `robocopy /E` 把 build\Release\data\ 一起盖进了 D:\software\ltool\data\，吞了他的 config.ini（21KB→21B）和 webs.json。从 %APPDATA% 的迁移前副本恢复（config 21,595B、webs 4,286B 含全部自定义关键字、deep=true），他的插件（linuxdo/开机启动分析等）重载正常。**仍丢的**：10-21 16:12 迁移之后到 10-25 之间他在 data\config.ini 里改过的设置（商店地址版本号等）、data\log.txt 历史。教训：往安装目录复制必须排除 data\。
 - **树里的账**：产品两笔 + 版本号 1.5.0→1.5.1 + 本份文档；build/verify 下三颗未跟踪脚本（crashscan/pngcost/startapps）不是这轮的，没动。
 - **没做的，等他拍**：tag `v1.5.1`、push、CI、GitHub Release（商店那 20 颗 dll + sdk.zip + plugins-index.json 由 CI 出）；`ltool_plugin` 仓库还差的 5 个文件（10-23 记的那笔）也没跟。装机这轮已经装了当前构建（他机器上跑着的就是这两笔修复），但不是走 deliver.ps1。
+
+## 2026-10-25 晚：v1.5.1 第一趟 CI 红了，是我自己的锁写的嵌套死锁（已修 + 重打 tag）
+
+- **形状**：tag 那趟 run（40173776361）在「无界面回归」整步红，--storeexit 挂死超时。本地离线复现同一形状（120 秒 timeout、1171 字节后无声）；把 FileIndexer/main 两文件退回 v1.5.0 版本重编即绿 —— 是 1.5.1 自己带进去的，不是环境。
+- **根因**：给 remap 加锁时，`rebuildDeepAll` 的写锁块里调 `mapSnapshot()`，而 `mapSnapshot` 尾部自己也拿同一把 `QReadWriteLock` 的写锁 —— 非递归锁嵌套写，当场死锁。smoke 那条路不经过深索引（非管理员跳过），所以本地 smoke 一直绿，CI 的 storeexit（真启动、深索引真跑）第一个撞上。
+- **修法**：锁改为**调用方持有**的约定（mapSnapshot/unmapSnapshot 不再自拿，函数头注释写明），`reindexAsync` 的首映射调用点补上写锁。修后 19 面旗本地全套 0 红（含 --mfttest/--diskbranch）。
+- **tag 处理**：旧 v1.5.1（指向 0e12655）删掉重打到修复提交 a743b23。那趟没产出任何资产（`/releases/tags/v1.5.1` API 404、latest 仍指 v1.5.0），网页上那个"Release v1.5.1"只是 GitHub 给已存在 tag 渲染的占位页，不算发过 —— 同号没有出过两份产物。
+- 顺带：把这台机上装着的第一版 1.5.1（带死锁）换成修复版（robocopy 排除 data\captures\recordings，这次没再碰他的数据）。
